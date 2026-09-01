@@ -105,8 +105,95 @@ fn code_mode_generates_enum_and_protocol() {
 
     assert!(src.contains("pub enum Status"));
     assert!(src.contains("Active,"));
-    assert!(src.contains("pub trait UserService"));
-    assert!(src.contains("fn get_user(id: i32) -> User;"));
+    // provider trait: `&self`, a `Result`, a per-function error enum
+    assert!(src.contains("pub trait UserService {"));
+    assert!(src.contains(
+        "fn get_user(&self, id: i32) -> Result<User, UserServiceGetUserError>;"
+    ));
+    // params struct + the runtime imports + the call table
+    assert!(src.contains("use comline_runtime::client::Client;"));
+    assert!(src.contains("pub struct UserServiceGetUserParams {"));
+    assert!(src.contains("pub id: i32,"));
+    assert!(src.contains(r#"pub const USER_SERVICE_CALLS: &[&str] = &["get_user"];"#));
+    // dispatcher + client stub
+    assert!(src.contains("impl<S: UserService> Dispatch for UserServiceDispatcher<S>"));
+    assert!(src.contains("impl<T: Transport, W: WireFormat> UserServiceClient<T, W>"));
+    assert!(src.contains(
+        "pub fn get_user(&mut self, id: i32) -> Result<User, CallError<UserServiceGetUserError>>"
+    ));
+}
+
+#[test]
+fn protocol_errors_map_to_ordinals_and_a_union() {
+    // error Rejected { why: str }  (ordinal 0)
+    let rejected = FrozenUnit::Error {
+        docstring: None,
+        parameters: vec![],
+        ordinal: 0,
+        imported_from: None,
+        name: "Rejected".to_string(),
+        message: "no".to_string(),
+        fields: vec![FrozenUnit::Field {
+            docstring: None,
+            parameters: vec![],
+            optional: false,
+            name: "why".to_string(),
+            kind_value: KindValue::Namespaced("string".to_string(), None),
+            span: (0, 0),
+        }],
+    };
+    let proto = FrozenUnit::Protocol {
+        docstring: "Chat".to_string(),
+        parameters: vec![],
+        name: "Chat".to_string(),
+        functions: vec![
+            FrozenUnit::Function {
+                docstring: String::new(),
+                name: "send".to_string(),
+                parameters: vec![],
+                arguments: vec![FrozenArgument {
+                    name: "body".to_string(),
+                    kind: KindValue::Namespaced("string".to_string(), None),
+                    span: (0, 0),
+                }],
+                _return: None, // one-way today: empty ack
+                throws: vec![0],
+                span: (0, 0),
+            },
+            FrozenUnit::Function {
+                docstring: String::new(),
+                name: "ping".to_string(),
+                parameters: vec![],
+                arguments: vec![],
+                _return: Some(KindValue::Unit),
+                throws: vec![],
+                span: (0, 0),
+            },
+        ],
+        span: (0, 0),
+    };
+
+    let schemas = vec![("chat".to_string(), vec![rejected, proto])];
+    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+
+    // the error struct
+    assert!(src.contains("pub struct Rejected {"));
+    // per-function enum from the throw ordinal
+    assert!(src.contains("pub enum ChatSendError {\n    Rejected(Rejected),\n}"));
+    // a non-throwing function still gets an (empty) enum
+    assert!(src.contains("pub enum ChatPingError {\n}"));
+    // per-protocol union + From impl
+    assert!(src.contains("pub enum ChatError {\n    Rejected(Rejected),\n}"));
+    assert!(src.contains("impl From<ChatSendError> for ChatError"));
+    // dispatcher encodes the error at its ordinal
+    assert!(src.contains("Envelope::encode_err(0u16, &body, out);"));
+    // client maps that ordinal back
+    assert!(src.contains("Envelope::Err { id: 0u16, body } =>"));
+    // zero-arg call sends `&()`
+    assert!(src.contains("self.0.call(1u16, &())"));
+    // unit / one-way returns render as `()`
+    assert!(src.contains("fn ping(&self) -> Result<(), ChatPingError>;"));
+    assert!(src.contains("fn send(&self, body: String) -> Result<(), ChatSendError>;"));
 }
 
 #[test]
