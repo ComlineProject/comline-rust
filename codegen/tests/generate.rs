@@ -193,7 +193,11 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
     assert!(src.contains("self.0.call(1u16, &())"));
     // unit / one-way returns render as `()`
     assert!(src.contains("fn ping(&self) -> Result<(), ChatPingError>;"));
-    assert!(src.contains("fn send(&self, body: String) -> Result<(), ChatSendError>;"));
+    // a `str` arg is borrowed: `&str` in the signature, `&'de str` in the
+    // params struct (decoded borrowed from the receive buffer)
+    assert!(src.contains("fn send(&self, body: &str) -> Result<(), ChatSendError>;"));
+    assert!(src.contains("pub struct ChatSendParams<'a> {\n    #[serde(borrow)]\n    pub body: &'a str,\n}"));
+    assert!(src.contains("pub fn send(&mut self, body: &str) -> Result<(), CallError<ChatSendError>>"));
 }
 
 #[test]

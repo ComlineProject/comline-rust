@@ -82,6 +82,17 @@ fn chat_schema() -> Vec<FrozenUnit> {
                     Some(KindValue::Namespaced("Message".into(), None)),
                     vec![0],
                 ),
+                // a `str` arg + a primitive: exercises the borrowed params
+                // struct (`&'de str`) alongside an owned field
+                function(
+                    "search",
+                    vec![
+                        arg("query", KindValue::Namespaced("string".into(), None)),
+                        arg("limit", KindValue::Primitive(Primitive::U32(None))),
+                    ],
+                    Some(KindValue::Namespaced("Message[]".into(), None)),
+                    vec![],
+                ),
                 function(
                     "history",
                     vec![arg("limit", KindValue::Primitive(Primitive::U32(None)))],
