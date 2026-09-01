@@ -20,7 +20,7 @@ use comline_codegen::{GenRequest, GeneratedFile, Mode, PackageMeta};
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "0501812f57817d7b11165bc6a24f54afa45acb16";
+const RUNTIME_REV: &str = "3689cfdc480dc6b183b8ca33ade0a3cdf1a0d97c";
 
 pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     match req.mode {
@@ -118,12 +118,23 @@ fn schema_source(units: &[FrozenUnit]) -> String {
         output.push_str(
             "use comline_runtime::client::Client;\n\
              use comline_runtime::contract::{\n    \
-                 BufMut, CallError, Dispatch, Envelope, Kind, RuntimeError, WireFormat,\n\
+                 BufMut, CallError, Dispatch, Envelope, Handshake, Kind, RuntimeError,\n    \
+                 WireFormat, FRAMING_DATAGRAM,\n\
              };\n\
+             use comline_runtime::serve::Server;\n\
              use comline_runtime::transport::Transport;\n",
         );
     }
     output.push('\n');
+
+    if has_protocol {
+        output.push_str(&format!(
+            "/// Fingerprint of the frozen IR this file was generated from — the two\n\
+             /// ends of a connection [`Handshake`] must agree on it.\n\
+             pub const IR_HASH: u64 = {:#018x};\n\n",
+            ir_hash(units)
+        ));
+    }
 
     for unit in units {
         match unit {
@@ -144,6 +155,20 @@ fn schema_source(units: &[FrozenUnit]) -> String {
     }
 
     output
+}
+
+/// A deterministic fingerprint of the schema's frozen units — FNV-1a over their
+/// `Debug` form. Stable for a given generator version; a generator bump changes
+/// it, which is correct (different codegen ⇒ a new handshake identity). A
+/// canonical cross-language hash from `core`'s CAS, threaded through
+/// `GenRequest`, is the eventual form.
+fn ir_hash(units: &[FrozenUnit]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in format!("{units:?}").as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
 }
 
 // ── data types ─────────────────────────────────────────────────────────────
@@ -419,6 +444,20 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
     l.push("    }".into());
     l.push("}".into());
     l.push(String::new());
+    l.push(format!("impl<S: {proto}> {proto}Dispatcher<S> {{"));
+    l.push("    /// Serve this protocol over `transport`, running the connection".into());
+    l.push("    /// handshake (`IR_HASH` + `format`'s name) against the peer first.".into());
+    l.push(
+        "    pub fn serve<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)".into(),
+    );
+    l.push("    -> Result<(), RuntimeError> {".into());
+    l.push(
+        "        let hs = Handshake::new(IR_HASH, format.name(), FRAMING_DATAGRAM, 0);".into(),
+    );
+    l.push("        Server::new(self, format).serve_handshaked(transport, hs)".into());
+    l.push("    }".into());
+    l.push("}".into());
+    l.push(String::new());
     l.push(String::new());
     s.push_str(&l.join("\n"));
 
@@ -431,6 +470,16 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
     ));
     l.push("    pub fn new(client: Client<T, W>) -> Self {".into());
     l.push("        Self(client)".into());
+    l.push("    }".into());
+    l.push(String::new());
+    l.push("    /// Bind + run the connection handshake against the provider.".into());
+    l.push(
+        "    pub fn connect(transport: T, format: W) -> Result<Self, RuntimeError> {".into(),
+    );
+    l.push(
+        "        let hs = Handshake::new(IR_HASH, format.name(), FRAMING_DATAGRAM, 0);".into(),
+    );
+    l.push("        Ok(Self(Client::connect(transport, format, hs)?))".into());
     l.push("    }".into());
     for (i, f) in fns.iter().enumerate() {
         let args = sig_args(&f.args);
