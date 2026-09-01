@@ -20,7 +20,7 @@ use comline_codegen::{GenRequest, GeneratedFile, Mode, PackageMeta};
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "3689cfdc480dc6b183b8ca33ade0a3cdf1a0d97c";
+const RUNTIME_REV: &str = "0dda42de5105e75e339bf66fa38085bd53ab9ab9";
 
 pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     match req.mode {
@@ -118,7 +118,7 @@ fn schema_source(units: &[FrozenUnit]) -> String {
         output.push_str(
             "use comline_runtime::client::Client;\n\
              use comline_runtime::contract::{\n    \
-                 BufMut, CallError, Dispatch, Envelope, Handshake, Kind, RuntimeError,\n    \
+                 Call, CallError, Dispatch, Envelope, Handshake, Kind, Reply, RuntimeError,\n    \
                  WireFormat, FRAMING_DATAGRAM,\n\
              };\n\
              use comline_runtime::serve::Server;\n\
@@ -380,16 +380,24 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
     let mut l: Vec<String> = Vec::new();
     l.push(format!("pub struct {proto}Dispatcher<S>(pub S);"));
     l.push(String::new());
-    // `out` is only written by request/response arms; a protocol that is
-    // entirely one-way never touches it.
-    let out_param = if fns.iter().all(|f| f.one_way) { "_out" } else { "out" };
+    // `reply` is only touched by request/response arms; a protocol that is
+    // entirely one-way never records anything.
+    let reply_param = if fns.iter().all(|f| f.one_way) {
+        "_reply"
+    } else {
+        "reply"
+    };
     l.push(format!("impl<S: {proto}> Dispatch for {proto}Dispatcher<S> {{"));
+    l.push("    fn calls(&self) -> &'static [&'static str] {".into());
+    l.push(format!("        {calls_const}"));
+    l.push("    }".into());
+    l.push(String::new());
     l.push("    fn dispatch<W: WireFormat>(".into());
     l.push("        &self,".into());
     l.push("        call: Kind,".into());
     l.push("        params: &[u8],".into());
     l.push("        fmt: &W,".into());
-    l.push(format!("        {out_param}: &mut dyn BufMut,"));
+    l.push(format!("        {reply_param}: &mut Reply,"));
     l.push("    ) -> Result<(), RuntimeError> {".into());
     l.push(format!(
         "        match call.resolve({calls_const}).ok_or(RuntimeError::UnknownCall)? {{"
@@ -412,23 +420,21 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
         };
         let call = format!("self.0.{}({call_args})", f.name);
         if f.one_way {
-            // Run the handler; write no envelope — the `Server` sees the
-            // empty buffer and replies with nothing.
+            // Run the handler; record nothing — the `Server` sees `Outcome::None`
+            // and replies with nothing.
             l.push(format!("                {call};"));
         } else {
             l.push(format!("                match {call} {{"));
-            l.push("                    Ok(reply) => {".into());
+            l.push("                    Ok(value) => {".into());
             l.push("                        let mut body = Vec::new();".into());
-            l.push("                        fmt.encode(&reply, &mut body)?;".into());
-            l.push("                        Envelope::encode_ok(&body, out);".into());
+            l.push("                        fmt.encode(&value, &mut body)?;".into());
+            l.push("                        reply.ok(&body);".into());
             l.push("                    }".into());
             for (ord, err) in &f.throws {
                 l.push(format!("                    Err({}::{err}(e)) => {{", f.err_ty));
                 l.push("                        let mut body = Vec::new();".into());
                 l.push("                        fmt.encode(&e, &mut body)?;".into());
-                l.push(format!(
-                    "                        Envelope::encode_err({ord}u16, &body, out);"
-                ));
+                l.push(format!("                        reply.err({ord}u16, &body);"));
                 l.push("                    }".into());
             }
             if f.throws.is_empty() {
@@ -495,6 +501,9 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
             }
             None => "&()".to_string(),
         };
+        // Both addresses — the framing picks (ordinal for datagram, name for
+        // a name-oriented framing like JSON-RPC).
+        let addr = format!("Call::new({i}, \"{}\")", f.name);
         l.push(String::new());
         if f.one_way {
             // Fire-and-forget: no reply, so no `CallError<E>`.
@@ -502,7 +511,7 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
                 "    pub fn {}(&mut self{args}) -> Result<(), RuntimeError> {{",
                 f.name
             ));
-            l.push(format!("        self.0.notify({i}u16, {param_expr})"));
+            l.push(format!("        self.0.notify({addr}, {param_expr})"));
             l.push("    }".into());
             continue;
         }
@@ -512,9 +521,9 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
         ));
         let call = match f.timeout_ms {
             Some(ms) => format!(
-                "self.0.call_with_timeout({i}u16, {param_expr}, core::time::Duration::from_millis({ms}))"
+                "self.0.call_with_timeout({addr}, {param_expr}, core::time::Duration::from_millis({ms}))"
             ),
-            None => format!("self.0.call({i}u16, {param_expr})"),
+            None => format!("self.0.call({addr}, {param_expr})"),
         };
         l.push(format!("        let (reply, fmt) = {call}?;"));
         l.push("        match reply {".into());
