@@ -20,7 +20,7 @@ use comline_codegen::{GenRequest, GeneratedFile, Mode, PackageMeta};
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "435b7e833f970fadf4edbedcade20037143713d5";
+const RUNTIME_REV: &str = "0501812f57817d7b11165bc6a24f54afa45acb16";
 
 pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     match req.mode {
@@ -240,6 +240,9 @@ struct FnInfo {
     /// explicit `-> ()` (`KindValue::Unit`) is *not* this — it's a normal
     /// request/response with an empty ack (§4.4).
     one_way: bool,
+    /// `@timeout_ms = N` on the function — the client method calls
+    /// `Client::call_with_timeout` with `Duration::from_millis(N)`.
+    timeout_ms: Option<u64>,
 }
 
 fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>) -> String {
@@ -248,11 +251,14 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
         .filter_map(|f| match f {
             FrozenUnit::Function {
                 name,
+                parameters,
                 arguments,
                 _return,
                 throws,
                 ..
-            } => Some(fn_info(proto, name, arguments, _return, throws, errors)),
+            } => Some(fn_info(
+                proto, name, parameters, arguments, _return, throws, errors,
+            )),
             _ => None,
         })
         .collect();
@@ -455,9 +461,13 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
             "    pub fn {}(&mut self{args}) -> Result<{}, CallError<{}>> {{",
             f.name, f.ret, f.err_ty
         ));
-        l.push(format!(
-            "        let (reply, fmt) = self.0.call({i}u16, {param_expr})?;"
-        ));
+        let call = match f.timeout_ms {
+            Some(ms) => format!(
+                "self.0.call_with_timeout({i}u16, {param_expr}, core::time::Duration::from_millis({ms}))"
+            ),
+            None => format!("self.0.call({i}u16, {param_expr})"),
+        };
+        l.push(format!("        let (reply, fmt) = {call}?;"));
         l.push("        match reply {".into());
         l.push(
             "            Envelope::Ok(payload) => fmt.decode(payload).map_err(CallError::Runtime),"
@@ -490,12 +500,14 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
 fn fn_info(
     proto: &str,
     name: &str,
+    parameters: &[FrozenUnit],
     arguments: &[FrozenArgument],
     ret: &Option<KindValue>,
     throws: &[u16],
     errors: &HashMap<u16, String>,
 ) -> FnInfo {
     let pascal_fn = pascal(name);
+    let timeout_ms = annotation(parameters, "timeout_ms").and_then(|v| v.parse::<u64>().ok());
     let args: Vec<Arg> = arguments
         .iter()
         .map(|a| {
@@ -541,7 +553,17 @@ fn fn_info(
         err_ty: format!("{proto}{pascal_fn}Error"),
         throws,
         one_way,
+        timeout_ms,
     }
+}
+
+/// The value of a scalar `@key = value` annotation (frozen as
+/// `FrozenUnit::Property`), by key.
+fn annotation<'a>(parameters: &'a [FrozenUnit], key: &str) -> Option<&'a str> {
+    parameters.iter().find_map(|p| match p {
+        FrozenUnit::Property { name, expression } if name == key => expression.as_deref(),
+        _ => None,
+    })
 }
 
 /// `(signature type, params-struct field type)` for a function argument.

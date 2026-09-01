@@ -220,6 +220,48 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
 }
 
 #[test]
+fn timeout_ms_annotation_emits_call_with_timeout() {
+    let proto = FrozenUnit::Protocol {
+        docstring: "Api".to_string(),
+        parameters: vec![],
+        name: "Api".to_string(),
+        functions: vec![
+            // @timeout_ms = 2500
+            FrozenUnit::Function {
+                docstring: String::new(),
+                name: "slow".to_string(),
+                parameters: vec![FrozenUnit::Property {
+                    name: "timeout_ms".to_string(),
+                    expression: Some("2500".to_string()),
+                }],
+                arguments: vec![],
+                _return: Some(KindValue::Primitive(Primitive::U32(None))),
+                throws: vec![],
+                span: (0, 0),
+            },
+            // no annotation
+            FrozenUnit::Function {
+                docstring: String::new(),
+                name: "fast".to_string(),
+                parameters: vec![],
+                arguments: vec![],
+                _return: Some(KindValue::Primitive(Primitive::U32(None))),
+                throws: vec![],
+                span: (0, 0),
+            },
+        ],
+        span: (0, 0),
+    };
+    let schemas = vec![("api".to_string(), vec![proto])];
+    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+
+    assert!(src.contains(
+        "self.0.call_with_timeout(0u16, &(), core::time::Duration::from_millis(2500))?;"
+    ));
+    assert!(src.contains("self.0.call(1u16, &())?;"));
+}
+
+#[test]
 fn an_all_one_way_protocol_leaves_the_dispatch_out_param_unbound() {
     let proto = FrozenUnit::Protocol {
         docstring: "Bus".to_string(),
