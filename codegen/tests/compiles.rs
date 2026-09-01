@@ -120,9 +120,41 @@ fn chat_schema() -> Vec<FrozenUnit> {
     ]
 }
 
+/// A protocol annotated `@framing = "jsonrpc"` — its generated `connect` /
+/// `serve` helpers must compile against `comline_runtime::framing::JsonRpcFraming`
+/// and the `Client<T, W, JsonRpcFraming>` alias.
+fn rpc_schema() -> Vec<FrozenUnit> {
+    vec![FrozenUnit::Protocol {
+        docstring: "Rpc".into(),
+        parameters: vec![FrozenUnit::Property {
+            name: "framing".into(),
+            expression: Some("jsonrpc".into()),
+        }],
+        name: "Rpc".into(),
+        functions: vec![
+            function(
+                "echo",
+                vec![arg("line", KindValue::Namespaced("string".into(), None))],
+                Some(KindValue::Namespaced("string".into(), None)),
+                vec![],
+            ),
+            function(
+                "tick",
+                vec![],
+                Some(KindValue::Primitive(Primitive::U32(None))),
+                vec![],
+            ),
+        ],
+        span: (0, 0),
+    }]
+}
+
 #[test]
 fn a_generated_protocol_crate_builds() {
-    let schemas = vec![("chat".to_string(), chat_schema())];
+    let schemas = vec![
+        ("chat".to_string(), chat_schema()),
+        ("rpc".to_string(), rpc_schema()),
+    ];
     let req = GenRequest {
         mode: Mode::Lib,
         schemas: &schemas,

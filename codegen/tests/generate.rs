@@ -284,6 +284,48 @@ fn timeout_ms_annotation_emits_call_with_timeout() {
 }
 
 #[test]
+fn framing_annotation_selects_jsonrpc_for_the_connect_and_serve_helpers() {
+    // @framing = "jsonrpc" protocol Rpc { function now() -> u32; }
+    let proto = FrozenUnit::Protocol {
+        docstring: "Rpc".to_string(),
+        parameters: vec![FrozenUnit::Property {
+            name: "framing".to_string(),
+            expression: Some("jsonrpc".to_string()),
+        }],
+        name: "Rpc".to_string(),
+        functions: vec![FrozenUnit::Function {
+            docstring: String::new(),
+            name: "now".to_string(),
+            parameters: vec![],
+            arguments: vec![],
+            _return: Some(KindValue::Primitive(Primitive::U32(None))),
+            throws: vec![],
+            span: (0, 0),
+        }],
+        span: (0, 0),
+    };
+    let schemas = vec![("rpc".to_string(), vec![proto])];
+    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+
+    // the `Framing` trait is in scope (the helpers call `framing.name()`)
+    assert!(src.contains("\n    Framing,\n"));
+    // the client wraps a `Client` pinned to the JSON-RPC framing
+    assert!(src.contains(
+        "pub struct RpcClient<T, W>(pub Client<T, W, comline_runtime::framing::JsonRpcFraming>);"
+    ));
+    // connect / serve pass the framing explicitly and hash its name
+    assert!(src.contains("let framing = comline_runtime::framing::JsonRpcFraming;"));
+    assert!(src.contains("let hs = Handshake::new(IR_HASH, format.name(), framing.name(), 0);"));
+    assert!(src.contains("Ok(Self(Client::connect_with_framing(transport, format, framing, hs)?))"));
+    assert!(
+        src.contains("Server::with_framing(self, format, framing).serve_handshaked(transport, hs)")
+    );
+    // the datagram default never appears for an all-JSON-RPC schema
+    assert!(!src.contains("FRAMING_DATAGRAM"));
+    assert!(!src.contains("Client::connect(transport, format, hs)"));
+}
+
+#[test]
 fn an_all_one_way_protocol_leaves_the_dispatch_reply_param_unbound() {
     let proto = FrozenUnit::Protocol {
         docstring: "Bus".to_string(),
