@@ -147,6 +147,7 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
         parameters: vec![],
         name: "Chat".to_string(),
         functions: vec![
+            // request/response with an empty ack (`-> ()`), and a `!`
             FrozenUnit::Function {
                 docstring: String::new(),
                 name: "send".to_string(),
@@ -156,7 +157,7 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
                     kind: KindValue::Namespaced("string".to_string(), None),
                     span: (0, 0),
                 }],
-                _return: None, // one-way today: empty ack
+                _return: Some(KindValue::Unit),
                 throws: vec![0],
                 span: (0, 0),
             },
@@ -167,6 +168,20 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
                 arguments: vec![],
                 _return: Some(KindValue::Unit),
                 throws: vec![],
+                span: (0, 0),
+            },
+            // one-way: no `->` at all
+            FrozenUnit::Function {
+                docstring: String::new(),
+                name: "poke".to_string(),
+                parameters: vec![],
+                arguments: vec![FrozenArgument {
+                    name: "note".to_string(),
+                    kind: KindValue::Namespaced("string".to_string(), None),
+                    span: (0, 0),
+                }],
+                _return: None,
+                throws: vec![], // a `!` on a one-way fn is dropped
                 span: (0, 0),
             },
         ],
@@ -180,7 +195,7 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
     assert!(src.contains("pub struct Rejected {"));
     // per-function enum from the throw ordinal
     assert!(src.contains("pub enum ChatSendError {\n    Rejected(Rejected),\n}"));
-    // a non-throwing function still gets an (empty) enum
+    // a non-throwing request/response function still gets an (empty) enum
     assert!(src.contains("pub enum ChatPingError {\n}"));
     // per-protocol union + From impl
     assert!(src.contains("pub enum ChatError {\n    Rejected(Rejected),\n}"));
@@ -189,15 +204,46 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
     assert!(src.contains("Envelope::encode_err(0u16, &body, out);"));
     // client maps that ordinal back
     assert!(src.contains("Envelope::Err { id: 0u16, body } =>"));
-    // zero-arg call sends `&()`
-    assert!(src.contains("self.0.call(1u16, &())"));
-    // unit / one-way returns render as `()`
+    // `-> ()` (Unit) is request/response with an empty ack
     assert!(src.contains("fn ping(&self) -> Result<(), ChatPingError>;"));
-    // a `str` arg is borrowed: `&str` in the signature, `&'de str` in the
-    // params struct (decoded borrowed from the receive buffer)
+    assert!(src.contains("self.0.call(1u16, &())"));
+    // a `str` arg is borrowed
     assert!(src.contains("fn send(&self, body: &str) -> Result<(), ChatSendError>;"));
     assert!(src.contains("pub struct ChatSendParams<'a> {\n    #[serde(borrow)]\n    pub body: &'a str,\n}"));
     assert!(src.contains("pub fn send(&mut self, body: &str) -> Result<(), CallError<ChatSendError>>"));
+
+    // one-way `poke`: no error enum, a plain trait method, a `notify` client
+    assert!(!src.contains("ChatPokeError"));
+    assert!(src.contains("fn poke(&self, note: &str);"));
+    assert!(src.contains("pub fn poke(&mut self, note: &str) -> Result<(), RuntimeError> {"));
+    assert!(src.contains("self.0.notify(2u16, &ChatPokeParams { note })"));
+}
+
+#[test]
+fn an_all_one_way_protocol_leaves_the_dispatch_out_param_unbound() {
+    let proto = FrozenUnit::Protocol {
+        docstring: "Bus".to_string(),
+        parameters: vec![],
+        name: "Bus".to_string(),
+        functions: vec![FrozenUnit::Function {
+            docstring: String::new(),
+            name: "emit".to_string(),
+            parameters: vec![],
+            arguments: vec![FrozenArgument {
+                name: "topic".to_string(),
+                kind: KindValue::Namespaced("string".to_string(), None),
+                span: (0, 0),
+            }],
+            _return: None,
+            throws: vec![],
+            span: (0, 0),
+        }],
+        span: (0, 0),
+    };
+    let schemas = vec![("bus".to_string(), vec![proto])];
+    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    assert!(src.contains("_out: &mut dyn BufMut,"));
+    assert!(!src.contains("\n        out: &mut dyn BufMut,"));
 }
 
 #[test]
