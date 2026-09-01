@@ -210,11 +210,27 @@ fn error_type_names(units: &[FrozenUnit]) -> HashMap<u16, String> {
         .collect()
 }
 
+struct Arg {
+    name: String,
+    /// The type in the provider trait / client signatures (`&str`, `u32`, `Msg`).
+    sig_ty: String,
+    /// The type in the params struct — `&'a str` where `sig_ty` is `&str`,
+    /// otherwise identical. The params struct decodes borrowed from the wire.
+    field_ty: String,
+}
+
+impl Arg {
+    fn borrows(&self) -> bool {
+        self.field_ty.contains("'a")
+    }
+}
+
 struct FnInfo {
     name: String,
     params_ty: Option<String>,
-    /// `(rust arg name, rust type)`, declaration order.
-    args: Vec<(String, String)>,
+    /// Whether the params struct needs a `<'a>` (any `&str` arg).
+    params_borrows: bool,
+    args: Vec<Arg>,
     ret: String,
     err_ty: String,
     /// `(ordinal, error struct type)` for each `!` on this function.
@@ -241,11 +257,15 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
     // 1. params struct per function that takes arguments
     for f in &fns {
         if let Some(ty) = &f.params_ty {
+            let lt = if f.params_borrows { "<'a>" } else { "" };
             s.push_str(&format!(
-                "#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {ty} {{\n"
+                "#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {ty}{lt} {{\n"
             ));
-            for (arg, arg_ty) in &f.args {
-                s.push_str(&format!("    pub {arg}: {arg_ty},\n"));
+            for arg in &f.args {
+                if arg.borrows() {
+                    s.push_str("    #[serde(borrow)]\n");
+                }
+                s.push_str(&format!("    pub {}: {},\n", arg.name, arg.field_ty));
             }
             s.push_str("}\n\n");
         }
@@ -298,7 +318,7 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
         let args = f
             .args
             .iter()
-            .map(|(a, t)| format!("{a}: {t}"))
+            .map(|a| format!("{}: {}", a.name, a.sig_ty))
             .collect::<Vec<_>>()
             .join(", ");
         let args = if args.is_empty() {
@@ -345,7 +365,7 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
                 let call_args = f
                     .args
                     .iter()
-                    .map(|(a, _)| format!("p.{a}"))
+                    .map(|a| format!("p.{}", a.name))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("self.0.{}({call_args})", f.name)
@@ -399,7 +419,7 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
         let sig_args = f
             .args
             .iter()
-            .map(|(a, t)| format!("{a}: {t}"))
+            .map(|a| format!("{}: {}", a.name, a.sig_ty))
             .collect::<Vec<_>>()
             .join(", ");
         let sig_args = if sig_args.is_empty() {
@@ -412,7 +432,7 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
                 let init = f
                     .args
                     .iter()
-                    .map(|(a, _)| a.clone())
+                    .map(|a| a.name.clone())
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("&{ty} {{ {init} }}")
@@ -465,10 +485,18 @@ fn fn_info(
     errors: &HashMap<u16, String>,
 ) -> FnInfo {
     let pascal_fn = pascal(name);
-    let args: Vec<(String, String)> = arguments
+    let args: Vec<Arg> = arguments
         .iter()
-        .map(|a| (a.name.clone(), rust_type(&a.kind)))
+        .map(|a| {
+            let (sig_ty, field_ty) = arg_types(&a.kind);
+            Arg {
+                name: a.name.clone(),
+                sig_ty,
+                field_ty,
+            }
+        })
         .collect();
+    let params_borrows = args.iter().any(Arg::borrows);
     let params_ty = if args.is_empty() {
         None
     } else {
@@ -493,10 +521,23 @@ fn fn_info(
     FnInfo {
         name: name.to_string(),
         params_ty,
+        params_borrows,
         args,
         ret,
         err_ty: format!("{proto}{pascal_fn}Error"),
         throws,
+    }
+}
+
+/// `(signature type, params-struct field type)` for a function argument.
+/// A `str` / `string` arg is passed by reference and decoded borrowed from
+/// the receive buffer; everything else is owned (borrowed arrays / nested
+/// borrowed structs are a follow-up).
+fn arg_types(kind: &KindValue) -> (String, String) {
+    let owned = rust_type(kind);
+    match owned.as_str() {
+        "String" => ("&str".to_string(), "&'a str".to_string()),
+        _ => (owned.clone(), owned),
     }
 }
 
