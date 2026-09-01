@@ -121,6 +121,25 @@ fn code_mode_generates_enum_and_protocol() {
     assert!(src.contains(
         "pub fn get_user(&mut self, id: i32) -> Result<User, CallError<UserServiceGetUserError>>"
     ));
+    // handshake: an IR fingerprint + connect / serve helpers
+    assert!(src.contains("pub const IR_HASH: u64 = 0x"));
+    assert!(src.contains("pub fn connect(transport: T, format: W) -> Result<Self, RuntimeError>"));
+    assert!(src.contains(
+        "let hs = Handshake::new(IR_HASH, format.name(), FRAMING_DATAGRAM, 0);"
+    ));
+    assert!(src.contains("impl<S: UserService> UserServiceDispatcher<S> {"));
+    assert!(src.contains(
+        "pub fn serve<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)"
+    ));
+    assert!(src.contains("Server::new(self, format).serve_handshaked(transport, hs)"));
+}
+
+#[test]
+fn a_schema_without_a_protocol_has_no_ir_hash() {
+    let schemas = vec![("plain".to_string(), vec![user_struct()])];
+    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    assert!(!src.contains("IR_HASH"));
+    assert!(!src.contains("comline_runtime"));
 }
 
 #[test]
