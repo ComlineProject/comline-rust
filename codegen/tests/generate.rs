@@ -219,13 +219,16 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
     // per-protocol union + From impl
     assert!(src.contains("pub enum ChatError {\n    Rejected(Rejected),\n}"));
     assert!(src.contains("impl From<ChatSendError> for ChatError"));
-    // dispatcher encodes the error at its ordinal
-    assert!(src.contains("Envelope::encode_err(0u16, &body, out);"));
+    // dispatcher records the error at its ordinal on the framing-agnostic Reply
+    assert!(src.contains("reply.err(0u16, &body);"));
+    assert!(src.contains("reply.ok(&body);"));
+    assert!(src.contains("fn calls(&self) -> &'static [&'static str] {"));
     // client maps that ordinal back
     assert!(src.contains("Envelope::Err { id: 0u16, body } =>"));
     // `-> ()` (Unit) is request/response with an empty ack
     assert!(src.contains("fn ping(&self) -> Result<(), ChatPingError>;"));
-    assert!(src.contains("self.0.call(1u16, &())"));
+    // both addresses on the wire; the framing picks
+    assert!(src.contains(r#"self.0.call(Call::new(1, "ping"), &())"#));
     // a `str` arg is borrowed
     assert!(src.contains("fn send(&self, body: &str) -> Result<(), ChatSendError>;"));
     assert!(src.contains("pub struct ChatSendParams<'a> {\n    #[serde(borrow)]\n    pub body: &'a str,\n}"));
@@ -235,7 +238,7 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
     assert!(!src.contains("ChatPokeError"));
     assert!(src.contains("fn poke(&self, note: &str);"));
     assert!(src.contains("pub fn poke(&mut self, note: &str) -> Result<(), RuntimeError> {"));
-    assert!(src.contains("self.0.notify(2u16, &ChatPokeParams { note })"));
+    assert!(src.contains(r#"self.0.notify(Call::new(2, "poke"), &ChatPokeParams { note })"#));
 }
 
 #[test]
@@ -275,13 +278,13 @@ fn timeout_ms_annotation_emits_call_with_timeout() {
     let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
 
     assert!(src.contains(
-        "self.0.call_with_timeout(0u16, &(), core::time::Duration::from_millis(2500))?;"
+        r#"self.0.call_with_timeout(Call::new(0, "slow"), &(), core::time::Duration::from_millis(2500))?;"#
     ));
-    assert!(src.contains("self.0.call(1u16, &())?;"));
+    assert!(src.contains(r#"self.0.call(Call::new(1, "fast"), &())?;"#));
 }
 
 #[test]
-fn an_all_one_way_protocol_leaves_the_dispatch_out_param_unbound() {
+fn an_all_one_way_protocol_leaves_the_dispatch_reply_param_unbound() {
     let proto = FrozenUnit::Protocol {
         docstring: "Bus".to_string(),
         parameters: vec![],
@@ -303,8 +306,8 @@ fn an_all_one_way_protocol_leaves_the_dispatch_out_param_unbound() {
     };
     let schemas = vec![("bus".to_string(), vec![proto])];
     let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
-    assert!(src.contains("_out: &mut dyn BufMut,"));
-    assert!(!src.contains("\n        out: &mut dyn BufMut,"));
+    assert!(src.contains("_reply: &mut Reply,"));
+    assert!(!src.contains("\n        reply: &mut Reply,"));
 }
 
 #[test]
