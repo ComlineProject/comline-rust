@@ -20,7 +20,7 @@ use comline_codegen::{GenRequest, GeneratedFile, Mode, PackageMeta};
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "93af95d7f5944ceb65051d1236843b0daa2aa1f0";
+const RUNTIME_REV: &str = "435b7e833f970fadf4edbedcade20037143713d5";
 
 pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     match req.mode {
@@ -235,6 +235,11 @@ struct FnInfo {
     err_ty: String,
     /// `(ordinal, error struct type)` for each `!` on this function.
     throws: Vec<(u16, String)>,
+    /// `_return: None` — fire-and-forget: `Client::notify`, the dispatcher
+    /// writes no envelope, the trait method returns `()` with no error. An
+    /// explicit `-> ()` (`KindValue::Unit`) is *not* this — it's a normal
+    /// request/response with an empty ack (§4.4).
+    one_way: bool,
 }
 
 fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>) -> String {
@@ -271,8 +276,12 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
         }
     }
 
-    // 2. one schema-only error enum per function (empty when it throws nothing)
+    // 2. one schema-only error enum per request/response function (empty when
+    //    it throws nothing). One-way functions have no error channel.
     for f in &fns {
+        if f.one_way {
+            continue;
+        }
         s.push_str(&format!(
             "#[derive(Debug, Clone, PartialEq)]\npub enum {} {{\n",
             f.err_ty
@@ -315,21 +324,15 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
     // 3. provider trait + the call table
     s.push_str(&format!("pub trait {proto} {{\n"));
     for f in &fns {
-        let args = f
-            .args
-            .iter()
-            .map(|a| format!("{}: {}", a.name, a.sig_ty))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let args = if args.is_empty() {
-            String::new()
+        let args = sig_args(&f.args);
+        if f.one_way {
+            s.push_str(&format!("    fn {}(&self{args});\n", f.name));
         } else {
-            format!(", {args}")
-        };
-        s.push_str(&format!(
-            "    fn {}(&self{args}) -> Result<{}, {}>;\n",
-            f.name, f.ret, f.err_ty
-        ));
+            s.push_str(&format!(
+                "    fn {}(&self{args}) -> Result<{}, {}>;\n",
+                f.name, f.ret, f.err_ty
+            ));
+        }
     }
     s.push_str("}\n\n");
 
@@ -346,54 +349,62 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
     let mut l: Vec<String> = Vec::new();
     l.push(format!("pub struct {proto}Dispatcher<S>(pub S);"));
     l.push(String::new());
+    // `out` is only written by request/response arms; a protocol that is
+    // entirely one-way never touches it.
+    let out_param = if fns.iter().all(|f| f.one_way) { "_out" } else { "out" };
     l.push(format!("impl<S: {proto}> Dispatch for {proto}Dispatcher<S> {{"));
     l.push("    fn dispatch<W: WireFormat>(".into());
     l.push("        &self,".into());
     l.push("        call: Kind,".into());
     l.push("        params: &[u8],".into());
     l.push("        fmt: &W,".into());
-    l.push("        out: &mut dyn BufMut,".into());
+    l.push(format!("        {out_param}: &mut dyn BufMut,"));
     l.push("    ) -> Result<(), RuntimeError> {".into());
     l.push(format!(
         "        match call.resolve({calls_const}).ok_or(RuntimeError::UnknownCall)? {{"
     ));
     for (i, f) in fns.iter().enumerate() {
         l.push(format!("            {i} => {{"));
-        let recv = match &f.params_ty {
+        let call_args = match &f.params_ty {
             Some(ty) => {
                 l.push(format!("                let p: {ty} = fmt.decode(params)?;"));
-                let call_args = f
-                    .args
+                f.args
                     .iter()
                     .map(|a| format!("p.{}", a.name))
                     .collect::<Vec<_>>()
-                    .join(", ");
-                format!("self.0.{}({call_args})", f.name)
+                    .join(", ")
             }
             None => {
                 l.push("                let _: () = fmt.decode(params)?;".into());
-                format!("self.0.{}()", f.name)
+                String::new()
             }
         };
-        l.push(format!("                match {recv} {{"));
-        l.push("                    Ok(reply) => {".into());
-        l.push("                        let mut body = Vec::new();".into());
-        l.push("                        fmt.encode(&reply, &mut body)?;".into());
-        l.push("                        Envelope::encode_ok(&body, out);".into());
-        l.push("                    }".into());
-        for (ord, err) in &f.throws {
-            l.push(format!("                    Err({}::{err}(e)) => {{", f.err_ty));
+        let call = format!("self.0.{}({call_args})", f.name);
+        if f.one_way {
+            // Run the handler; write no envelope — the `Server` sees the
+            // empty buffer and replies with nothing.
+            l.push(format!("                {call};"));
+        } else {
+            l.push(format!("                match {call} {{"));
+            l.push("                    Ok(reply) => {".into());
             l.push("                        let mut body = Vec::new();".into());
-            l.push("                        fmt.encode(&e, &mut body)?;".into());
-            l.push(format!(
-                "                        Envelope::encode_err({ord}u16, &body, out);"
-            ));
+            l.push("                        fmt.encode(&reply, &mut body)?;".into());
+            l.push("                        Envelope::encode_ok(&body, out);".into());
             l.push("                    }".into());
+            for (ord, err) in &f.throws {
+                l.push(format!("                    Err({}::{err}(e)) => {{", f.err_ty));
+                l.push("                        let mut body = Vec::new();".into());
+                l.push("                        fmt.encode(&e, &mut body)?;".into());
+                l.push(format!(
+                    "                        Envelope::encode_err({ord}u16, &body, out);"
+                ));
+                l.push("                    }".into());
+            }
+            if f.throws.is_empty() {
+                l.push("                    Err(never) => match never {},".into());
+            }
+            l.push("                }".into());
         }
-        if f.throws.is_empty() {
-            l.push("                    Err(never) => match never {},".into());
-        }
-        l.push("                }".into());
         l.push("                Ok(())".into());
         l.push("            }".into());
     }
@@ -416,17 +427,7 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
     l.push("        Self(client)".into());
     l.push("    }".into());
     for (i, f) in fns.iter().enumerate() {
-        let sig_args = f
-            .args
-            .iter()
-            .map(|a| format!("{}: {}", a.name, a.sig_ty))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sig_args = if sig_args.is_empty() {
-            String::new()
-        } else {
-            format!(", {sig_args}")
-        };
+        let args = sig_args(&f.args);
         let param_expr = match &f.params_ty {
             Some(ty) => {
                 let init = f
@@ -440,8 +441,18 @@ fn protocol(proto: &str, functions: &[FrozenUnit], errors: &HashMap<u16, String>
             None => "&()".to_string(),
         };
         l.push(String::new());
+        if f.one_way {
+            // Fire-and-forget: no reply, so no `CallError<E>`.
+            l.push(format!(
+                "    pub fn {}(&mut self{args}) -> Result<(), RuntimeError> {{",
+                f.name
+            ));
+            l.push(format!("        self.0.notify({i}u16, {param_expr})"));
+            l.push("    }".into());
+            continue;
+        }
         l.push(format!(
-            "    pub fn {}(&mut self{sig_args}) -> Result<{}, CallError<{}>> {{",
+            "    pub fn {}(&mut self{args}) -> Result<{}, CallError<{}>> {{",
             f.name, f.ret, f.err_ty
         ));
         l.push(format!(
@@ -502,10 +513,13 @@ fn fn_info(
     } else {
         Some(format!("{proto}{pascal_fn}Params"))
     };
+    let one_way = ret.is_none();
     let ret = match ret {
         None | Some(KindValue::Unit) => "()".to_string(),
         Some(kv) => rust_type(kv),
     };
+    // A one-way function carries no `!` (nowhere to deliver it); ignore any.
+    let throws: &[u16] = if one_way { &[] } else { throws };
     let throws: Vec<(u16, String)> = throws
         .iter()
         .map(|ord| {
@@ -526,6 +540,7 @@ fn fn_info(
         ret,
         err_ty: format!("{proto}{pascal_fn}Error"),
         throws,
+        one_way,
     }
 }
 
@@ -542,6 +557,20 @@ fn arg_types(kind: &KindValue) -> (String, String) {
 }
 
 // ── name / type helpers ────────────────────────────────────────────────────
+
+/// The `, name: ty, name: ty` suffix for a method taking `args` after `&self`
+/// / `&mut self` — empty when there are none.
+fn sig_args(args: &[Arg]) -> String {
+    if args.is_empty() {
+        return String::new();
+    }
+    let list = args
+        .iter()
+        .map(|a| format!("{}: {}", a.name, a.sig_ty))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(", {list}")
+}
 
 fn pascal(s: &str) -> String {
     s.split('_')
