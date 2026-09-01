@@ -101,6 +101,19 @@ fn chat_schema() -> Vec<FrozenUnit> {
                 ),
                 function("wipe", vec![], Some(KindValue::Unit), vec![]),
                 function("poke", vec![], None, vec![]),
+                // @timeout_ms = 3000 → the client emits `call_with_timeout`
+                FrozenUnit::Function {
+                    docstring: String::new(),
+                    parameters: vec![FrozenUnit::Property {
+                        name: "timeout_ms".into(),
+                        expression: Some("3000".into()),
+                    }],
+                    name: "await_ack".into(),
+                    arguments: vec![arg("token", KindValue::Namespaced("string".into(), None))],
+                    _return: Some(KindValue::Unit),
+                    throws: vec![],
+                    span: (0, 0),
+                },
             ],
             span: (0, 0),
         },
