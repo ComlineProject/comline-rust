@@ -87,7 +87,7 @@ fn code_mode_generates_enum_and_protocol() {
         functions: vec![FrozenUnit::Function {
             docstring: String::new(),
             name: "get_user".to_string(),
-            synchronous: true,
+            parameters: vec![],
             arguments: vec![FrozenArgument {
                 name: "id".to_string(),
                 kind: KindValue::Primitive(Primitive::S32(None)),
