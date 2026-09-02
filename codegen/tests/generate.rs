@@ -8,6 +8,7 @@ fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
         mode: Mode::Code,
         schemas,
         package: PackageMeta { name: "test".into(), version: "0.1.0".into() },
+        default_framing: None,
     }
 }
 
@@ -16,6 +17,7 @@ fn lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
         mode: Mode::Lib,
         schemas,
         package: PackageMeta { name: "chat".into(), version: "0.3.0".into() },
+        default_framing: None,
     }
 }
 
@@ -323,6 +325,70 @@ fn framing_annotation_selects_jsonrpc_for_the_connect_and_serve_helpers() {
     // the datagram default never appears for an all-JSON-RPC schema
     assert!(!src.contains("FRAMING_DATAGRAM"));
     assert!(!src.contains("Client::connect(transport, format, hs)"));
+}
+
+/// A protocol with no `@framing` of its own, plus a plain (annotated) one for
+/// contrast.
+fn one_plain_protocol(name: &str) -> Vec<FrozenUnit> {
+    vec![FrozenUnit::Protocol {
+        docstring: name.to_string(),
+        parameters: vec![],
+        name: name.to_string(),
+        functions: vec![FrozenUnit::Function {
+            docstring: String::new(),
+            name: "now".to_string(),
+            parameters: vec![],
+            arguments: vec![],
+            _return: Some(KindValue::Primitive(Primitive::U32(None))),
+            throws: vec![],
+            span: (0, 0),
+        }],
+        span: (0, 0),
+    }]
+}
+
+#[test]
+fn package_default_framing_applies_when_a_protocol_has_no_annotation() {
+    let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
+    let req = GenRequest {
+        default_framing: Some("jsonrpc".to_string()),
+        ..code_req(&schemas)
+    };
+    let src = generate_rust(&req).unwrap().remove(0).contents;
+
+    assert!(src.contains(
+        "pub struct RpcClient<T, W>(pub Client<T, W, comline_runtime::framing::JsonRpcFraming>);"
+    ));
+    assert!(src.contains("Server::with_framing(self, format, framing).serve_handshaked"));
+    assert!(!src.contains("FRAMING_DATAGRAM"));
+}
+
+#[test]
+fn an_explicit_datagram_annotation_opts_out_of_the_package_default() {
+    // @framing = "datagram" on the protocol, package default is jsonrpc.
+    let mut units = one_plain_protocol("Rpc");
+    if let FrozenUnit::Protocol { parameters, .. } = &mut units[0] {
+        parameters.push(FrozenUnit::Property {
+            name: "framing".to_string(),
+            expression: Some("datagram".to_string()),
+        });
+    }
+    let schemas = vec![("rpc".to_string(), units)];
+    let with_default = GenRequest {
+        default_framing: Some("jsonrpc".to_string()),
+        ..code_req(&schemas)
+    };
+    let src = generate_rust(&with_default).unwrap().remove(0).contents;
+
+    // the datagram stack — the `@framing = "datagram"` opt-out beats the
+    // `jsonrpc` package default (the `IR_HASH` still moves: the annotation is
+    // part of the frozen IR)
+    assert!(!src.contains("JsonRpcFraming"));
+    assert!(!src.contains("Framing,")); // trait not imported
+    assert!(src.contains("pub struct RpcClient<T, W>(pub Client<T, W>);"));
+    assert!(src.contains("let hs = Handshake::new(IR_HASH, format.name(), FRAMING_DATAGRAM, 0);"));
+    assert!(src.contains("Server::new(self, format).serve_handshaked(transport, hs)"));
+    assert!(src.contains("Ok(Self(Client::connect(transport, format, hs)?))"));
 }
 
 #[test]
