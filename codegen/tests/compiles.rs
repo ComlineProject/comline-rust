@@ -52,7 +52,9 @@ fn function(
 
 /// A schema with a struct, an `error`, and a protocol exercising: a throwing
 /// call, a non-throwing call returning a list, a zero-arg call, and a
-/// `KindValue::Unit` return.
+/// `KindValue::Unit` return. `@framing = "datagram"` keeps it on the datagram
+/// stack even though the compile test sets a `jsonrpc` package default — so the
+/// datagram path (with all this machinery) still gets built.
 fn chat_schema() -> Vec<FrozenUnit> {
     vec![
         FrozenUnit::Struct {
@@ -73,7 +75,10 @@ fn chat_schema() -> Vec<FrozenUnit> {
         },
         FrozenUnit::Protocol {
             docstring: "Chat".into(),
-            parameters: vec![],
+            parameters: vec![FrozenUnit::Property {
+                name: "framing".into(),
+                expression: Some("datagram".into()),
+            }],
             name: "Chat".into(),
             functions: vec![
                 function(
@@ -149,11 +154,29 @@ fn rpc_schema() -> Vec<FrozenUnit> {
     }]
 }
 
+/// A plain protocol with no `@framing` — it rides the `jsonrpc` package default
+/// the test sets, so the default-driven JSON-RPC output also gets compiled.
+fn rpc_default_schema() -> Vec<FrozenUnit> {
+    vec![FrozenUnit::Protocol {
+        docstring: "Clock".into(),
+        parameters: vec![],
+        name: "Clock".into(),
+        functions: vec![function(
+            "now",
+            vec![arg("tz", KindValue::Namespaced("string".into(), None))],
+            Some(KindValue::Primitive(Primitive::U64(None))),
+            vec![],
+        )],
+        span: (0, 0),
+    }]
+}
+
 #[test]
 fn a_generated_protocol_crate_builds() {
     let schemas = vec![
         ("chat".to_string(), chat_schema()),
         ("rpc".to_string(), rpc_schema()),
+        ("clock".to_string(), rpc_default_schema()),
     ];
     let req = GenRequest {
         mode: Mode::Lib,
@@ -162,6 +185,9 @@ fn a_generated_protocol_crate_builds() {
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
+        // `chat` opts back to datagram with `@framing = "datagram"`; `clock`
+        // (unannotated) takes this default; `rpc` names `jsonrpc` itself.
+        default_framing: Some("jsonrpc".into()),
     };
     let files = generate_rust(&req).expect("generation");
 

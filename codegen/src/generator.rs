@@ -23,13 +23,14 @@ const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
 const RUNTIME_REV: &str = "0dda42de5105e75e339bf66fa38085bd53ab9ab9";
 
 pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
+    let default_framing = req.default_framing.as_deref();
     match req.mode {
         Mode::Code => Ok(req
             .schemas
             .iter()
             .map(|(namespace, units)| GeneratedFile {
                 path: PathBuf::from(format!("{namespace}.rs")),
-                contents: schema_source(units),
+                contents: schema_source(units, default_framing),
             })
             .collect()),
 
@@ -54,7 +55,7 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
             for (namespace, units) in req.schemas {
                 files.push(GeneratedFile {
                     path: PathBuf::from(format!("src/{namespace}.rs")),
-                    contents: schema_source(units),
+                    contents: schema_source(units, default_framing),
                 });
             }
             Ok(files)
@@ -107,7 +108,7 @@ fn lib_rs(schemas: &[(String, Vec<FrozenUnit>)]) -> String {
     s
 }
 
-fn schema_source(units: &[FrozenUnit]) -> String {
+fn schema_source(units: &[FrozenUnit], default_framing: Option<&str>) -> String {
     let has_protocol = units.iter().any(|u| matches!(u, FrozenUnit::Protocol { .. }));
     let errors = error_type_names(units);
 
@@ -116,7 +117,9 @@ fn schema_source(units: &[FrozenUnit]) -> String {
     // datagram default pulls in the `FRAMING_DATAGRAM` name constant.
     let protocol_framings = || {
         units.iter().filter_map(|u| match u {
-            FrozenUnit::Protocol { parameters, .. } => Some(framing_choice(parameters)),
+            FrozenUnit::Protocol { parameters, .. } => {
+                Some(framing_choice(parameters, default_framing))
+            }
             _ => None,
         })
     };
@@ -194,7 +197,13 @@ fn schema_source(units: &[FrozenUnit]) -> String {
                 parameters,
                 ..
             } => {
-                output.push_str(&protocol(name, functions, parameters, &errors));
+                output.push_str(&protocol(
+                    name,
+                    functions,
+                    parameters,
+                    default_framing,
+                    &errors,
+                ));
             }
             _ => {}
         }
@@ -326,28 +335,44 @@ struct FramingChoice {
     explicit: bool,
 }
 
-/// Read `@framing = "..."` off the protocol (frozen into its `parameters`).
-/// Absent / unrecognised ⇒ the datagram default.
-fn framing_choice(parameters: &[FrozenUnit]) -> FramingChoice {
-    match annotation(parameters, "framing") {
-        Some("jsonrpc") | Some("json-rpc") | Some("jsonrpc-2.0") => FramingChoice {
+/// The datagram default — the generated helpers use `Client::connect` /
+/// `Server::new` and the `Client` alias keeps its two type parameters.
+const DATAGRAM_FRAMING: FramingChoice = FramingChoice {
+    ty: "comline_runtime::contract::DatagramFraming",
+    explicit: false,
+};
+
+/// Map one framing name to a choice. `None` for a name this generator does not
+/// know (the caller falls through to the next level).
+fn framing_for(name: &str) -> Option<FramingChoice> {
+    match name {
+        "jsonrpc" | "json-rpc" | "jsonrpc-2.0" => Some(FramingChoice {
             ty: "comline_runtime::framing::JsonRpcFraming",
             explicit: true,
-        },
-        _ => FramingChoice {
-            ty: "comline_runtime::contract::DatagramFraming",
-            explicit: false,
-        },
+        }),
+        "datagram" | "comline.datagram" => Some(DATAGRAM_FRAMING),
+        _ => None,
     }
+}
+
+/// Resolve a protocol's framing, most specific first: its own `@framing`
+/// annotation, then the package `default_framing` (`comline.toml`), then the
+/// datagram default. An unrecognised name at either level falls through.
+fn framing_choice(parameters: &[FrozenUnit], default_framing: Option<&str>) -> FramingChoice {
+    annotation(parameters, "framing")
+        .and_then(framing_for)
+        .or_else(|| default_framing.and_then(framing_for))
+        .unwrap_or(DATAGRAM_FRAMING)
 }
 
 fn protocol(
     proto: &str,
     functions: &[FrozenUnit],
     parameters: &[FrozenUnit],
+    default_framing: Option<&str>,
     errors: &HashMap<u16, String>,
 ) -> String {
-    let framing = framing_choice(parameters);
+    let framing = framing_choice(parameters, default_framing);
     let fns: Vec<FnInfo> = functions
         .iter()
         .filter_map(|f| match f {
