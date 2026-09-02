@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use comline_core::schema::ir::compiler::interpreted::kind_search::KindValue;
+use comline_core::schema::ir::frozen::schema_ir_hash;
 use comline_core::schema::ir::frozen::unit::{FrozenArgument, FrozenUnit};
 
 use eyre::{bail, Result};
@@ -173,10 +174,10 @@ fn schema_source(units: &[FrozenUnit], default_framing: Option<&str>) -> String 
 
     if has_protocol {
         output.push_str(&format!(
-            "/// Fingerprint of the frozen IR this file was generated from — the two\n\
-             /// ends of a connection [`Handshake`] must agree on it.\n\
+            "/// Canonical digest of the frozen IR this file was generated from — the\n\
+             /// two ends of a connection [`Handshake`] must agree on it.\n\
              pub const IR_HASH: u64 = {:#018x};\n\n",
-            ir_hash(units)
+            schema_ir_hash(units)
         ));
     }
 
@@ -210,20 +211,6 @@ fn schema_source(units: &[FrozenUnit], default_framing: Option<&str>) -> String 
     }
 
     output
-}
-
-/// A deterministic fingerprint of the schema's frozen units — FNV-1a over their
-/// `Debug` form. Stable for a given generator version; a generator bump changes
-/// it, which is correct (different codegen ⇒ a new handshake identity). A
-/// canonical cross-language hash from `core`'s CAS, threaded through
-/// `GenRequest`, is the eventual form.
-fn ir_hash(units: &[FrozenUnit]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in format!("{units:?}").as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
 }
 
 // ── data types ─────────────────────────────────────────────────────────────
