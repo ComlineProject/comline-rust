@@ -192,6 +192,9 @@ fn schema_source(units: &[FrozenUnit], default_framing: Option<&str>) -> String 
             FrozenUnit::Error { name, fields, .. } => {
                 output.push_str(&error_struct(name, fields));
             }
+            FrozenUnit::TypeAlias { name, target, .. } => {
+                output.push_str(&type_alias(name, target));
+            }
             FrozenUnit::Protocol {
                 name,
                 functions,
@@ -238,6 +241,15 @@ fn data_struct(name: &str, fields: &[FrozenUnit]) -> String {
         "#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {name} {{\n{}}}\n\n",
         field_lines(fields)
     )
+}
+
+/// `type NAME = TARGET;` - transparent like Rust's own `type` (not a
+/// newtype): `rust_type` already maps any `KindValue` to a real Rust type
+/// expression, named or primitive, so this is the same mapping every field
+/// already goes through, just at the top level of the file instead of
+/// inside a struct.
+fn type_alias(name: &str, target: &KindValue) -> String {
+    format!("pub type {name} = {};\n\n", rust_type(target))
 }
 
 fn error_struct(name: &str, fields: &[FrozenUnit]) -> String {

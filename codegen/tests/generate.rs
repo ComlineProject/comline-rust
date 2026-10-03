@@ -137,6 +137,36 @@ fn code_mode_generates_enum_and_protocol() {
 }
 
 #[test]
+fn code_mode_emits_a_type_alias_and_fields_reference_it_by_name() {
+    let alias = FrozenUnit::TypeAlias {
+        docstring: None,
+        name: "UserId".to_string(),
+        target: KindValue::Namespaced("u64".to_string(), None),
+        span: (0, 0),
+    };
+    let user = FrozenUnit::Struct {
+        docstring: None,
+        parameters: vec![],
+        name: "Greeting".to_string(),
+        fields: vec![FrozenUnit::Field {
+            docstring: None,
+            parameters: vec![],
+            optional: false,
+            name: "sender".to_string(),
+            kind_value: KindValue::Namespaced("UserId".to_string(), None),
+            span: (0, 0),
+        }],
+        span: (0, 0),
+    };
+
+    let schemas = vec![("account".to_string(), vec![alias, user])];
+    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+
+    assert!(src.contains("pub type UserId = u64;"), "got: {src}");
+    assert!(src.contains("pub sender: UserId,"), "got: {src}");
+}
+
+#[test]
 fn a_schema_without_a_protocol_has_no_ir_hash() {
     let schemas = vec![("plain".to_string(), vec![user_struct()])];
     let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
