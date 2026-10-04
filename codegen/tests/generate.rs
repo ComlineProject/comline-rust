@@ -474,8 +474,68 @@ fn lib_mode_emits_a_crate() {
 }
 
 #[test]
-fn lib_mode_rejects_nested_namespaces() {
+fn lib_mode_nests_a_single_level() {
     let schemas = vec![("account/user".to_string(), vec![user_struct()])];
+    let files = generate_rust(&lib_req(&schemas)).unwrap();
+    let by_path = |p: &str| files.iter().find(|f| f.path.to_str().unwrap() == p);
+
+    let lib = &by_path("src/lib.rs").expect("src/lib.rs").contents;
+    assert!(lib.contains("pub mod account;"));
+
+    let account = &by_path("src/account.rs").expect("src/account.rs").contents;
+    assert!(account.contains("pub mod user;"));
+    // `account` is purely a grouping namespace here - its own file must
+    // not also carry `user`'s generated code.
+    assert!(!account.contains("pub struct User"));
+
+    let user = &by_path("src/account/user.rs").expect("src/account/user.rs").contents;
+    assert!(user.contains("pub struct User"));
+}
+
+#[test]
+fn lib_mode_nests_multiple_schemas_under_one_namespace() {
+    // The actual case that motivated this: comline-core's embedded std
+    // merges as `std/validators`, `std/http`, ... under one dependency.
+    let schemas = vec![
+        ("std/validators".to_string(), vec![user_struct()]),
+        ("std/http".to_string(), vec![]),
+    ];
+    let files = generate_rust(&lib_req(&schemas)).unwrap();
+    let by_path = |p: &str| files.iter().find(|f| f.path.to_str().unwrap() == p);
+
+    assert!(by_path("src/lib.rs").unwrap().contents.contains("pub mod std;"));
+
+    let std_mod = &by_path("src/std.rs").expect("src/std.rs").contents;
+    assert!(std_mod.contains("pub mod http;"));
+    assert!(std_mod.contains("pub mod validators;"));
+
+    assert!(by_path("src/std/validators.rs")
+        .expect("src/std/validators.rs")
+        .contents
+        .contains("pub struct User"));
+    assert!(by_path("src/std/http.rs").is_some());
+}
+
+#[test]
+fn lib_mode_nests_multiple_levels() {
+    let schemas = vec![("a/b/c".to_string(), vec![user_struct()])];
+    let files = generate_rust(&lib_req(&schemas)).unwrap();
+    let by_path = |p: &str| files.iter().find(|f| f.path.to_str().unwrap() == p);
+
+    assert!(by_path("src/lib.rs").unwrap().contents.contains("pub mod a;"));
+    assert!(by_path("src/a.rs").unwrap().contents.contains("pub mod b;"));
+    assert!(by_path("src/a/b.rs").unwrap().contents.contains("pub mod c;"));
+    assert!(by_path("src/a/b/c.rs").unwrap().contents.contains("pub struct User"));
+}
+
+#[test]
+fn lib_mode_rejects_a_namespace_thats_both_a_schema_and_a_parent() {
+    // `account` would need its own file to be *both* its generated code
+    // and `pub mod user;` - nowhere for one of them to go.
+    let schemas = vec![
+        ("account".to_string(), vec![user_struct()]),
+        ("account/user".to_string(), vec![]),
+    ];
     let err = generate_rust(&lib_req(&schemas)).unwrap_err().to_string();
-    assert!(err.contains("nested namespaces"));
+    assert!(err.contains("account"), "{err}");
 }
