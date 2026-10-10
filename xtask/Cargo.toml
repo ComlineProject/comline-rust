@@ -1,0 +1,14 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# Same rev `codegen` pins, so this tool and the generator it drives agree on
+# one `comline-core` - see codegen/Cargo.toml's own comment.
+comline-core = { git = "https://github.com/ComlineProject/core", rev = "6431e61a4f1073aceeaee7be7df83e6b77b2acd5" }
+comline-codegen = { git = "https://github.com/ComlineProject/generation", rev = "2b5c46eefab186d24f5e883cef3fa79e4cb83ffd" }
+comline-codegen-rust = { path = "../codegen" }
+
+eyre = "0.6.8"

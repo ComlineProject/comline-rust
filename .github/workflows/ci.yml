@@ -16,3 +16,5 @@ jobs:
       - run: rustup update stable && rustup default stable
       - run: cargo build --verbose
       - run: cargo test --verbose
+      - name: std-extra/ matches a fresh regen
+        run: cargo run -p xtask -- --check
