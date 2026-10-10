@@ -166,6 +166,7 @@ fn cargo_toml(pkg: &PackageMeta, has_protocol: bool) -> String {
 fn schema_source(units: &[FrozenUnit], default_framing: Option<&str>) -> String {
     let has_protocol = units.iter().any(|u| matches!(u, FrozenUnit::Protocol { .. }));
     let errors = error_type_names(units);
+    let imports = build_import_map(units);
 
     // Which framings the protocols in this file reach for. A non-datagram pick
     // pulls in the `Framing` trait (its helpers call `framing.name()`); the
@@ -238,16 +239,16 @@ fn schema_source(units: &[FrozenUnit], default_framing: Option<&str>) -> String 
     for unit in units {
         match unit {
             FrozenUnit::Struct { name, fields, .. } => {
-                output.push_str(&data_struct(name, fields));
+                output.push_str(&data_struct(name, fields, &imports));
             }
             FrozenUnit::Enum { name, variants, .. } => {
                 output.push_str(&data_enum(name, variants));
             }
             FrozenUnit::Error { name, fields, .. } => {
-                output.push_str(&error_struct(name, fields));
+                output.push_str(&error_struct(name, fields, &imports));
             }
             FrozenUnit::TypeAlias { name, target, .. } => {
-                output.push_str(&type_alias(name, target));
+                output.push_str(&type_alias(name, target, &imports));
             }
             FrozenUnit::Protocol {
                 name,
@@ -261,6 +262,7 @@ fn schema_source(units: &[FrozenUnit], default_framing: Option<&str>) -> String 
                     parameters,
                     default_framing,
                     &errors,
+                    &imports,
                 ));
             }
             _ => {}
@@ -272,7 +274,7 @@ fn schema_source(units: &[FrozenUnit], default_framing: Option<&str>) -> String 
 
 // ── data types ─────────────────────────────────────────────────────────────
 
-fn field_lines(fields: &[FrozenUnit]) -> String {
+fn field_lines(fields: &[FrozenUnit], imports: &HashMap<String, String>) -> String {
     let mut s = String::new();
     for field in fields {
         if let FrozenUnit::Field {
@@ -282,7 +284,7 @@ fn field_lines(fields: &[FrozenUnit]) -> String {
             ..
         } = field
         {
-            let ty = rust_type(kind_value);
+            let ty = rust_type(kind_value, imports);
             let ty = if *optional { format!("Option<{ty}>") } else { ty };
             s.push_str(&format!("    pub {name}: {ty},\n"));
         }
@@ -290,10 +292,10 @@ fn field_lines(fields: &[FrozenUnit]) -> String {
     s
 }
 
-fn data_struct(name: &str, fields: &[FrozenUnit]) -> String {
+fn data_struct(name: &str, fields: &[FrozenUnit], imports: &HashMap<String, String>) -> String {
     format!(
         "#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {name} {{\n{}}}\n\n",
-        field_lines(fields)
+        field_lines(fields, imports)
     )
 }
 
@@ -302,14 +304,14 @@ fn data_struct(name: &str, fields: &[FrozenUnit]) -> String {
 /// expression, named or primitive, so this is the same mapping every field
 /// already goes through, just at the top level of the file instead of
 /// inside a struct.
-fn type_alias(name: &str, target: &KindValue) -> String {
-    format!("pub type {name} = {};\n\n", rust_type(target))
+fn type_alias(name: &str, target: &KindValue, imports: &HashMap<String, String>) -> String {
+    format!("pub type {name} = {};\n\n", rust_type(target, imports))
 }
 
-fn error_struct(name: &str, fields: &[FrozenUnit]) -> String {
+fn error_struct(name: &str, fields: &[FrozenUnit], imports: &HashMap<String, String>) -> String {
     format!(
         "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub struct {name} {{\n{}}}\n\n",
-        field_lines(fields)
+        field_lines(fields, imports)
     )
 }
 
@@ -424,6 +426,7 @@ fn protocol(
     parameters: &[FrozenUnit],
     default_framing: Option<&str>,
     errors: &HashMap<u16, String>,
+    imports: &HashMap<String, String>,
 ) -> String {
     let framing = framing_choice(parameters, default_framing);
     let fns: Vec<FnInfo> = functions
@@ -437,7 +440,7 @@ fn protocol(
                 throws,
                 ..
             } => Some(fn_info(
-                proto, name, parameters, arguments, _return, throws, errors,
+                proto, name, parameters, arguments, _return, throws, errors, imports,
             )),
             _ => None,
         })
@@ -736,6 +739,11 @@ fn protocol(
     s
 }
 
+// `errors` and `imports` are two unrelated lookup tables (ordinal → error
+// type name; bare name → origin namespace) - bundling them into one
+// context struct just to dodge this lint would force every caller of
+// `rust_type`/`arg_types` to carry an `errors` table they never use.
+#[allow(clippy::too_many_arguments)]
 fn fn_info(
     proto: &str,
     name: &str,
@@ -744,13 +752,14 @@ fn fn_info(
     ret: &Option<KindValue>,
     throws: &[u16],
     errors: &HashMap<u16, String>,
+    imports: &HashMap<String, String>,
 ) -> FnInfo {
     let pascal_fn = pascal(name);
     let timeout_ms = annotation(parameters, "timeout_ms").and_then(|v| v.parse::<u64>().ok());
     let args: Vec<Arg> = arguments
         .iter()
         .map(|a| {
-            let (sig_ty, field_ty) = arg_types(&a.kind);
+            let (sig_ty, field_ty) = arg_types(&a.kind, imports);
             Arg {
                 name: a.name.clone(),
                 sig_ty,
@@ -767,7 +776,7 @@ fn fn_info(
     let one_way = ret.is_none();
     let ret = match ret {
         None | Some(KindValue::Unit) => "()".to_string(),
-        Some(kv) => rust_type(kv),
+        Some(kv) => rust_type(kv, imports),
     };
     // A one-way function carries no `!` (nowhere to deliver it); ignore any.
     let throws: &[u16] = if one_way { &[] } else { throws };
@@ -809,8 +818,8 @@ fn annotation<'a>(parameters: &'a [FrozenUnit], key: &str) -> Option<&'a str> {
 /// A `str` / `string` arg is passed by reference and decoded borrowed from
 /// the receive buffer; everything else is owned (borrowed arrays / nested
 /// borrowed structs are a follow-up).
-fn arg_types(kind: &KindValue) -> (String, String) {
-    let owned = rust_type(kind);
+fn arg_types(kind: &KindValue, imports: &HashMap<String, String>) -> (String, String) {
+    let owned = rust_type(kind, imports);
     match owned.as_str() {
         "String" => ("&str".to_string(), "&'a str".to_string()),
         _ => (owned.clone(), owned),
@@ -858,19 +867,48 @@ fn screaming(s: &str) -> String {
     out
 }
 
-fn rust_type(kind: &KindValue) -> String {
+/// Bare name → resolved origin namespace (`::`-joined, no trailing name),
+/// for every name this schema's own `use` declarations bind. Core already
+/// fully expands every import form - plain, aliased, item-list, glob - into
+/// one leaf `FrozenUnit::Import(path, alias, _)` per bound name
+/// (`resolve_use_declaration`), so this never needs to look at another
+/// schema's units: everything a reference in `units` could legally resolve
+/// to is already a flat entry right here.
+fn build_import_map(units: &[FrozenUnit]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for unit in units {
+        if let FrozenUnit::Import(path, alias, _) = unit {
+            if path.ends_with("::*") {
+                continue; // the glob marker itself binds no name
+            }
+            let Some((namespace, name)) = path.rsplit_once("::") else {
+                continue; // a bare single-segment path binds no name here
+            };
+            let bound = alias.clone().unwrap_or_else(|| name.to_string());
+            map.insert(bound, namespace.to_string());
+        }
+    }
+    map
+}
+
+fn rust_type(kind: &KindValue, imports: &HashMap<String, String>) -> String {
     match kind {
-        KindValue::Primitive(p) => map_str_type(p.name()),
-        KindValue::Namespaced(name, _) => map_str_type(name),
+        KindValue::Primitive(p) => map_str_type(p.name(), imports),
+        KindValue::Namespaced(name, _) => map_str_type(name, imports),
         KindValue::EnumVariant(name, _) => name.clone(),
         KindValue::Unit => "()".to_string(),
         _ => "/* unknown_kind */".to_string(),
     }
 }
 
-fn map_str_type(s: &str) -> String {
+/// Every non-local schema (a declared dependency or `std`) is inlined into
+/// the same generated crate's module tree as the consumer's own schemas
+/// (`ModuleTree`, above) - so a resolved cross-namespace reference is
+/// always `crate::<namespace>::<name>`, regardless of which of the three
+/// it came from.
+fn map_str_type(s: &str, imports: &HashMap<String, String>) -> String {
     if let Some(inner) = s.strip_suffix("[]") {
-        return format!("Vec<{}>", map_str_type(inner));
+        return format!("Vec<{}>", map_str_type(inner, imports));
     }
     match s {
         "string" | "str" => "String".to_string(),
@@ -886,6 +924,63 @@ fn map_str_type(s: &str) -> String {
         "s32" => "i32".to_string(),
         "s64" => "i64".to_string(),
         "s128" => "i128".to_string(),
-        other => other.to_string(),
+        other => match imports.get(other) {
+            Some(ns) => format!("crate::{ns}::{other}"),
+            None => other.to_string(),
+        },
+    }
+}
+
+// `build_import_map` is private, so unlike the rest of this generator's
+// behavior (covered by `tests/generate.rs`, alongside the shared
+// `generation/conformance` corpus) it can only be tested from inside this
+// file.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn import(path: &str, alias: Option<&str>) -> FrozenUnit {
+        FrozenUnit::Import(path.to_string(), alias.map(str::to_string), (0, 0))
+    }
+
+    #[test]
+    fn a_plain_import_maps_its_trailing_segment() {
+        let units = vec![import("std/http::Request", None)];
+        let map = build_import_map(&units);
+        assert_eq!(map.get("Request"), Some(&"std/http".to_string()));
+    }
+
+    #[test]
+    fn an_aliased_import_maps_the_alias_not_the_original_name() {
+        let units = vec![import("external/uuid::Uuid", Some("UUID"))];
+        let map = build_import_map(&units);
+        assert_eq!(map.get("UUID"), Some(&"external/uuid".to_string()));
+        assert_eq!(map.get("Uuid"), None);
+    }
+
+    #[test]
+    fn item_list_imports_are_already_one_leaf_entry_each() {
+        // Core expands `use ns::{A, B};` into two separate `Import`
+        // units before this ever reaches the generator.
+        let units = vec![import("shared::A", None), import("shared::B", None)];
+        let map = build_import_map(&units);
+        assert_eq!(map.get("A"), Some(&"shared".to_string()));
+        assert_eq!(map.get("B"), Some(&"shared".to_string()));
+    }
+
+    #[test]
+    fn a_glob_expanded_leaf_resolves_like_any_other_import() {
+        // Core already expands `use ns::*;` into one leaf `Import` per
+        // symbol the target schema declares, alongside the glob marker.
+        let units = vec![import("std/http::*", None), import("std/http::Request", None)];
+        let map = build_import_map(&units);
+        assert_eq!(map.get("Request"), Some(&"std/http".to_string()));
+    }
+
+    #[test]
+    fn the_glob_marker_itself_binds_no_name() {
+        let units = vec![import("std/http::*", None)];
+        let map = build_import_map(&units);
+        assert!(map.is_empty());
     }
 }

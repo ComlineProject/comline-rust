@@ -539,3 +539,69 @@ fn lib_mode_rejects_a_namespace_thats_both_a_schema_and_a_parent() {
     let err = generate_rust(&lib_req(&schemas)).unwrap_err().to_string();
     assert!(err.contains("account"), "{err}");
 }
+
+/// `main` imports and uses `Shared`, declared over in the `shared` schema -
+/// core already expands `use shared::Shared;` into this exact leaf
+/// `FrozenUnit::Import` before it ever reaches the generator.
+fn cross_namespace_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
+    let main_schema = vec![
+        FrozenUnit::Import("shared::Shared".to_string(), None, (0, 0)),
+        FrozenUnit::Struct {
+            docstring: None,
+            parameters: vec![],
+            name: "Outer".to_string(),
+            fields: vec![FrozenUnit::Field {
+                docstring: None,
+                parameters: vec![],
+                optional: false,
+                name: "value".to_string(),
+                kind_value: KindValue::Namespaced("Shared".to_string(), None),
+                span: (0, 0),
+            }],
+            span: (0, 0),
+        },
+    ];
+    let shared_schema = vec![FrozenUnit::Struct {
+        docstring: None,
+        parameters: vec![],
+        name: "Shared".to_string(),
+        fields: vec![FrozenUnit::Field {
+            docstring: None,
+            parameters: vec![],
+            optional: false,
+            name: "n".to_string(),
+            kind_value: KindValue::Namespaced("u32".to_string(), None),
+            span: (0, 0),
+        }],
+        span: (0, 0),
+    }];
+    vec![("main".to_string(), main_schema), ("shared".to_string(), shared_schema)]
+}
+
+#[test]
+fn code_mode_qualifies_a_cross_namespace_field_type() {
+    let schemas = cross_namespace_schemas();
+    let files = generate_rust(&code_req(&schemas)).unwrap();
+    let main_rs = &files.iter().find(|f| f.path.to_str().unwrap() == "main.rs").unwrap().contents;
+    assert!(main_rs.contains("pub value: crate::shared::Shared,"), "got: {main_rs}");
+}
+
+#[test]
+fn lib_mode_qualifies_a_cross_namespace_field_type_consistently_with_module_tree() {
+    let schemas = cross_namespace_schemas();
+    let files = generate_rust(&lib_req(&schemas)).unwrap();
+    let by_path = |p: &str| files.iter().find(|f| f.path.to_str().unwrap() == p);
+
+    let main_rs = &by_path("src/main.rs").unwrap().contents;
+    assert!(main_rs.contains("pub value: crate::shared::Shared,"), "got: {main_rs}");
+    // The qualified path's namespace segment must be the same one
+    // `ModuleTree` declared a `pub mod` for.
+    assert!(by_path("src/lib.rs").unwrap().contents.contains("pub mod shared;"));
+}
+
+#[test]
+fn a_same_schema_local_reference_stays_bare() {
+    let schemas = vec![("account".to_string(), vec![user_struct()])];
+    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    assert!(!src.contains("crate::"), "a local reference must not be qualified: {src}");
+}
