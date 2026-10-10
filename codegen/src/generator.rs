@@ -28,8 +28,6 @@ const RUNTIME_REV: &str = "0dda42de5105e75e339bf66fa38085bd53ab9ab9";
 /// `comline-runtime` above, pointing at `comline-rust`'s own `std-extra/`
 /// (see `xtask/`, which regenerates it and is what this pin must match).
 const STD_GIT: &str = "https://github.com/ComlineProject/comline-rust";
-// TODO(pending comline-rust#29 merge): update to that PR's merge commit SHA.
-// Currently feat/std-extra-crate's own branch tip, for local development.
 const STD_REV: &str = "3fde4a968319cbf6baac1e5c812aaa042cc8a0da";
 
 /// Whether a `/`-joined namespace is `std` or nested under it - the only
