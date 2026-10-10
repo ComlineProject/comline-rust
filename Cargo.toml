@@ -1,9 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "codegen",   # comline-codegen-rust — the Rust `code` / `lib` generator
+    "codegen",    # comline-codegen-rust — the Rust `code` / `lib` generator
+    "std-extra",  # comline_std — std's own pre-generated Rust bindings
+    "xtask",      # regenerates std-extra/ from std's real schemas; `--check` diffs instead
 ]
-# Room for `libgen/` (FFI / dylib — G2c), `runtime/`, `std-extra/` as they land.
+# Room for `libgen/` (FFI / dylib — G2c), `runtime/` as they land.
 # See ComlineProject/docs → Design → Runtime & generation repository structure.
 
 [profile.release]
