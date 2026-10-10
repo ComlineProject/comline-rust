@@ -49,6 +49,10 @@ fn main() -> eyre::Result<()> {
         schemas: &schemas,
         package: PackageMeta { name: "comline_std".to_string(), version: "0.1.0".to_string() },
         default_framing: None,
+        // comline_std is generated inline, as an ordinary standalone
+        // crate - external_std only matters to a *consumer* referencing
+        // std, not to std's own generation.
+        external_std: false,
     };
 
     let files = generate_rust(&req)?;

@@ -23,37 +23,82 @@ use comline_codegen::{GenRequest, GeneratedFile, Mode, PackageMeta};
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
 const RUNTIME_REV: &str = "0dda42de5105e75e339bf66fa38085bd53ab9ab9";
 
+/// `comline_std` — std's own pre-generated bindings, referenced instead of
+/// inlined when `external_std` is on. Same git-pin shape as
+/// `comline-runtime` above, pointing at `comline-rust`'s own `std-extra/`
+/// (see `xtask/`, which regenerates it and is what this pin must match).
+const STD_GIT: &str = "https://github.com/ComlineProject/comline-rust";
+// TODO(pending comline-rust#29 merge): update to that PR's merge commit SHA.
+// Currently feat/std-extra-crate's own branch tip, for local development.
+const STD_REV: &str = "3fde4a968319cbf6baac1e5c812aaa042cc8a0da";
+
+/// Whether a `/`-joined namespace is `std` or nested under it - the only
+/// provenance signal std's schemas carry by the time they reach this
+/// generator (`package::stdlib`'s own namespace-prefixing convention).
+fn is_std_namespace(namespace: &str) -> bool {
+    namespace == "std" || namespace.starts_with("std/")
+}
+
 pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     let default_framing = req.default_framing.as_deref();
-    match req.mode {
-        Mode::Code => Ok(req
+
+    // Kept zero-cost (no clone) when `external_std` is off, so today's
+    // output stays byte-for-byte identical - only built when actually
+    // filtering something out.
+    let without_std: Vec<(String, Vec<FrozenUnit>)>;
+    let schemas: &[(String, Vec<FrozenUnit>)] = if req.external_std {
+        without_std = req
             .schemas
             .iter()
-            .map(|(namespace, units)| GeneratedFile {
-                path: PathBuf::from(format!("{namespace}.rs")),
-                contents: schema_source(units, default_framing),
+            .filter(|(namespace, _)| !is_std_namespace(namespace))
+            .cloned()
+            .collect();
+        &without_std
+    } else {
+        req.schemas
+    };
+    let needs_std_dep =
+        req.external_std && req.schemas.iter().any(|(namespace, _)| is_std_namespace(namespace));
+
+    match req.mode {
+        // No manifest to add `comline-std` to on the caller's behalf here
+        // (unlike `lib` mode's `Cargo.toml`, below) - a file that ends up
+        // referencing it gets a comment naming the dependency line to add
+        // by hand.
+        Mode::Code => Ok(schemas
+            .iter()
+            .map(|(namespace, units)| {
+                let contents = schema_source(units, default_framing, req.external_std);
+                let contents = if contents.contains("comline_std::") {
+                    format!(
+                        "// This file references `comline_std` - add it to your Cargo.toml:\n\
+                         // comline-std = {{ git = \"{STD_GIT}\", rev = \"{STD_REV}\" }}\n{contents}"
+                    )
+                } else {
+                    contents
+                };
+                GeneratedFile { path: PathBuf::from(format!("{namespace}.rs")), contents }
             })
             .collect()),
 
         Mode::Lib => {
-            let tree = ModuleTree::build(req.schemas)?;
+            let tree = ModuleTree::build(schemas)?;
 
-            let has_protocol = req
-                .schemas
+            let has_protocol = schemas
                 .iter()
                 .any(|(_, units)| units.iter().any(|u| matches!(u, FrozenUnit::Protocol { .. })));
 
             let mut files = vec![
                 GeneratedFile {
                     path: PathBuf::from("Cargo.toml"),
-                    contents: cargo_toml(&req.package, has_protocol),
+                    contents: cargo_toml(&req.package, has_protocol, needs_std_dep),
                 },
                 GeneratedFile {
                     path: PathBuf::from("src/lib.rs"),
                     contents: tree.mod_decls(),
                 },
             ];
-            tree.emit_files("src", default_framing, &mut files);
+            tree.emit_files("src", default_framing, req.external_std, &mut files);
             Ok(files)
         }
     }
@@ -120,32 +165,41 @@ impl<'a> ModuleTree<'a> {
     /// Every file this node's children need, under `dir` (`"src"` for the
     /// root): a leaf gets its generated schema code; a grouping node gets
     /// its own `mod_decls` file, then recurses one level deeper.
-    fn emit_files(&self, dir: &str, default_framing: Option<&str>, files: &mut Vec<GeneratedFile>) {
+    fn emit_files(
+        &self,
+        dir: &str,
+        default_framing: Option<&str>,
+        external_std: bool,
+        files: &mut Vec<GeneratedFile>,
+    ) {
         for (segment, child) in &self.children {
             let path = format!("{dir}/{segment}");
             match child.units {
                 Some(units) => files.push(GeneratedFile {
                     path: PathBuf::from(format!("{path}.rs")),
-                    contents: schema_source(units, default_framing),
+                    contents: schema_source(units, default_framing, external_std),
                 }),
                 None => {
                     files.push(GeneratedFile {
                         path: PathBuf::from(format!("{path}.rs")),
                         contents: child.mod_decls(),
                     });
-                    child.emit_files(&path, default_framing, files);
+                    child.emit_files(&path, default_framing, external_std, files);
                 }
             }
         }
     }
 }
 
-fn cargo_toml(pkg: &PackageMeta, has_protocol: bool) -> String {
+fn cargo_toml(pkg: &PackageMeta, has_protocol: bool, needs_std_dep: bool) -> String {
     let mut deps = String::from("serde = { version = \"1\", features = [\"derive\"] }\n");
     if has_protocol {
         deps.push_str(&format!(
             "comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{RUNTIME_REV}\" }}\n"
         ));
+    }
+    if needs_std_dep {
+        deps.push_str(&format!("comline-std = {{ git = \"{STD_GIT}\", rev = \"{STD_REV}\" }}\n"));
     }
     format!(
         "# Generated by Comline\n\
@@ -163,10 +217,10 @@ fn cargo_toml(pkg: &PackageMeta, has_protocol: bool) -> String {
     )
 }
 
-fn schema_source(units: &[FrozenUnit], default_framing: Option<&str>) -> String {
+fn schema_source(units: &[FrozenUnit], default_framing: Option<&str>, external_std: bool) -> String {
     let has_protocol = units.iter().any(|u| matches!(u, FrozenUnit::Protocol { .. }));
     let errors = error_type_names(units);
-    let imports = build_import_map(units);
+    let imports = build_import_map(units, external_std);
 
     // Which framings the protocols in this file reach for. A non-datagram pick
     // pulls in the `Framing` trait (its helpers call `framing.name()`); the
@@ -867,14 +921,24 @@ fn screaming(s: &str) -> String {
     out
 }
 
-/// Bare name → resolved origin namespace (`::`-joined, no trailing name),
-/// for every name this schema's own `use` declarations bind. Core already
-/// fully expands every import form - plain, aliased, item-list, glob - into
-/// one leaf `FrozenUnit::Import(path, alias, _)` per bound name
-/// (`resolve_use_declaration`), so this never needs to look at another
-/// schema's units: everything a reference in `units` could legally resolve
-/// to is already a flat entry right here.
-fn build_import_map(units: &[FrozenUnit]) -> HashMap<String, String> {
+/// Bare name → the path prefix to qualify it with (everything before the
+/// final `::<name>`, already including `crate::` or `comline_std::` as
+/// appropriate), for every name this schema's own `use` declarations
+/// bind. Core already fully expands every import form - plain, aliased,
+/// item-list, glob - into one leaf `FrozenUnit::Import(path, alias, _)`
+/// per bound name (`resolve_use_declaration`), so this never needs to
+/// look at another schema's units: everything a reference in `units`
+/// could legally resolve to is already a flat entry right here.
+///
+/// Every non-local schema (a declared dependency or `std`) is inlined
+/// into the same generated crate's module tree as the consumer's own
+/// schemas by default (`ModuleTree`, above), so a resolved reference is
+/// normally `crate::<namespace>::<name>` regardless of origin - the one
+/// exception is `std` specifically when `external_std` is on, where it
+/// points outside the crate at `comline_std::<rest>::<name>` instead
+/// (`rest` = the namespace with its leading `std` segment stripped,
+/// since `comline_std` is its own crate root, not nested under `std`).
+fn build_import_map(units: &[FrozenUnit], external_std: bool) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for unit in units {
         if let FrozenUnit::Import(path, alias, _) = unit {
@@ -885,7 +949,16 @@ fn build_import_map(units: &[FrozenUnit]) -> HashMap<String, String> {
                 continue; // a bare single-segment path binds no name here
             };
             let bound = alias.clone().unwrap_or_else(|| name.to_string());
-            map.insert(bound, namespace.to_string());
+            let is_std = namespace == "std" || namespace.starts_with("std::");
+            let prefix = if external_std && is_std {
+                match namespace.strip_prefix("std::") {
+                    Some(rest) => format!("comline_std::{rest}"),
+                    None => "comline_std".to_string(),
+                }
+            } else {
+                format!("crate::{namespace}")
+            };
+            map.insert(bound, prefix);
         }
     }
     map
@@ -901,11 +974,6 @@ fn rust_type(kind: &KindValue, imports: &HashMap<String, String>) -> String {
     }
 }
 
-/// Every non-local schema (a declared dependency or `std`) is inlined into
-/// the same generated crate's module tree as the consumer's own schemas
-/// (`ModuleTree`, above) - so a resolved cross-namespace reference is
-/// always `crate::<namespace>::<name>`, regardless of which of the three
-/// it came from.
 fn map_str_type(s: &str, imports: &HashMap<String, String>) -> String {
     if let Some(inner) = s.strip_suffix("[]") {
         return format!("Vec<{}>", map_str_type(inner, imports));
@@ -925,7 +993,7 @@ fn map_str_type(s: &str, imports: &HashMap<String, String>) -> String {
         "s64" => "i64".to_string(),
         "s128" => "i128".to_string(),
         other => match imports.get(other) {
-            Some(ns) => format!("crate::{ns}::{other}"),
+            Some(prefix) => format!("{prefix}::{other}"),
             None => other.to_string(),
         },
     }
@@ -944,17 +1012,17 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_import_maps_its_trailing_segment() {
-        let units = vec![import("std/http::Request", None)];
-        let map = build_import_map(&units);
-        assert_eq!(map.get("Request"), Some(&"std/http".to_string()));
+    fn a_plain_import_resolves_to_a_crate_qualified_prefix() {
+        let units = vec![import("shared::http::Request", None)];
+        let map = build_import_map(&units, false);
+        assert_eq!(map.get("Request"), Some(&"crate::shared::http".to_string()));
     }
 
     #[test]
     fn an_aliased_import_maps_the_alias_not_the_original_name() {
-        let units = vec![import("external/uuid::Uuid", Some("UUID"))];
-        let map = build_import_map(&units);
-        assert_eq!(map.get("UUID"), Some(&"external/uuid".to_string()));
+        let units = vec![import("external::uuid::Uuid", Some("UUID"))];
+        let map = build_import_map(&units, false);
+        assert_eq!(map.get("UUID"), Some(&"crate::external::uuid".to_string()));
         assert_eq!(map.get("Uuid"), None);
     }
 
@@ -963,24 +1031,56 @@ mod tests {
         // Core expands `use ns::{A, B};` into two separate `Import`
         // units before this ever reaches the generator.
         let units = vec![import("shared::A", None), import("shared::B", None)];
-        let map = build_import_map(&units);
-        assert_eq!(map.get("A"), Some(&"shared".to_string()));
-        assert_eq!(map.get("B"), Some(&"shared".to_string()));
+        let map = build_import_map(&units, false);
+        assert_eq!(map.get("A"), Some(&"crate::shared".to_string()));
+        assert_eq!(map.get("B"), Some(&"crate::shared".to_string()));
     }
 
     #[test]
     fn a_glob_expanded_leaf_resolves_like_any_other_import() {
         // Core already expands `use ns::*;` into one leaf `Import` per
         // symbol the target schema declares, alongside the glob marker.
-        let units = vec![import("std/http::*", None), import("std/http::Request", None)];
-        let map = build_import_map(&units);
-        assert_eq!(map.get("Request"), Some(&"std/http".to_string()));
+        let units = vec![import("shared::http::*", None), import("shared::http::Request", None)];
+        let map = build_import_map(&units, false);
+        assert_eq!(map.get("Request"), Some(&"crate::shared::http".to_string()));
     }
 
     #[test]
     fn the_glob_marker_itself_binds_no_name() {
-        let units = vec![import("std/http::*", None)];
-        let map = build_import_map(&units);
+        let units = vec![import("shared::http::*", None)];
+        let map = build_import_map(&units, false);
         assert!(map.is_empty());
+    }
+
+    #[test]
+    fn std_stays_crate_qualified_when_external_std_is_off() {
+        let units = vec![import("std::http::Request", None)];
+        let map = build_import_map(&units, false);
+        assert_eq!(map.get("Request"), Some(&"crate::std::http".to_string()));
+    }
+
+    #[test]
+    fn std_points_outside_the_crate_when_external_std_is_on() {
+        let units = vec![import("std::http::Request", None)];
+        let map = build_import_map(&units, true);
+        assert_eq!(map.get("Request"), Some(&"comline_std::http".to_string()));
+    }
+
+    #[test]
+    fn a_dependency_stays_crate_qualified_even_when_external_std_is_on() {
+        // external_std only redirects `std` specifically - everything else
+        // keeps inlining, same as today.
+        let units = vec![import("shared::Thing", None)];
+        let map = build_import_map(&units, true);
+        assert_eq!(map.get("Thing"), Some(&"crate::shared".to_string()));
+    }
+
+    #[test]
+    fn a_name_directly_under_std_itself_has_no_trailing_separator() {
+        // `use std::Foo;` (one segment deep, not `std::http::Foo`) -
+        // `comline_std`'s own crate root, not `comline_std::`.
+        let units = vec![import("std::Foo", None)];
+        let map = build_import_map(&units, true);
+        assert_eq!(map.get("Foo"), Some(&"comline_std".to_string()));
     }
 }

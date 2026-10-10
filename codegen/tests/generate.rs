@@ -9,6 +9,7 @@ fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
         schemas,
         package: PackageMeta { name: "test".into(), version: "0.1.0".into() },
         default_framing: None,
+        external_std: false,
     }
 }
 
@@ -18,6 +19,7 @@ fn lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
         schemas,
         package: PackageMeta { name: "chat".into(), version: "0.3.0".into() },
         default_framing: None,
+        external_std: false,
     }
 }
 
@@ -604,4 +606,100 @@ fn a_same_schema_local_reference_stays_bare() {
     let schemas = vec![("account".to_string(), vec![user_struct()])];
     let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
     assert!(!src.contains("crate::"), "a local reference must not be qualified: {src}");
+}
+
+/// `main` imports and uses `Request`, declared over in `std/http` - the
+/// real namespace shape `package::stdlib::used_by` prefixes std's own
+/// schemas with when merging them into a consumer's schema list.
+fn std_reference_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
+    let main_schema = vec![
+        FrozenUnit::Import("std::http::Request".to_string(), None, (0, 0)),
+        FrozenUnit::Struct {
+            docstring: None,
+            parameters: vec![],
+            name: "Outer".to_string(),
+            fields: vec![FrozenUnit::Field {
+                docstring: None,
+                parameters: vec![],
+                optional: false,
+                name: "request".to_string(),
+                kind_value: KindValue::Namespaced("Request".to_string(), None),
+                span: (0, 0),
+            }],
+            span: (0, 0),
+        },
+    ];
+    let std_http_schema = vec![FrozenUnit::Struct {
+        docstring: None,
+        parameters: vec![],
+        name: "Request".to_string(),
+        fields: vec![FrozenUnit::Field {
+            docstring: None,
+            parameters: vec![],
+            optional: false,
+            name: "uri".to_string(),
+            kind_value: KindValue::Namespaced("string".to_string(), None),
+            span: (0, 0),
+        }],
+        span: (0, 0),
+    }];
+    vec![("main".to_string(), main_schema), ("std/http".to_string(), std_http_schema)]
+}
+
+fn external_std_code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
+    GenRequest { external_std: true, ..code_req(schemas) }
+}
+
+fn external_std_lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
+    GenRequest { external_std: true, ..lib_req(schemas) }
+}
+
+#[test]
+fn external_std_off_is_unchanged_from_today() {
+    let schemas = std_reference_schemas();
+    let files = generate_rust(&code_req(&schemas)).unwrap();
+    assert!(files.iter().any(|f| f.path.to_str().unwrap() == "std/http.rs"));
+    let main_rs = &files.iter().find(|f| f.path.to_str().unwrap() == "main.rs").unwrap().contents;
+    assert!(main_rs.contains("pub request: crate::std::http::Request,"), "got: {main_rs}");
+    assert!(!main_rs.contains("comline_std"));
+}
+
+#[test]
+fn external_std_filters_stds_own_file_and_qualifies_the_reference_in_code_mode() {
+    let schemas = std_reference_schemas();
+    let files = generate_rust(&external_std_code_req(&schemas)).unwrap();
+    assert!(
+        !files.iter().any(|f| f.path.to_str().unwrap() == "std/http.rs"),
+        "std's own file should not be emitted when external_std is on"
+    );
+    let main_rs = &files.iter().find(|f| f.path.to_str().unwrap() == "main.rs").unwrap().contents;
+    assert!(main_rs.contains("pub request: comline_std::http::Request,"), "got: {main_rs}");
+    assert!(
+        main_rs.contains("// comline-std = { git ="),
+        "code mode has no manifest to add the dependency to - it should say so: {main_rs}"
+    );
+}
+
+#[test]
+fn external_std_adds_the_comline_std_dependency_in_lib_mode() {
+    let schemas = std_reference_schemas();
+    let files = generate_rust(&external_std_lib_req(&schemas)).unwrap();
+    let by_path = |p: &str| files.iter().find(|f| f.path.to_str().unwrap() == p);
+
+    assert!(
+        by_path("src/std/http.rs").is_none(),
+        "std's own file should not be emitted when external_std is on"
+    );
+    let cargo_toml = &by_path("Cargo.toml").unwrap().contents;
+    assert!(cargo_toml.contains("comline-std = { git ="), "got: {cargo_toml}");
+    let main_rs = &by_path("src/main.rs").unwrap().contents;
+    assert!(main_rs.contains("pub request: comline_std::http::Request,"), "got: {main_rs}");
+}
+
+#[test]
+fn external_std_without_any_std_reference_adds_no_dependency() {
+    let schemas = vec![("account".to_string(), vec![user_struct()])];
+    let files = generate_rust(&external_std_lib_req(&schemas)).unwrap();
+    let cargo_toml = &files.iter().find(|f| f.path.to_str().unwrap() == "Cargo.toml").unwrap().contents;
+    assert!(!cargo_toml.contains("comline-std"), "got: {cargo_toml}");
 }

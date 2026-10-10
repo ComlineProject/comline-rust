@@ -188,6 +188,7 @@ fn a_generated_protocol_crate_builds() {
         // `chat` opts back to datagram with `@framing = "datagram"`; `clock`
         // (unannotated) takes this default; `rpc` names `jsonrpc` itself.
         default_framing: Some("jsonrpc".into()),
+        external_std: false,
     };
     let files = generate_rust(&req).expect("generation");
 
