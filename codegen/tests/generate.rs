@@ -675,7 +675,7 @@ fn external_std_filters_stds_own_file_and_qualifies_the_reference_in_code_mode()
     let main_rs = &files.iter().find(|f| f.path.to_str().unwrap() == "main.rs").unwrap().contents;
     assert!(main_rs.contains("pub request: comline_std::http::Request,"), "got: {main_rs}");
     assert!(
-        main_rs.contains("// comline-std = { git ="),
+        main_rs.contains("// comline_std = { git ="),
         "code mode has no manifest to add the dependency to - it should say so: {main_rs}"
     );
 }
@@ -691,7 +691,7 @@ fn external_std_adds_the_comline_std_dependency_in_lib_mode() {
         "std's own file should not be emitted when external_std is on"
     );
     let cargo_toml = &by_path("Cargo.toml").unwrap().contents;
-    assert!(cargo_toml.contains("comline-std = { git ="), "got: {cargo_toml}");
+    assert!(cargo_toml.contains("comline_std = { git ="), "got: {cargo_toml}");
     let main_rs = &by_path("src/main.rs").unwrap().contents;
     assert!(main_rs.contains("pub request: comline_std::http::Request,"), "got: {main_rs}");
 }
@@ -701,5 +701,5 @@ fn external_std_without_any_std_reference_adds_no_dependency() {
     let schemas = vec![("account".to_string(), vec![user_struct()])];
     let files = generate_rust(&external_std_lib_req(&schemas)).unwrap();
     let cargo_toml = &files.iter().find(|f| f.path.to_str().unwrap() == "Cargo.toml").unwrap().contents;
-    assert!(!cargo_toml.contains("comline-std"), "got: {cargo_toml}");
+    assert!(!cargo_toml.contains("comline_std"), "got: {cargo_toml}");
 }
