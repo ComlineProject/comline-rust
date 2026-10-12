@@ -1,6 +1,6 @@
 use comline_codegen::{GenRequest, Mode, PackageMeta};
 use comline_codegen_rust::generate_rust;
-use comline_core::schema::ir::frozen::unit::{FrozenUnit, FrozenArgument};
+use comline_core::schema::ir::frozen::unit::{ConfigValue, FrozenUnit, FrozenArgument};
 use comline_core::schema::ir::compiler::interpreted::kind_search::{KindValue, Primitive};
 
 fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
@@ -288,7 +288,7 @@ fn timeout_ms_annotation_emits_call_with_timeout() {
                 name: "slow".to_string(),
                 parameters: vec![FrozenUnit::Property {
                     name: "timeout_ms".to_string(),
-                    expression: Some("2500".to_string()),
+                    value: ConfigValue::Integer(2500),
                 }],
                 arguments: vec![],
                 _return: Some(KindValue::Primitive(Primitive::U32(None))),
@@ -324,7 +324,7 @@ fn framing_annotation_selects_jsonrpc_for_the_connect_and_serve_helpers() {
         docstring: "Rpc".to_string(),
         parameters: vec![FrozenUnit::Property {
             name: "framing".to_string(),
-            expression: Some("jsonrpc".to_string()),
+            value: ConfigValue::Str("jsonrpc".into()),
         }],
         name: "Rpc".to_string(),
         functions: vec![FrozenUnit::Function {
@@ -402,7 +402,7 @@ fn an_explicit_datagram_annotation_opts_out_of_the_package_default() {
     if let FrozenUnit::Protocol { parameters, .. } = &mut units[0] {
         parameters.push(FrozenUnit::Property {
             name: "framing".to_string(),
-            expression: Some("datagram".to_string()),
+            value: ConfigValue::Str("datagram".into()),
         });
     }
     let schemas = vec![("rpc".to_string(), units)];
