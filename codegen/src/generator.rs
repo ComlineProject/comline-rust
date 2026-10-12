@@ -7,6 +7,7 @@
 //! - `lib` — a buildable crate: `Cargo.toml` + `src/lib.rs` (the `pub mod`
 //!   tree) + `src/<namespace>.rs`. See design/generation.md.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -449,15 +450,21 @@ const DATAGRAM_FRAMING: FramingChoice = FramingChoice {
     explicit: false,
 };
 
-/// Map one framing name to a choice. `None` for a name this generator does not
-/// know (the caller falls through to the next level).
+/// Map one framing name to a choice. `None` for a name core does not
+/// recognise (the caller falls through to the next level).
+///
+/// The accepted spellings and their aliases come from core, not from a
+/// copy kept here - this generator, the TypeScript one and the playground
+/// each used to maintain their own, and they had drifted (the
+/// playground's was missing `json-rpc`, so a protocol this generator emits
+/// as JSON-RPC rendered as datagram there).
 fn framing_for(name: &str) -> Option<FramingChoice> {
-    match name {
-        "jsonrpc" | "json-rpc" | "jsonrpc-2.0" => Some(FramingChoice {
+    match comline_core::schema::idl::annotations::canonical_value("framing", name)? {
+        "jsonrpc" => Some(FramingChoice {
             ty: "comline_runtime::framing::JsonRpcFraming",
             explicit: true,
         }),
-        "datagram" | "comline.datagram" => Some(DATAGRAM_FRAMING),
+        "datagram" => Some(DATAGRAM_FRAMING),
         _ => None,
     }
 }
@@ -467,7 +474,7 @@ fn framing_for(name: &str) -> Option<FramingChoice> {
 /// datagram default. An unrecognised name at either level falls through.
 fn framing_choice(parameters: &[FrozenUnit], default_framing: Option<&str>) -> FramingChoice {
     annotation(parameters, "framing")
-        .and_then(framing_for)
+        .and_then(|name| framing_for(&name))
         .or_else(|| default_framing.and_then(framing_for))
         .unwrap_or(DATAGRAM_FRAMING)
 }
@@ -857,11 +864,15 @@ fn fn_info(
     }
 }
 
-/// The value of a scalar `@key = value` annotation (frozen as
+/// The text of a scalar `@key = value` annotation (frozen as
 /// `FrozenUnit::Property`), by key.
-fn annotation<'a>(parameters: &'a [FrozenUnit], key: &str) -> Option<&'a str> {
+///
+/// The frozen value is typed now, so this renders it back to text for the
+/// callers that only interpolate it. A caller that cares *which kind* of
+/// value it got should match `ConfigValue` instead.
+fn annotation<'a>(parameters: &'a [FrozenUnit], key: &str) -> Option<Cow<'a, str>> {
     parameters.iter().find_map(|p| match p {
-        FrozenUnit::Property { name, expression } if name == key => expression.as_deref(),
+        FrozenUnit::Property { name, value } if name == key => value.as_text(),
         _ => None,
     })
 }

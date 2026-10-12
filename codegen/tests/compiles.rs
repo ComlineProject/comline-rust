@@ -12,7 +12,7 @@ use std::process::Command;
 use comline_codegen::{GenRequest, Mode, PackageMeta};
 use comline_codegen_rust::generate_rust;
 use comline_core::schema::ir::compiler::interpreted::kind_search::{KindValue, Primitive};
-use comline_core::schema::ir::frozen::unit::{FrozenArgument, FrozenUnit};
+use comline_core::schema::ir::frozen::unit::{ConfigValue, FrozenArgument, FrozenUnit};
 
 fn field(name: &str, ty: &str) -> FrozenUnit {
     FrozenUnit::Field {
@@ -77,7 +77,7 @@ fn chat_schema() -> Vec<FrozenUnit> {
             docstring: "Chat".into(),
             parameters: vec![FrozenUnit::Property {
                 name: "framing".into(),
-                expression: Some("datagram".into()),
+                value: ConfigValue::Str("datagram".into()),
             }],
             name: "Chat".into(),
             functions: vec![
@@ -111,7 +111,7 @@ fn chat_schema() -> Vec<FrozenUnit> {
                     docstring: String::new(),
                     parameters: vec![FrozenUnit::Property {
                         name: "timeout_ms".into(),
-                        expression: Some("3000".into()),
+                        value: ConfigValue::Integer(3000),
                     }],
                     name: "await_ack".into(),
                     arguments: vec![arg("token", KindValue::Namespaced("string".into(), None))],
@@ -133,7 +133,7 @@ fn rpc_schema() -> Vec<FrozenUnit> {
         docstring: "Rpc".into(),
         parameters: vec![FrozenUnit::Property {
             name: "framing".into(),
-            expression: Some("jsonrpc".into()),
+            value: ConfigValue::Str("jsonrpc".into()),
         }],
         name: "Rpc".into(),
         functions: vec![
