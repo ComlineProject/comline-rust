@@ -29,7 +29,7 @@ const RUNTIME_REV: &str = "0dda42de5105e75e339bf66fa38085bd53ab9ab9";
 /// `comline-runtime` above, pointing at `comline-rust`'s own `std-extra/`
 /// (see `xtask/`, which regenerates it and is what this pin must match).
 const STD_GIT: &str = "https://github.com/ComlineProject/comline-rust";
-const STD_REV: &str = "3fde4a968319cbf6baac1e5c812aaa042cc8a0da";
+pub const STD_REV: &str = "3fde4a968319cbf6baac1e5c812aaa042cc8a0da";
 
 /// Whether a `/`-joined namespace is `std` or nested under it - the only
 /// provenance signal std's schemas carry by the time they reach this
@@ -90,7 +90,9 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
             let mut files = vec![
                 GeneratedFile {
                     path: PathBuf::from("Cargo.toml"),
-                    contents: cargo_toml(&req.package, has_protocol, needs_std_dep),
+                    contents: cargo_toml(
+                        &req.package, &req.lang_version, has_protocol, needs_std_dep,
+                    ),
                 },
                 GeneratedFile {
                     path: PathBuf::from("src/lib.rs"),
@@ -125,6 +127,18 @@ impl<'a> ModuleTree<'a> {
     fn build(schemas: &'a [(String, Vec<FrozenUnit>)]) -> Result<Self> {
         let mut root = Self::empty();
         for (namespace, units) in schemas {
+            // `src/lib.rs` is this crate's root, written before any schema
+            // file - a schema of the same name would be emitted over it and
+            // take the whole `pub mod` tree with it. Core refuses the name
+            // when a package is compiled; this catches a `GenRequest` built
+            // directly, since that is a public contract.
+            if namespace == "lib" {
+                bail!(
+                    "rust lib mode can't generate `lib`: `src/lib.rs` is the \
+                     crate root, so a schema of that name would overwrite the \
+                     module tree - rename the schema"
+                );
+            }
             let mut node = &mut root;
             for segment in namespace.split('/') {
                 node = node.children.entry(segment.to_string()).or_insert_with(Self::empty);
@@ -190,7 +204,15 @@ impl<'a> ModuleTree<'a> {
     }
 }
 
-fn cargo_toml(pkg: &PackageMeta, has_protocol: bool, needs_std_dep: bool) -> String {
+/// `lang_version` is the toolchain the target declared (`rust#1.70.0`), so
+/// the crate states the version it was generated for rather than leaving a
+/// consumer to discover it by failing to build.
+fn cargo_toml(
+    pkg: &PackageMeta,
+    lang_version: &str,
+    has_protocol: bool,
+    needs_std_dep: bool,
+) -> String {
     let mut deps = String::from("serde = { version = \"1\", features = [\"derive\"] }\n");
     if has_protocol {
         deps.push_str(&format!(
@@ -206,8 +228,11 @@ fn cargo_toml(pkg: &PackageMeta, has_protocol: bool, needs_std_dep: bool) -> Str
          name = \"{}\"\n\
          version = \"{}\"\n\
          edition = \"2021\"\n\
+         rust-version = \"{lang_version}\"\n\
          # A schema namespace named `main` would otherwise be picked up as a\n\
-         # binary target (`src/main.rs`) with no `fn main`.\n\
+         # binary target (`src/main.rs`) with no `fn main`. Core refuses that\n\
+         # name outright now; this stays as a belt-and-braces guard for a\n\
+         # `GenRequest` built by hand.\n\
          autobins = false\n\
          \n\
          [dependencies]\n\

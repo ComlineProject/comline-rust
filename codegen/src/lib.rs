@@ -11,9 +11,15 @@
 
 mod generator;
 
-pub use generator::generate_rust;
+pub use generator::{generate_rust, STD_REV};
+
+/// The toolchain version this generator registers under - what a
+/// congregation names as `rust#1.70.0`. Public so `xtask`, which generates
+/// `comline_std` through the very same entry point every consumer uses, can
+/// state it rather than repeat the literal.
+pub const LANG_VERSION: &str = "1.70.0";
 
 /// Contribute the Rust generator to a CLI's [`Registry`](comline_codegen::Registry).
 pub fn register(registry: &mut comline_codegen::Registry) {
-    registry.register("rust", "rs", "1.70.0", generate_rust);
+    registry.register("rust", "rs", LANG_VERSION, generate_rust);
 }

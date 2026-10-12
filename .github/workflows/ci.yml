@@ -18,3 +18,17 @@ jobs:
       - run: cargo test --verbose
       - name: std-extra/ matches a fresh regen
         run: cargo run -p xtask -- --check
+
+  std_pin:
+    # `STD_REV` can only point at a merge commit once that commit exists, so
+    # this runs after the merge rather than on the PR that regenerates
+    # `std-extra/`. Needs full history: the check diffs HEAD against STD_REV.
+    name: comline_std pin is current
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: rustup update stable && rustup default stable
+      - run: cargo run -p xtask -- --check-pin

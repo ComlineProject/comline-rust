@@ -179,22 +179,66 @@ fn a_generated_protocol_crate_builds() {
         ("rpc".to_string(), rpc_schema()),
         ("clock".to_string(), rpc_default_schema()),
     ];
+    // `chat` opts back to datagram with `@framing = "datagram"`; `clock`
+    // (unannotated) takes this default; `rpc` names `jsonrpc` itself.
+    build_generated_crate("protocol", &schemas, Some("jsonrpc".into()), false);
+}
+
+/// `lib` mode links `comline_std` rather than inlining std, which only
+/// works if the crate it emits actually resolves against the real pinned
+/// `comline_std` - the import rewriting, the dependency line, and the
+/// absence of std's own files all have to agree. Emitting the right text is
+/// not the same claim as building, so this builds it.
+#[test]
+fn a_generated_crate_linking_comline_std_builds() {
+    let schemas = vec![
+        ("chat".to_string(), uses_std_http()),
+        // Std's own schema, present the way a real package sees it. With
+        // `external_std` on it is filtered out of the output and turned
+        // into the dependency instead.
+        ("std/http".to_string(), vec![]),
+    ];
+    build_generated_crate("externalstd", &schemas, None, true);
+}
+
+/// A struct whose field is typed by `std`'s `Request`, with the leaf import
+/// core expands `use std::http::Request;` into before the generator sees it.
+fn uses_std_http() -> Vec<FrozenUnit> {
+    vec![
+        FrozenUnit::Import("std::http::Request".to_string(), None, (0, 0)),
+        FrozenUnit::Struct {
+            docstring: None,
+            parameters: vec![],
+            name: "Call".to_string(),
+            fields: vec![field("request", "Request")],
+            span: (0, 0),
+        },
+    ]
+}
+
+/// Generate into a temp dir and `cargo build` it. Left in place on failure,
+/// so the generated source can be read rather than guessed at.
+fn build_generated_crate(
+    label: &str,
+    schemas: &[(String, Vec<FrozenUnit>)],
+    default_framing: Option<String>,
+    external_std: bool,
+) {
     let req = GenRequest {
         mode: Mode::Lib,
-        schemas: &schemas,
+        schemas,
         package: PackageMeta {
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
-        // `chat` opts back to datagram with `@framing = "datagram"`; `clock`
-        // (unannotated) takes this default; `rpc` names `jsonrpc` itself.
-        default_framing: Some("jsonrpc".into()),
-        external_std: false,
+        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        default_framing,
+        external_std,
     };
     let files = generate_rust(&req).expect("generation");
 
     let dir = std::env::temp_dir().join(format!(
-        "comline-rust-compiletest-{}",
+        "comline-rust-compiletest-{label}-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&dir);
