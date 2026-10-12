@@ -72,6 +72,7 @@ fn chat_schema() -> Vec<FrozenUnit> {
             name: "Rejected".into(),
             message: "rejected: {self.why}".into(),
             fields: vec![field("why", "string")],
+            span: Some((0, 0)),
         },
         FrozenUnit::Protocol {
             docstring: "Chat".into(),
