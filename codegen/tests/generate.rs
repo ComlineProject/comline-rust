@@ -8,6 +8,7 @@ fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
         mode: Mode::Code,
         schemas,
         package: PackageMeta { name: "test".into(), version: "0.1.0".into() },
+        lang_version: comline_codegen_rust::LANG_VERSION.into(),
         default_framing: None,
         external_std: false,
     }
@@ -18,6 +19,7 @@ fn lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
         mode: Mode::Lib,
         schemas,
         package: PackageMeta { name: "chat".into(), version: "0.3.0".into() },
+        lang_version: comline_codegen_rust::LANG_VERSION.into(),
         default_framing: None,
         external_std: false,
     }
@@ -541,6 +543,33 @@ fn lib_mode_rejects_a_namespace_thats_both_a_schema_and_a_parent() {
     ];
     let err = generate_rust(&lib_req(&schemas)).unwrap_err().to_string();
     assert!(err.contains("account"), "{err}");
+}
+
+/// `src/lib.rs` is the crate root this mode writes first; a schema of the
+/// same name was emitted straight over it, taking the whole `pub mod` tree
+/// with it and leaving a crate whose modules had all vanished. Core refuses
+/// the name when a package is compiled, but `GenRequest` is public, so a
+/// caller building one by hand gets told rather than silently wrecked.
+#[test]
+fn lib_mode_rejects_a_schema_named_lib() {
+    let schemas = vec![("lib".to_string(), vec![user_struct()])];
+    let err = generate_rust(&lib_req(&schemas)).unwrap_err().to_string();
+    assert!(err.contains("crate root"), "{err}");
+}
+
+/// The target declares `rust#1.70.0`; the manifest should say so rather
+/// than leaving a consumer to discover the toolchain by failing to build.
+#[test]
+fn lib_mode_records_the_declared_toolchain() {
+    let schemas = vec![("chat".to_string(), vec![user_struct()])];
+    let req = GenRequest { lang_version: "1.74.0".into(), ..lib_req(&schemas) };
+    let files = generate_rust(&req).unwrap();
+    let manifest = &files
+        .iter()
+        .find(|f| f.path.to_str() == Some("Cargo.toml"))
+        .expect("a lib build has a manifest")
+        .contents;
+    assert!(manifest.contains("rust-version = \"1.74.0\""), "{manifest}");
 }
 
 /// `main` imports and uses `Shared`, declared over in the `shared` schema -

@@ -7,15 +7,25 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 use comline_codegen::{GenRequest, Mode, PackageMeta};
-use comline_codegen_rust::generate_rust;
+use comline_codegen_rust::{generate_rust, STD_REV};
 use comline_core::package::build::PackageSources;
 use comline_core::package::stdlib;
 use comline_core::schema::ir::frozen::unit::FrozenUnit;
 
 fn main() -> eyre::Result<()> {
     let check = std::env::args().any(|a| a == "--check");
+    // Deliberately its own flag, not part of `--check`. Regenerating
+    // `std-extra/` and repointing `STD_REV` at it cannot happen in one
+    // commit - the rev to point at is the merge commit that does not exist
+    // yet - so a PR that legitimately changes std's output would always
+    // fail a combined check. CI runs `--check` on every push and this one
+    // only on the default branch, where the merge commit exists.
+    if std::env::args().any(|a| a == "--check-pin") {
+        std::process::exit(if stale_pin()? { 1 } else { 0 });
+    }
 
     // std's own real manifest (`congregation std`) - compiling it standalone
     // means every schema's own namespace comes out prefixed with that
@@ -48,6 +58,9 @@ fn main() -> eyre::Result<()> {
         mode: Mode::Lib,
         schemas: &schemas,
         package: PackageMeta { name: "comline_std".to_string(), version: "0.1.0".to_string() },
+        // The one generator this crate registers, so the version it
+        // registers under is the one `comline_std`'s own manifest states.
+        lang_version: comline_codegen_rust::LANG_VERSION.to_string(),
         default_framing: None,
         // comline_std is generated inline, as an ordinary standalone
         // crate - external_std only matters to a *consumer* referencing
@@ -81,4 +94,49 @@ fn main() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+/// Whether `generator.rs`'s `STD_REV` points at a commit older than the
+/// `std-extra/` sitting beside it.
+///
+/// Checking the *contents* is only half the guarantee. Every consumer
+/// generating in `lib` mode links `comline_std` by default, and reaches it
+/// through that pinned rev - so a correctly regenerated `std-extra/` with a
+/// pin still on the previous commit ships the old std to everyone, and
+/// nothing fails anywhere. This is what stands between a regeneration and
+/// that.
+///
+/// Skipped (not failed) when git can't answer - a published tarball, a
+/// shallow clone that doesn't contain `STD_REV`. A missing guard beats a
+/// false alarm in a tree that cannot run the guard at all.
+fn stale_pin() -> eyre::Result<bool> {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+
+    let reachable = Command::new("git")
+        .args(["cat-file", "-e", &format!("{STD_REV}^{{commit}}")])
+        .current_dir(&repo)
+        .status();
+    match reachable {
+        Ok(status) if status.success() => {}
+        _ => {
+            eprintln!("note: STD_REV ({STD_REV}) isn't in this checkout - skipping the pin check");
+            return Ok(false);
+        }
+    }
+
+    let diff = Command::new("git")
+        .args(["diff", "--quiet", STD_REV, "HEAD", "--", "std-extra"])
+        .current_dir(&repo)
+        .status()?;
+    if diff.success() {
+        return Ok(false);
+    }
+
+    eprintln!(
+        "STD_REV ({STD_REV}) predates changes to std-extra/ - every `lib`-mode \
+         consumer would link the old std.\n\
+         Merge this, then repoint STD_REV in codegen/src/generator.rs at the \
+         merge commit."
+    );
+    Ok(true)
 }
