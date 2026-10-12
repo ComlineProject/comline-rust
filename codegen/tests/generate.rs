@@ -194,6 +194,7 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
             kind_value: KindValue::Namespaced("string".to_string(), None),
             span: (0, 0),
         }],
+        span: Some((0, 0)),
     };
     let proto = FrozenUnit::Protocol {
         docstring: "Chat".to_string(),
