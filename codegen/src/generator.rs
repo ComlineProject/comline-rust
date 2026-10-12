@@ -29,7 +29,7 @@ const RUNTIME_REV: &str = "0dda42de5105e75e339bf66fa38085bd53ab9ab9";
 /// `comline-runtime` above, pointing at `comline-rust`'s own `std-extra/`
 /// (see `xtask/`, which regenerates it and is what this pin must match).
 const STD_GIT: &str = "https://github.com/ComlineProject/comline-rust";
-pub const STD_REV: &str = "3fde4a968319cbf6baac1e5c812aaa042cc8a0da";
+pub const STD_REV: &str = "09cd2e095196a7e1ca34b0814fd5c6f347015226";
 
 /// Whether a `/`-joined namespace is `std` or nested under it - the only
 /// provenance signal std's schemas carry by the time they reach this
