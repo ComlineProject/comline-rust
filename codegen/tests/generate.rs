@@ -605,10 +605,12 @@ fn lib_mode_rejects_a_schema_named_lib() {
 /// so the `pub mod foo;` tree is written over the crate root just as a
 /// schema named `lib` was.
 ///
-/// Core's reserved-name check is on a schema's own file name, so `lib/foo`
-/// gets past it; checking a namespace's first segment rather than the whole
-/// of it is what closes this, and the shared tree does that for both
-/// targets.
+/// Core refuses this too - `reserved_in_namespace` checks *every* segment,
+/// so `lib/foo.ids` never reaches a generator from a real project. This is
+/// the same defence-in-depth as the `lib` case above: `GenRequest` is a
+/// public contract, and a caller building one by hand gets told rather than
+/// silently wrecked. Checking a namespace's first segment rather than the
+/// whole of it is what closes it, for both targets at once.
 #[test]
 fn lib_mode_rejects_a_schema_nested_under_lib() {
     let schemas = vec![("lib/foo".to_string(), vec![user_struct()])];
