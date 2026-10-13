@@ -854,3 +854,92 @@ fn external_std_without_any_std_reference_adds_no_dependency() {
         .contents;
     assert!(!cargo_toml.contains("comline_std"), "got: {cargo_toml}");
 }
+
+/// A schema of nothing but constants generated an empty file - the
+/// declarations were dropped on the floor, in both targets.
+#[test]
+fn constants_are_emitted_with_the_type_they_declared() {
+    let schemas = vec![(
+        "limits".to_string(),
+        vec![
+            FrozenUnit::Constant {
+                docstring: Some("How many times a client retries.".to_string()),
+                name: "MAX_RETRIES".to_string(),
+                kind_value: KindValue::Primitive(Primitive::U8(Some(5))),
+                span: (0, 0),
+            },
+            FrozenUnit::Constant {
+                docstring: None,
+                name: "SERVICE_NAME".to_string(),
+                kind_value: KindValue::Primitive(Primitive::String(Some("store".to_string()))),
+                span: (0, 0),
+            },
+            FrozenUnit::Constant {
+                docstring: None,
+                name: "DEBUG".to_string(),
+                kind_value: KindValue::Primitive(Primitive::Boolean(Some(true))),
+                span: (0, 0),
+            },
+            FrozenUnit::Constant {
+                docstring: None,
+                name: "OFFSET".to_string(),
+                kind_value: KindValue::Primitive(Primitive::S16(Some(-3))),
+                span: (0, 0),
+            },
+        ],
+    )];
+    let files = generate_rust(&code_req(&schemas)).unwrap();
+    let out = &files[0].contents;
+
+    assert!(
+        out.contains("/// How many times a client retries.\npub const MAX_RETRIES: u8 = 5;"),
+        "got: {out}"
+    );
+    // `u8`, not `u64` - the width survives because core stopped inferring
+    // the primitive from the literal.
+    assert!(!out.contains("MAX_RETRIES: u64"), "got: {out}");
+    // `String` cannot be constructed in a `const`; `&str` rather than
+    // `&'static str` because clippy fires on the explicit lifetime.
+    assert!(
+        out.contains("pub const SERVICE_NAME: &str = \"store\";"),
+        "got: {out}"
+    );
+    assert!(out.contains("pub const DEBUG: bool = true;"), "got: {out}");
+    // The IDL spells signed integers `s16`; Rust's own primitive is `i16`.
+    assert!(out.contains("pub const OFFSET: i16 = -3;"), "got: {out}");
+}
+
+/// Nothing in this file derives anything, so the serde import was pure
+/// noise - and a warning in generated code is one a consumer cannot fix.
+/// `std/validators` is the real case: it declares only validators, so its
+/// generated file *was* the unused import.
+#[test]
+fn a_file_with_nothing_to_derive_imports_no_serde() {
+    let schemas = vec![(
+        "limits".to_string(),
+        vec![FrozenUnit::Constant {
+            docstring: None,
+            name: "MAX".to_string(),
+            kind_value: KindValue::Primitive(Primitive::U8(Some(1))),
+            span: (0, 0),
+        }],
+    )];
+    let out = generate_rust(&code_req(&schemas)).unwrap()[0]
+        .contents
+        .clone();
+    assert!(!out.contains("use serde"), "got: {out}");
+    assert!(out.contains("pub const MAX: u8 = 1;"), "got: {out}");
+}
+
+/// ...and a file that *does* declare a derived type still imports it.
+#[test]
+fn a_file_with_a_struct_still_imports_serde() {
+    let schemas = vec![("api".to_string(), vec![user_struct()])];
+    let out = generate_rust(&code_req(&schemas)).unwrap()[0]
+        .contents
+        .clone();
+    assert!(
+        out.contains("use serde::{Deserialize, Serialize};"),
+        "got: {out}"
+    );
+}

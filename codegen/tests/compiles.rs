@@ -310,3 +310,36 @@ fn build_generated_crate(
         dir.display()
     );
 }
+
+/// Constants of every shape the IDL allows, actually compiled. String
+/// assertions cannot catch `&'static str` tripping clippy, a `u8` holding a
+/// value only a `u64` could, or a signed constant keeping the IDL's `s`
+/// spelling instead of Rust's `i`.
+#[test]
+fn a_generated_crate_with_constants_builds() {
+    let constant = |name: &str, kind: Primitive| FrozenUnit::Constant {
+        docstring: None,
+        name: name.to_string(),
+        kind_value: KindValue::Primitive(kind),
+        span: (0, 0),
+    };
+    let schemas = vec![(
+        "limits".to_string(),
+        vec![
+            constant("MAX_RETRIES", Primitive::U8(Some(5))),
+            constant("WINDOW", Primitive::U16(Some(1024))),
+            constant("CAPACITY", Primitive::U32(Some(70000))),
+            constant("TOTAL", Primitive::U64(Some(5_000_000_000))),
+            constant("HUGE", Primitive::U128(Some(1))),
+            constant("OFFSET", Primitive::S8(Some(-3))),
+            constant("DELTA", Primitive::S16(Some(-300))),
+            constant("DRIFT", Primitive::S32(Some(-70000))),
+            constant("SKEW", Primitive::S64(Some(-5_000_000_000))),
+            constant("DEEP", Primitive::S128(Some(-1))),
+            constant("DEBUG", Primitive::Boolean(Some(true))),
+            constant("QUIET", Primitive::Boolean(Some(false))),
+            constant("SERVICE_NAME", Primitive::String(Some("store".to_string()))),
+        ],
+    )];
+    build_generated_crate("constants", &schemas, None, false);
+}
