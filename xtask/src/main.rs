@@ -57,7 +57,10 @@ fn main() -> eyre::Result<()> {
     let req = GenRequest {
         mode: Mode::Lib,
         schemas: &schemas,
-        package: PackageMeta { name: "comline_std".to_string(), version: "0.1.0".to_string() },
+        package: PackageMeta {
+            name: "comline_std".to_string(),
+            version: "0.1.0".to_string(),
+        },
         // The one generator this crate registers, so the version it
         // registers under is the one `comline_std`'s own manifest states.
         lang_version: comline_codegen_rust::LANG_VERSION.to_string(),

@@ -1,13 +1,16 @@
 use comline_codegen::{GenRequest, Mode, PackageMeta};
 use comline_codegen_rust::generate_rust;
-use comline_core::schema::ir::frozen::unit::{ConfigValue, FrozenUnit, FrozenArgument};
 use comline_core::schema::ir::compiler::interpreted::kind_search::{KindValue, Primitive};
+use comline_core::schema::ir::frozen::unit::{ConfigValue, FrozenArgument, FrozenUnit};
 
 fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
     GenRequest {
         mode: Mode::Code,
         schemas,
-        package: PackageMeta { name: "test".into(), version: "0.1.0".into() },
+        package: PackageMeta {
+            name: "test".into(),
+            version: "0.1.0".into(),
+        },
         lang_version: comline_codegen_rust::LANG_VERSION.into(),
         default_framing: None,
         external_std: false,
@@ -18,7 +21,10 @@ fn lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
     GenRequest {
         mode: Mode::Lib,
         schemas,
-        package: PackageMeta { name: "chat".into(), version: "0.3.0".into() },
+        package: PackageMeta {
+            name: "chat".into(),
+            version: "0.3.0".into(),
+        },
         lang_version: comline_codegen_rust::LANG_VERSION.into(),
         default_framing: None,
         external_std: false,
@@ -107,15 +113,16 @@ fn code_mode_generates_enum_and_protocol() {
     };
 
     let schemas = vec![("account".to_string(), vec![enum_unit, proto])];
-    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    let src = generate_rust(&code_req(&schemas))
+        .unwrap()
+        .remove(0)
+        .contents;
 
     assert!(src.contains("pub enum Status"));
     assert!(src.contains("Active,"));
     // provider trait: `&self`, a `Result`, a per-function error enum
     assert!(src.contains("pub trait UserService {"));
-    assert!(src.contains(
-        "fn get_user(&self, id: i32) -> Result<User, UserServiceGetUserError>;"
-    ));
+    assert!(src.contains("fn get_user(&self, id: i32) -> Result<User, UserServiceGetUserError>;"));
     // params struct + the runtime imports + the call table
     assert!(src.contains("use comline_runtime::client::Client;"));
     assert!(src.contains("pub struct UserServiceGetUserParams {"));
@@ -130,13 +137,10 @@ fn code_mode_generates_enum_and_protocol() {
     // handshake: an IR fingerprint + connect / serve helpers
     assert!(src.contains("pub const IR_HASH: u64 = 0x"));
     assert!(src.contains("pub fn connect(transport: T, format: W) -> Result<Self, RuntimeError>"));
-    assert!(src.contains(
-        "let hs = Handshake::new(IR_HASH, format.name(), FRAMING_DATAGRAM, 0);"
-    ));
+    assert!(src.contains("let hs = Handshake::new(IR_HASH, format.name(), FRAMING_DATAGRAM, 0);"));
     assert!(src.contains("impl<S: UserService> UserServiceDispatcher<S> {"));
-    assert!(src.contains(
-        "pub fn serve<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)"
-    ));
+    assert!(src
+        .contains("pub fn serve<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)"));
     assert!(src.contains("Server::new(self, format).serve_handshaked(transport, hs)"));
 }
 
@@ -164,7 +168,10 @@ fn code_mode_emits_a_type_alias_and_fields_reference_it_by_name() {
     };
 
     let schemas = vec![("account".to_string(), vec![alias, user])];
-    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    let src = generate_rust(&code_req(&schemas))
+        .unwrap()
+        .remove(0)
+        .contents;
 
     assert!(src.contains("pub type UserId = u64;"), "got: {src}");
     assert!(src.contains("pub sender: UserId,"), "got: {src}");
@@ -173,7 +180,10 @@ fn code_mode_emits_a_type_alias_and_fields_reference_it_by_name() {
 #[test]
 fn a_schema_without_a_protocol_has_no_ir_hash() {
     let schemas = vec![("plain".to_string(), vec![user_struct()])];
-    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    let src = generate_rust(&code_req(&schemas))
+        .unwrap()
+        .remove(0)
+        .contents;
     assert!(!src.contains("IR_HASH"));
     assert!(!src.contains("comline_runtime"));
 }
@@ -245,7 +255,10 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
     };
 
     let schemas = vec![("chat".to_string(), vec![rejected, proto])];
-    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    let src = generate_rust(&code_req(&schemas))
+        .unwrap()
+        .remove(0)
+        .contents;
 
     // the error struct
     assert!(src.contains("pub struct Rejected {"));
@@ -268,8 +281,12 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
     assert!(src.contains(r#"self.0.call(Call::new(1, "ping"), &())"#));
     // a `str` arg is borrowed
     assert!(src.contains("fn send(&self, body: &str) -> Result<(), ChatSendError>;"));
-    assert!(src.contains("pub struct ChatSendParams<'a> {\n    #[serde(borrow)]\n    pub body: &'a str,\n}"));
-    assert!(src.contains("pub fn send(&mut self, body: &str) -> Result<(), CallError<ChatSendError>>"));
+    assert!(src.contains(
+        "pub struct ChatSendParams<'a> {\n    #[serde(borrow)]\n    pub body: &'a str,\n}"
+    ));
+    assert!(
+        src.contains("pub fn send(&mut self, body: &str) -> Result<(), CallError<ChatSendError>>")
+    );
 
     // one-way `poke`: no error enum, a plain trait method, a `notify` client
     assert!(!src.contains("ChatPokeError"));
@@ -312,7 +329,10 @@ fn timeout_ms_annotation_emits_call_with_timeout() {
         span: (0, 0),
     };
     let schemas = vec![("api".to_string(), vec![proto])];
-    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    let src = generate_rust(&code_req(&schemas))
+        .unwrap()
+        .remove(0)
+        .contents;
 
     assert!(src.contains(
         r#"self.0.call_with_timeout(Call::new(0, "slow"), &(), core::time::Duration::from_millis(2500))?;"#
@@ -342,7 +362,10 @@ fn framing_annotation_selects_jsonrpc_for_the_connect_and_serve_helpers() {
         span: (0, 0),
     };
     let schemas = vec![("rpc".to_string(), vec![proto])];
-    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    let src = generate_rust(&code_req(&schemas))
+        .unwrap()
+        .remove(0)
+        .contents;
 
     // the `Framing` trait is in scope (the helpers call `framing.name()`)
     assert!(src.contains("\n    Framing,\n"));
@@ -448,7 +471,10 @@ fn an_all_one_way_protocol_leaves_the_dispatch_reply_param_unbound() {
         span: (0, 0),
     };
     let schemas = vec![("bus".to_string(), vec![proto])];
-    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    let src = generate_rust(&code_req(&schemas))
+        .unwrap()
+        .remove(0)
+        .contents;
     assert!(src.contains("_reply: &mut Reply,"));
     assert!(!src.contains("\n        reply: &mut Reply,"));
 }
@@ -474,7 +500,10 @@ fn lib_mode_emits_a_crate() {
     assert!(lib.contains("pub mod account;"));
     assert!(lib.contains("pub mod billing;"));
 
-    assert!(by_path("src/account.rs").expect("src/account.rs").contents.contains("pub struct User"));
+    assert!(by_path("src/account.rs")
+        .expect("src/account.rs")
+        .contents
+        .contains("pub struct User"));
     assert!(by_path("src/billing.rs").is_some());
 }
 
@@ -493,7 +522,9 @@ fn lib_mode_nests_a_single_level() {
     // not also carry `user`'s generated code.
     assert!(!account.contains("pub struct User"));
 
-    let user = &by_path("src/account/user.rs").expect("src/account/user.rs").contents;
+    let user = &by_path("src/account/user.rs")
+        .expect("src/account/user.rs")
+        .contents;
     assert!(user.contains("pub struct User"));
 }
 
@@ -508,7 +539,10 @@ fn lib_mode_nests_multiple_schemas_under_one_namespace() {
     let files = generate_rust(&lib_req(&schemas)).unwrap();
     let by_path = |p: &str| files.iter().find(|f| f.path.to_str().unwrap() == p);
 
-    assert!(by_path("src/lib.rs").unwrap().contents.contains("pub mod std;"));
+    assert!(by_path("src/lib.rs")
+        .unwrap()
+        .contents
+        .contains("pub mod std;"));
 
     let std_mod = &by_path("src/std.rs").expect("src/std.rs").contents;
     assert!(std_mod.contains("pub mod http;"));
@@ -527,10 +561,19 @@ fn lib_mode_nests_multiple_levels() {
     let files = generate_rust(&lib_req(&schemas)).unwrap();
     let by_path = |p: &str| files.iter().find(|f| f.path.to_str().unwrap() == p);
 
-    assert!(by_path("src/lib.rs").unwrap().contents.contains("pub mod a;"));
+    assert!(by_path("src/lib.rs")
+        .unwrap()
+        .contents
+        .contains("pub mod a;"));
     assert!(by_path("src/a.rs").unwrap().contents.contains("pub mod b;"));
-    assert!(by_path("src/a/b.rs").unwrap().contents.contains("pub mod c;"));
-    assert!(by_path("src/a/b/c.rs").unwrap().contents.contains("pub struct User"));
+    assert!(by_path("src/a/b.rs")
+        .unwrap()
+        .contents
+        .contains("pub mod c;"));
+    assert!(by_path("src/a/b/c.rs")
+        .unwrap()
+        .contents
+        .contains("pub struct User"));
 }
 
 #[test]
@@ -562,7 +605,10 @@ fn lib_mode_rejects_a_schema_named_lib() {
 #[test]
 fn lib_mode_records_the_declared_toolchain() {
     let schemas = vec![("chat".to_string(), vec![user_struct()])];
-    let req = GenRequest { lang_version: "1.74.0".into(), ..lib_req(&schemas) };
+    let req = GenRequest {
+        lang_version: "1.74.0".into(),
+        ..lib_req(&schemas)
+    };
     let files = generate_rust(&req).unwrap();
     let manifest = &files
         .iter()
@@ -607,15 +653,25 @@ fn cross_namespace_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
         }],
         span: (0, 0),
     }];
-    vec![("main".to_string(), main_schema), ("shared".to_string(), shared_schema)]
+    vec![
+        ("main".to_string(), main_schema),
+        ("shared".to_string(), shared_schema),
+    ]
 }
 
 #[test]
 fn code_mode_qualifies_a_cross_namespace_field_type() {
     let schemas = cross_namespace_schemas();
     let files = generate_rust(&code_req(&schemas)).unwrap();
-    let main_rs = &files.iter().find(|f| f.path.to_str().unwrap() == "main.rs").unwrap().contents;
-    assert!(main_rs.contains("pub value: crate::shared::Shared,"), "got: {main_rs}");
+    let main_rs = &files
+        .iter()
+        .find(|f| f.path.to_str().unwrap() == "main.rs")
+        .unwrap()
+        .contents;
+    assert!(
+        main_rs.contains("pub value: crate::shared::Shared,"),
+        "got: {main_rs}"
+    );
 }
 
 #[test]
@@ -625,17 +681,29 @@ fn lib_mode_qualifies_a_cross_namespace_field_type_consistently_with_module_tree
     let by_path = |p: &str| files.iter().find(|f| f.path.to_str().unwrap() == p);
 
     let main_rs = &by_path("src/main.rs").unwrap().contents;
-    assert!(main_rs.contains("pub value: crate::shared::Shared,"), "got: {main_rs}");
+    assert!(
+        main_rs.contains("pub value: crate::shared::Shared,"),
+        "got: {main_rs}"
+    );
     // The qualified path's namespace segment must be the same one
     // `ModuleTree` declared a `pub mod` for.
-    assert!(by_path("src/lib.rs").unwrap().contents.contains("pub mod shared;"));
+    assert!(by_path("src/lib.rs")
+        .unwrap()
+        .contents
+        .contains("pub mod shared;"));
 }
 
 #[test]
 fn a_same_schema_local_reference_stays_bare() {
     let schemas = vec![("account".to_string(), vec![user_struct()])];
-    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
-    assert!(!src.contains("crate::"), "a local reference must not be qualified: {src}");
+    let src = generate_rust(&code_req(&schemas))
+        .unwrap()
+        .remove(0)
+        .contents;
+    assert!(
+        !src.contains("crate::"),
+        "a local reference must not be qualified: {src}"
+    );
 }
 
 /// `main` imports and uses `Request`, declared over in `std/http` - the
@@ -673,24 +741,42 @@ fn std_reference_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
         }],
         span: (0, 0),
     }];
-    vec![("main".to_string(), main_schema), ("std/http".to_string(), std_http_schema)]
+    vec![
+        ("main".to_string(), main_schema),
+        ("std/http".to_string(), std_http_schema),
+    ]
 }
 
 fn external_std_code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
-    GenRequest { external_std: true, ..code_req(schemas) }
+    GenRequest {
+        external_std: true,
+        ..code_req(schemas)
+    }
 }
 
 fn external_std_lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
-    GenRequest { external_std: true, ..lib_req(schemas) }
+    GenRequest {
+        external_std: true,
+        ..lib_req(schemas)
+    }
 }
 
 #[test]
 fn external_std_off_is_unchanged_from_today() {
     let schemas = std_reference_schemas();
     let files = generate_rust(&code_req(&schemas)).unwrap();
-    assert!(files.iter().any(|f| f.path.to_str().unwrap() == "std/http.rs"));
-    let main_rs = &files.iter().find(|f| f.path.to_str().unwrap() == "main.rs").unwrap().contents;
-    assert!(main_rs.contains("pub request: crate::std::http::Request,"), "got: {main_rs}");
+    assert!(files
+        .iter()
+        .any(|f| f.path.to_str().unwrap() == "std/http.rs"));
+    let main_rs = &files
+        .iter()
+        .find(|f| f.path.to_str().unwrap() == "main.rs")
+        .unwrap()
+        .contents;
+    assert!(
+        main_rs.contains("pub request: crate::std::http::Request,"),
+        "got: {main_rs}"
+    );
     assert!(!main_rs.contains("comline_std"));
 }
 
@@ -699,11 +785,20 @@ fn external_std_filters_stds_own_file_and_qualifies_the_reference_in_code_mode()
     let schemas = std_reference_schemas();
     let files = generate_rust(&external_std_code_req(&schemas)).unwrap();
     assert!(
-        !files.iter().any(|f| f.path.to_str().unwrap() == "std/http.rs"),
+        !files
+            .iter()
+            .any(|f| f.path.to_str().unwrap() == "std/http.rs"),
         "std's own file should not be emitted when external_std is on"
     );
-    let main_rs = &files.iter().find(|f| f.path.to_str().unwrap() == "main.rs").unwrap().contents;
-    assert!(main_rs.contains("pub request: comline_std::http::Request,"), "got: {main_rs}");
+    let main_rs = &files
+        .iter()
+        .find(|f| f.path.to_str().unwrap() == "main.rs")
+        .unwrap()
+        .contents;
+    assert!(
+        main_rs.contains("pub request: comline_std::http::Request,"),
+        "got: {main_rs}"
+    );
     assert!(
         main_rs.contains("// comline_std = { git ="),
         "code mode has no manifest to add the dependency to - it should say so: {main_rs}"
@@ -721,15 +816,25 @@ fn external_std_adds_the_comline_std_dependency_in_lib_mode() {
         "std's own file should not be emitted when external_std is on"
     );
     let cargo_toml = &by_path("Cargo.toml").unwrap().contents;
-    assert!(cargo_toml.contains("comline_std = { git ="), "got: {cargo_toml}");
+    assert!(
+        cargo_toml.contains("comline_std = { git ="),
+        "got: {cargo_toml}"
+    );
     let main_rs = &by_path("src/main.rs").unwrap().contents;
-    assert!(main_rs.contains("pub request: comline_std::http::Request,"), "got: {main_rs}");
+    assert!(
+        main_rs.contains("pub request: comline_std::http::Request,"),
+        "got: {main_rs}"
+    );
 }
 
 #[test]
 fn external_std_without_any_std_reference_adds_no_dependency() {
     let schemas = vec![("account".to_string(), vec![user_struct()])];
     let files = generate_rust(&external_std_lib_req(&schemas)).unwrap();
-    let cargo_toml = &files.iter().find(|f| f.path.to_str().unwrap() == "Cargo.toml").unwrap().contents;
+    let cargo_toml = &files
+        .iter()
+        .find(|f| f.path.to_str().unwrap() == "Cargo.toml")
+        .unwrap()
+        .contents;
     assert!(!cargo_toml.contains("comline_std"), "got: {cargo_toml}");
 }

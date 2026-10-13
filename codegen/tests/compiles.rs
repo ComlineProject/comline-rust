@@ -201,6 +201,50 @@ fn a_generated_crate_linking_comline_std_builds() {
     build_generated_crate("externalstd", &schemas, None, true);
 }
 
+/// An aliased cross-schema import has to resolve to the name the *other*
+/// schema exports, not to this schema's name for it: `use shared::Shared as
+/// Aliased` binds `Aliased` here while `shared` still exports only `Shared`.
+/// Emitting `crate::shared::Aliased` is well-formed Rust naming nothing, so
+/// only a build catches it - and that is how it survived: the unit test
+/// asserted the path *prefix*, which was right, while the path it produced
+/// was wrong.
+///
+/// Found by the multi-schema conformance corpus, which until then could not
+/// express a reference that crosses schemas at all.
+#[test]
+fn a_generated_crate_with_an_aliased_import_builds() {
+    let schemas = vec![
+        (
+            "shared".to_string(),
+            vec![FrozenUnit::Struct {
+                docstring: None,
+                parameters: vec![],
+                name: "Shared".to_string(),
+                fields: vec![field("value", "s32")],
+                span: (0, 0),
+            }],
+        ),
+        (
+            "consumer".to_string(),
+            vec![
+                FrozenUnit::Import(
+                    "shared::Shared".to_string(),
+                    Some("Aliased".to_string()),
+                    (0, 0),
+                ),
+                FrozenUnit::Struct {
+                    docstring: None,
+                    parameters: vec![],
+                    name: "Holder".to_string(),
+                    fields: vec![field("one", "Aliased")],
+                    span: (0, 0),
+                },
+            ],
+        ),
+    ];
+    build_generated_crate("aliasimport", &schemas, None, false);
+}
+
 /// A struct whose field is typed by `std`'s `Request`, with the leaf import
 /// core expands `use std::http::Request;` into before the generator sees it.
 fn uses_std_http() -> Vec<FrozenUnit> {
