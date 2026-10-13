@@ -143,7 +143,9 @@ impl TreeLayout for RustLayout {
     /// The check is on a namespace's *first* segment, so `lib/foo` is
     /// refused too — it would make `lib` a grouping node whose own file is
     /// `src/lib.rs`, clobbering the crate root exactly as a schema named
-    /// `lib` did.
+    /// `lib` did. Core's own check covers both from a real project
+    /// (`reserved_in_namespace` looks at every segment); this is for a
+    /// `GenRequest` built by hand.
     fn reserved_root_reason(&self, _name: &str) -> String {
         "`src/lib.rs` is the crate root, so a schema there would overwrite \
          the module tree - rename the schema"
