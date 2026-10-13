@@ -15,8 +15,12 @@ use comline_core::schema::ir::compiler::interpreted::kind_search::KindValue;
 use comline_core::schema::ir::frozen::schema_ir_hash;
 use comline_core::schema::ir::frozen::unit::{FrozenArgument, FrozenUnit};
 
-use eyre::{bail, Result};
+use eyre::Result;
 
+use comline_codegen::modules::{NamespaceTree, TreeLayout};
+use comline_codegen::naming::{pascal, screaming_snake};
+use comline_codegen::stdlib::{self, is_std_namespace};
+use comline_codegen::symbols::{error_names, Origin, SymbolTable};
 use comline_codegen::{GenRequest, GeneratedFile, Mode, PackageMeta};
 
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
@@ -31,36 +35,15 @@ const RUNTIME_REV: &str = "0dda42de5105e75e339bf66fa38085bd53ab9ab9";
 const STD_GIT: &str = "https://github.com/ComlineProject/comline-rust";
 pub const STD_REV: &str = "09cd2e095196a7e1ca34b0814fd5c6f347015226";
 
-/// Whether a `/`-joined namespace is `std` or nested under it - the only
-/// provenance signal std's schemas carry by the time they reach this
-/// generator (`package::stdlib`'s own namespace-prefixing convention).
-fn is_std_namespace(namespace: &str) -> bool {
-    namespace == "std" || namespace.starts_with("std/")
-}
-
 pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     let default_framing = req.default_framing.as_deref();
 
-    // Kept zero-cost (no clone) when `external_std` is off, so today's
-    // output stays byte-for-byte identical - only built when actually
-    // filtering something out.
-    let without_std: Vec<(String, Vec<FrozenUnit>)>;
-    let schemas: &[(String, Vec<FrozenUnit>)] = if req.external_std {
-        without_std = req
-            .schemas
-            .iter()
-            .filter(|(namespace, _)| !is_std_namespace(namespace))
-            .cloned()
-            .collect();
-        &without_std
-    } else {
-        req.schemas
-    };
-    let needs_std_dep = req.external_std
-        && req
-            .schemas
-            .iter()
-            .any(|(namespace, _)| is_std_namespace(namespace));
+    // Only *emission* is narrowed by `external_std`; `req.schemas` stays
+    // the list every reference resolves against. `stdlib::split` carries
+    // that distinction, and the "declare the dependency only if std was
+    // actually there" subtlety with it.
+    let std = stdlib::split(req.schemas, req.external_std);
+    let schemas = std.emitted.as_ref();
 
     match req.mode {
         // No manifest to add `comline_std` to on the caller's behalf here
@@ -70,7 +53,8 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
         Mode::Code => Ok(schemas
             .iter()
             .map(|(namespace, units)| {
-                let contents = schema_source(units, default_framing, req.external_std);
+                let contents =
+                    schema_source(units, req.schemas, default_framing, req.external_std);
                 let contents = if contents.contains("comline_std::") {
                     format!(
                         "// This file references `comline_std` - add it to your Cargo.toml:\n\
@@ -84,136 +68,86 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
             .collect()),
 
         Mode::Lib => {
-            let tree = ModuleTree::build(schemas)?;
+            let tree = NamespaceTree::build(schemas, &RustLayout)?;
 
             let has_protocol = schemas
                 .iter()
                 .any(|(_, units)| units.iter().any(|u| matches!(u, FrozenUnit::Protocol { .. })));
 
-            let mut files = vec![
-                GeneratedFile {
-                    path: PathBuf::from("Cargo.toml"),
-                    contents: cargo_toml(
-                        &req.package, &req.lang_version, has_protocol, needs_std_dep,
-                    ),
-                },
-                GeneratedFile {
-                    path: PathBuf::from("src/lib.rs"),
-                    contents: tree.mod_decls(),
-                },
-            ];
-            tree.emit_files("src", default_framing, req.external_std, &mut files);
+            let mut files = vec![GeneratedFile {
+                path: PathBuf::from("Cargo.toml"),
+                contents: cargo_toml(
+                    &req.package,
+                    &req.lang_version,
+                    has_protocol,
+                    std.needs_std_dependency,
+                ),
+            }];
+            // The render closure takes every schema in the request, not just
+            // the ones in this tree: a reference resolves against all of
+            // them, including an external `std` this crate emits no file for.
+            files.extend(tree.emit("src", &RustLayout, &|_namespace, units| {
+                schema_source(units, req.schemas, default_framing, req.external_std)
+            }));
             Ok(files)
         }
     }
 }
 
-/// The `pub mod` tree `lib` mode's crate needs: each `/`-joined namespace
-/// segment becomes one level of nesting, 2021-edition style (`std.rs` +
-/// `std/validators.rs`, no `mod.rs`). A node is either a schema (leaf) or a
-/// grouping of deeper namespaces (like `std` grouping `std/validators` and
-/// `std/http`) - never both, since there'd be nowhere to put one file's
-/// content: Rust needs `src/std.rs` to be *either* `std`'s own generated
-/// code *or* its `pub mod validators;` declarations, not both.
-struct ModuleTree<'a> {
-    units: Option<&'a [FrozenUnit]>,
-    // Alphabetical, not first-seen order: deterministic generated output
-    // (stable for diffing/CAS) matters more than mirroring schema order.
-    children: std::collections::BTreeMap<String, ModuleTree<'a>>,
-}
+/// What Rust decides differently about the `src/` tree
+/// ([`comline_codegen::modules`] holds the rest).
+///
+/// Three things: the extension, a module file *beside* its directory rather
+/// than inside it (2021-edition style — `src/std.rs` + `src/std/http.rs`, no
+/// `mod.rs`), with the crate root the one special case (`src/lib.rs`, not
+/// `src.rs`), and `pub mod` as the declaration — which, unlike TypeScript's
+/// `export * as`, is the same line whether the child is a schema or a
+/// grouping, since Rust resolves `foo` to `foo.rs` or `foo/` itself.
+///
+/// Plus the one reserved root: `lib` is the crate root.
+struct RustLayout;
 
-impl<'a> ModuleTree<'a> {
-    fn empty() -> Self {
-        Self {
-            units: None,
-            children: Default::default(),
+impl TreeLayout for RustLayout {
+    fn ext(&self) -> &str {
+        "rs"
+    }
+
+    /// Beside the directory, except at the crate root.
+    fn group_file(&self, prefix: &str, is_root: bool) -> String {
+        if is_root {
+            format!("{prefix}/lib.rs")
+        } else {
+            format!("{prefix}.rs")
         }
     }
 
-    fn build(schemas: &'a [(String, Vec<FrozenUnit>)]) -> Result<Self> {
-        let mut root = Self::empty();
-        for (namespace, units) in schemas {
-            // `src/lib.rs` is this crate's root, written before any schema
-            // file - a schema of the same name would be emitted over it and
-            // take the whole `pub mod` tree with it. Core refuses the name
-            // when a package is compiled; this catches a `GenRequest` built
-            // directly, since that is a public contract.
-            if namespace == "lib" {
-                bail!(
-                    "rust lib mode can't generate `lib`: `src/lib.rs` is the \
-                     crate root, so a schema of that name would overwrite the \
-                     module tree - rename the schema"
-                );
-            }
-            let mut node = &mut root;
-            for segment in namespace.split('/') {
-                node = node
-                    .children
-                    .entry(segment.to_string())
-                    .or_insert_with(Self::empty);
-            }
-            node.units = Some(units);
-        }
-        root.check_no_schema_is_also_a_namespace("")?;
-        Ok(root)
+    fn declare_child(&self, segment: &str, _child_is_leaf: bool) -> String {
+        format!("pub mod {segment};\n")
     }
 
-    fn check_no_schema_is_also_a_namespace(&self, path: &str) -> Result<()> {
-        if self.units.is_some() && !self.children.is_empty() {
-            bail!(
-                "rust lib mode can't generate `{path}`: it's both a schema and \
-                 a namespace of deeper schemas (e.g. `{path}/x`) - there's no \
-                 single file for that to be"
-            );
-        }
-        for (segment, child) in &self.children {
-            let child_path = if path.is_empty() {
-                segment.clone()
-            } else {
-                format!("{path}/{segment}")
-            };
-            child.check_no_schema_is_also_a_namespace(&child_path)?;
-        }
-        Ok(())
+    fn reserved_roots(&self) -> &[&str] {
+        &["lib"]
     }
 
-    /// `pub mod <segment>;` for each direct child, deduplicated - this
-    /// node's own module file content (`lib.rs` for the root, `src/std.rs`
-    /// for `std`'s own node, and so on).
-    fn mod_decls(&self) -> String {
-        let mut s = String::from("// Generated by Comline\n\n");
-        for segment in self.children.keys() {
-            s.push_str(&format!("pub mod {segment};\n"));
-        }
-        s
+    /// `src/std.rs` has to be *either* `std`'s own generated code *or* its
+    /// `pub mod` declarations, and there is nowhere to put the other.
+    fn ambiguity_reason(&self, _path: &str) -> String {
+        "there's no single file for that to be".to_string()
     }
 
-    /// Every file this node's children need, under `dir` (`"src"` for the
-    /// root): a leaf gets its generated schema code; a grouping node gets
-    /// its own `mod_decls` file, then recurses one level deeper.
-    fn emit_files(
-        &self,
-        dir: &str,
-        default_framing: Option<&str>,
-        external_std: bool,
-        files: &mut Vec<GeneratedFile>,
-    ) {
-        for (segment, child) in &self.children {
-            let path = format!("{dir}/{segment}");
-            match child.units {
-                Some(units) => files.push(GeneratedFile {
-                    path: PathBuf::from(format!("{path}.rs")),
-                    contents: schema_source(units, default_framing, external_std),
-                }),
-                None => {
-                    files.push(GeneratedFile {
-                        path: PathBuf::from(format!("{path}.rs")),
-                        contents: child.mod_decls(),
-                    });
-                    child.emit_files(&path, default_framing, external_std, files);
-                }
-            }
-        }
+    /// A schema named `lib` used to be emitted straight over `src/lib.rs`,
+    /// taking the whole `pub mod` tree with it. Core refuses the name when a
+    /// package is compiled; this catches a `GenRequest` built by hand, since
+    /// that is a public contract.
+    ///
+    /// The check is on a namespace's *first* segment, so `lib/foo` is
+    /// refused too — it would make `lib` a grouping node whose own file is
+    /// `src/lib.rs`, clobbering the crate root exactly as a schema named
+    /// `lib` did.
+    fn reserved_root_reason(&self, _name: &str) -> String {
+        "`src/lib.rs` is the crate root, so a schema there would overwrite \
+         the module tree - rename the schema"
+            .to_string()
     }
 }
 
@@ -258,14 +192,15 @@ fn cargo_toml(
 
 fn schema_source(
     units: &[FrozenUnit],
+    schemas: &[(String, Vec<FrozenUnit>)],
     default_framing: Option<&str>,
     external_std: bool,
 ) -> String {
     let has_protocol = units
         .iter()
         .any(|u| matches!(u, FrozenUnit::Protocol { .. }));
-    let errors = error_type_names(units);
-    let imports = build_import_map(units, external_std);
+    let errors = error_names(units);
+    let imports = import_paths(units, schemas, external_std);
 
     // Which framings the protocols in this file reach for. A non-datagram pick
     // pulls in the `Framing` trait (its helpers call `framing.name()`); the
@@ -436,17 +371,6 @@ fn data_enum(name: &str, variants: &[FrozenUnit]) -> String {
 }
 
 // ── protocol ───────────────────────────────────────────────────────────────
-
-/// Schema-global error ordinal → the Rust type name of its `error` struct.
-fn error_type_names(units: &[FrozenUnit]) -> HashMap<u16, String> {
-    units
-        .iter()
-        .filter_map(|u| match u {
-            FrozenUnit::Error { ordinal, name, .. } => Some((*ordinal, name.clone())),
-            _ => None,
-        })
-        .collect()
-}
 
 struct Arg {
     name: String,
@@ -634,7 +558,7 @@ fn protocol(
     }
     s.push_str("}\n\n");
 
-    let calls_const = format!("{}_CALLS", screaming(proto));
+    let calls_const = format!("{}_CALLS", screaming_snake(proto));
     s.push_str(&format!(
         "pub const {calls_const}: &[&str] = &[{}];\n\n",
         fns.iter()
@@ -965,39 +889,13 @@ fn sig_args(args: &[Arg]) -> String {
     format!(", {list}")
 }
 
-fn pascal(s: &str) -> String {
-    s.split('_')
-        .filter(|p| !p.is_empty())
-        .map(|p| {
-            let mut c = p.chars();
-            match c.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect()
-}
-
-/// `Chat` → `CHAT`, `UserService` → `USER_SERVICE`.
-fn screaming(s: &str) -> String {
-    let mut out = String::new();
-    for (i, c) in s.char_indices() {
-        if c.is_uppercase() && i != 0 {
-            out.push('_');
-        }
-        out.extend(c.to_uppercase());
-    }
-    out
-}
-
 /// Bare name as *this* schema binds it → the full path to write for it,
-/// already including `crate::` or `comline_std::` as appropriate, for every
-/// name this schema's own `use` declarations bind. Core fully expands every
-/// import form - plain, aliased, item-list, glob - into one leaf
-/// `FrozenUnit::Import(path, alias, _)` per bound name
-/// (`resolve_use_declaration`), so this never needs to look at another
-/// schema's units: everything a reference in `units` could legally resolve to
-/// is already a flat entry right here.
+/// already including `crate::` or `comline_std::` as appropriate.
+///
+/// [`SymbolTable`] does the resolving; this only renders. The split matters
+/// because rendering is where the two targets genuinely part ways:
+/// TypeScript writes the bare name plus an `import type` header, Rust writes
+/// the qualified path inline and has no import block at all.
 ///
 /// The map's value is the **whole path, ending in the name the other schema
 /// declares** - not a prefix to append the bound name to. The two differ
@@ -1006,39 +904,62 @@ fn screaming(s: &str) -> String {
 /// write is `crate::shared::Shared`. Appending the bound name instead
 /// produced `crate::shared::Aliased`, which names nothing
 /// (`error[E0425]: cannot find type \`Aliased\` in module \`crate::shared\``).
-///
-/// Every non-local schema (a declared dependency or `std`) is inlined
-/// into the same generated crate's module tree as the consumer's own
-/// schemas by default (`ModuleTree`, above), so a resolved reference is
-/// normally `crate::<namespace>::<name>` regardless of origin - the one
-/// exception is `std` specifically when `external_std` is on, where it
-/// points outside the crate at `comline_std::<rest>::<name>` instead
-/// (`rest` = the namespace with its leading `std` segment stripped,
-/// since `comline_std` is its own crate root, not nested under `std`).
-fn build_import_map(units: &[FrozenUnit], external_std: bool) -> HashMap<String, String> {
+/// That is what [`Origin::declared`] exists to keep separate.
+fn import_paths(
+    units: &[FrozenUnit],
+    schemas: &[(String, Vec<FrozenUnit>)],
+    external_std: bool,
+) -> HashMap<String, String> {
+    // Every namespace an import names is nameable here, whether or not this
+    // request carries its schema. Unlike TypeScript - which points at a file
+    // it wrote, and so must refuse to name a schema it didn't - Rust writes
+    // a module path into a crate it controls completely: an origin either
+    // lands in this crate's own module tree (everything is inlined by
+    // default) or in `comline_std`. There is no third case to narrow to.
+    let table = SymbolTable::with_external(units, schemas, |_| true);
+
     let mut map = HashMap::new();
     for unit in units {
-        if let FrozenUnit::Import(path, alias, _) = unit {
-            if path.ends_with("::*") {
-                continue; // the glob marker itself binds no name
-            }
-            let Some((namespace, name)) = path.rsplit_once("::") else {
-                continue; // a bare single-segment path binds no name here
-            };
-            let bound = alias.clone().unwrap_or_else(|| name.to_string());
-            let is_std = namespace == "std" || namespace.starts_with("std::");
-            let prefix = if external_std && is_std {
-                match namespace.strip_prefix("std::") {
-                    Some(rest) => format!("comline_std::{rest}"),
-                    None => "comline_std".to_string(),
-                }
-            } else {
-                format!("crate::{namespace}")
-            };
-            map.insert(bound, format!("{prefix}::{name}"));
+        let FrozenUnit::Import(path, alias, _) = unit else {
+            continue;
+        };
+        if path.ends_with("::*") {
+            continue; // the glob marker itself binds no name
+        }
+        let Some((_, declared)) = path.rsplit_once("::") else {
+            continue; // a bare single-segment path binds no name here
+        };
+        let bound = alias.clone().unwrap_or_else(|| declared.to_string());
+        if let Some(origin) = table.origin(&bound) {
+            map.insert(bound, rust_path(origin, external_std));
         }
     }
     map
+}
+
+/// Where an [`Origin`] is written from, in Rust's own spelling.
+///
+/// Every non-local schema (a declared dependency or `std`) is inlined into
+/// the same generated crate's module tree as the consumer's own schemas by
+/// default, so a resolved reference is normally
+/// `crate::<namespace>::<name>` regardless of origin. The one exception is
+/// `std` specifically when `external_std` is on, where it points outside the
+/// crate at `comline_std::<rest>::<name>` instead - `rest` being the
+/// namespace with its leading `std` segment stripped, since `comline_std` is
+/// its own crate root rather than something nested under `std`.
+fn rust_path(origin: &Origin, external_std: bool) -> String {
+    let Origin {
+        namespace,
+        declared,
+    } = origin;
+    if external_std && is_std_namespace(namespace) {
+        let prefix = match namespace.strip_prefix("std/") {
+            Some(rest) => format!("comline_std::{}", rest.replace('/', "::")),
+            None => "comline_std".to_string(),
+        };
+        return format!("{prefix}::{declared}");
+    }
+    format!("crate::{}::{declared}", namespace.replace('/', "::"))
 }
 
 fn rust_type(kind: &KindValue, imports: &HashMap<String, String>) -> String {
@@ -1079,7 +1000,7 @@ fn map_str_type(s: &str, imports: &HashMap<String, String>) -> String {
     }
 }
 
-// `build_import_map` is private, so unlike the rest of this generator's
+// `import_paths` is private, so unlike the rest of this generator's
 // behavior (covered by `tests/generate.rs`, alongside the shared
 // `generation/conformance` corpus) it can only be tested from inside this
 // file.
@@ -1091,10 +1012,18 @@ mod tests {
         FrozenUnit::Import(path.to_string(), alias.map(str::to_string), (0, 0))
     }
 
+    /// The schema list is empty on purpose: it does not restrict what Rust
+    /// can name, because every origin is either inlined into this crate or
+    /// in `comline_std`. What each case below is really about is the *path*
+    /// rendered for a resolved name.
+    fn paths(units: &[FrozenUnit], external_std: bool) -> HashMap<String, String> {
+        import_paths(units, &[], external_std)
+    }
+
     #[test]
     fn a_plain_import_resolves_to_a_crate_qualified_prefix() {
         let units = vec![import("shared::http::Request", None)];
-        let map = build_import_map(&units, false);
+        let map = paths(&units, false);
         assert_eq!(
             map.get("Request"),
             Some(&"crate::shared::http::Request".to_string())
@@ -1107,7 +1036,7 @@ mod tests {
         // `Uuid`. The path has to use the exported name - writing
         // `crate::external::uuid::UUID` names nothing.
         let units = vec![import("external::uuid::Uuid", Some("UUID"))];
-        let map = build_import_map(&units, false);
+        let map = paths(&units, false);
         assert_eq!(
             map.get("UUID"),
             Some(&"crate::external::uuid::Uuid".to_string())
@@ -1120,7 +1049,7 @@ mod tests {
         // Core expands `use ns::{A, B};` into two separate `Import`
         // units before this ever reaches the generator.
         let units = vec![import("shared::A", None), import("shared::B", None)];
-        let map = build_import_map(&units, false);
+        let map = paths(&units, false);
         assert_eq!(map.get("A"), Some(&"crate::shared::A".to_string()));
         assert_eq!(map.get("B"), Some(&"crate::shared::B".to_string()));
     }
@@ -1133,7 +1062,7 @@ mod tests {
             import("shared::http::*", None),
             import("shared::http::Request", None),
         ];
-        let map = build_import_map(&units, false);
+        let map = paths(&units, false);
         assert_eq!(
             map.get("Request"),
             Some(&"crate::shared::http::Request".to_string())
@@ -1143,14 +1072,14 @@ mod tests {
     #[test]
     fn the_glob_marker_itself_binds_no_name() {
         let units = vec![import("shared::http::*", None)];
-        let map = build_import_map(&units, false);
+        let map = paths(&units, false);
         assert!(map.is_empty());
     }
 
     #[test]
     fn std_stays_crate_qualified_when_external_std_is_off() {
         let units = vec![import("std::http::Request", None)];
-        let map = build_import_map(&units, false);
+        let map = paths(&units, false);
         assert_eq!(
             map.get("Request"),
             Some(&"crate::std::http::Request".to_string())
@@ -1160,7 +1089,7 @@ mod tests {
     #[test]
     fn std_points_outside_the_crate_when_external_std_is_on() {
         let units = vec![import("std::http::Request", None)];
-        let map = build_import_map(&units, true);
+        let map = paths(&units, true);
         assert_eq!(
             map.get("Request"),
             Some(&"comline_std::http::Request".to_string())
@@ -1172,7 +1101,7 @@ mod tests {
         // external_std only redirects `std` specifically - everything else
         // keeps inlining, same as today.
         let units = vec![import("shared::Thing", None)];
-        let map = build_import_map(&units, true);
+        let map = paths(&units, true);
         assert_eq!(map.get("Thing"), Some(&"crate::shared::Thing".to_string()));
     }
 
@@ -1181,7 +1110,7 @@ mod tests {
         // `use std::Foo;` (one segment deep, not `std::http::Foo`) -
         // `comline_std`'s own crate root, not `comline_std::`.
         let units = vec![import("std::Foo", None)];
-        let map = build_import_map(&units, true);
+        let map = paths(&units, true);
         assert_eq!(map.get("Foo"), Some(&"comline_std::Foo".to_string()));
     }
 }
