@@ -1029,3 +1029,133 @@ fn a_function_with_several_throws_gets_a_variant_for_each() {
         "{src}"
     );
 }
+
+/// `protocol Gateway` + `error GatewayError` used to emit two types of that
+/// name, and the author met the failure as a redefinition error inside
+/// generated code they never wrote.
+#[test]
+fn a_derived_name_that_collides_with_a_declaration_is_refused() {
+    let error = FrozenUnit::Error {
+        docstring: None,
+        parameters: vec![],
+        ordinal: 0,
+        imported_from: None,
+        name: "GatewayError".to_string(),
+        message: "no".into(),
+        fields: vec![],
+        span: None,
+    };
+    let proto = FrozenUnit::Protocol {
+        docstring: String::new(),
+        parameters: vec![],
+        name: "Gateway".to_string(),
+        functions: vec![],
+        span: (0, 0),
+    };
+    let schemas = vec![("gateway".to_string(), vec![error, proto])];
+    let err = generate_rust(&code_req(&schemas)).expect_err("the name is taken");
+    let message = err.to_string();
+    assert!(
+        message.contains("declares error `GatewayError`"),
+        "{message}"
+    );
+    assert!(
+        message.contains("protocol `Gateway`'s error union"),
+        "{message}"
+    );
+}
+
+/// The per-function error type has the same hazard, one name deeper.
+#[test]
+fn a_derived_per_function_name_collides_too() {
+    let declared = FrozenUnit::Struct {
+        docstring: None,
+        parameters: vec![],
+        name: "ChatSendError".to_string(),
+        fields: vec![],
+        span: (0, 0),
+    };
+    let proto = FrozenUnit::Protocol {
+        docstring: String::new(),
+        parameters: vec![],
+        name: "Chat".to_string(),
+        functions: vec![FrozenUnit::Function {
+            docstring: String::new(),
+            name: "send".to_string(),
+            parameters: vec![],
+            arguments: vec![],
+            _return: Some(KindValue::Unit),
+            throws: vec![],
+            span: (0, 0),
+        }],
+        span: (0, 0),
+    };
+    let schemas = vec![("chat".to_string(), vec![declared, proto])];
+    let err = generate_rust(&code_req(&schemas)).expect_err("the name is taken");
+    assert!(
+        err.to_string().contains("declares struct `ChatSendError`"),
+        "{err}"
+    );
+}
+
+/// Two protocols can reach for one name without any declaration being
+/// involved: the per-function type is `<Proto><Fn>Error`, so `Chat::send` and
+/// a `ChatSend` protocol both want `ChatSendError`.
+#[test]
+fn two_protocols_deriving_the_same_name_are_refused() {
+    let chat = FrozenUnit::Protocol {
+        docstring: String::new(),
+        parameters: vec![],
+        name: "Chat".to_string(),
+        functions: vec![FrozenUnit::Function {
+            docstring: String::new(),
+            name: "send".to_string(),
+            parameters: vec![],
+            arguments: vec![],
+            _return: Some(KindValue::Unit),
+            throws: vec![],
+            span: (0, 0),
+        }],
+        span: (0, 0),
+    };
+    let chat_send = FrozenUnit::Protocol {
+        docstring: String::new(),
+        parameters: vec![],
+        name: "ChatSend".to_string(),
+        functions: vec![],
+        span: (0, 0),
+    };
+    let schemas = vec![("chat".to_string(), vec![chat, chat_send])];
+    let err = generate_rust(&code_req(&schemas)).expect_err("both want ChatSendError");
+    assert!(err.to_string().contains("twice"), "{err}");
+}
+
+/// A one-way function derives a params struct but no error type, so a
+/// declaration may legitimately take the error name it would have used.
+#[test]
+fn a_one_way_function_reserves_no_error_name() {
+    let declared = FrozenUnit::Struct {
+        docstring: None,
+        parameters: vec![],
+        name: "ChatPokeError".to_string(),
+        fields: vec![],
+        span: (0, 0),
+    };
+    let proto = FrozenUnit::Protocol {
+        docstring: String::new(),
+        parameters: vec![],
+        name: "Chat".to_string(),
+        functions: vec![FrozenUnit::Function {
+            docstring: String::new(),
+            name: "poke".to_string(),
+            parameters: vec![],
+            arguments: vec![],
+            _return: None, // one-way
+            throws: vec![],
+            span: (0, 0),
+        }],
+        span: (0, 0),
+    };
+    let schemas = vec![("chat".to_string(), vec![declared, proto])];
+    assert!(generate_rust(&code_req(&schemas)).is_ok());
+}
