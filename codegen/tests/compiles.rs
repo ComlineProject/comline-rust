@@ -292,6 +292,29 @@ fn build_generated_crate(
         fs::write(&path, &f.contents).unwrap();
     }
 
+    // Local iteration: build against a sibling `runtime` checkout instead of
+    // the `RUNTIME_REV` the generator pins. Without this, a runtime change
+    // and the generator change that needs it cannot both be proved until the
+    // runtime is merged and a rev exists to point at - which is the wrong way
+    // round. Set `COMLINE_RUNTIME_PATH=../runtime/runtime/core`.
+    // An empty value counts as unset, so `COMLINE_RUNTIME_PATH=` in a shell
+    // falls back to the pinned rev rather than panicking on an empty path.
+    if let Some(runtime) = std::env::var("COMLINE_RUNTIME_PATH")
+        .ok()
+        .filter(|p| !p.is_empty())
+    {
+        let runtime = std::fs::canonicalize(&runtime)
+            .unwrap_or_else(|e| panic!("COMLINE_RUNTIME_PATH {runtime}: {e}"));
+        let manifest = dir.join("Cargo.toml");
+        let mut contents = fs::read_to_string(&manifest).unwrap();
+        contents.push_str(&format!(
+            "\n[patch.\"https://github.com/ComlineProject/runtime\"]\n\
+             comline-runtime = {{ path = {:?} }}\n",
+            runtime
+        ));
+        fs::write(&manifest, contents).unwrap();
+    }
+
     // Isolated target dir so it doesn't fight this crate's build lock.
     let status = Command::new(env!("CARGO"))
         .args(["build", "--quiet"])
