@@ -10,6 +10,7 @@
 //! See `design/generation.md`.
 
 mod generator;
+mod message;
 
 pub use generator::{generate_rust, STD_REV};
 

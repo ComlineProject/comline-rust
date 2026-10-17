@@ -122,7 +122,8 @@ fn code_mode_generates_enum_and_protocol() {
     assert!(src.contains("Active,"));
     // provider trait: `&self`, a `Result`, a per-function error enum
     assert!(src.contains("pub trait UserService {"));
-    assert!(src.contains("fn get_user(&self, id: i32) -> Result<User, UserServiceGetUserError>;"));
+    assert!(src
+        .contains("fn get_user(&self, id: i32) -> Result<User, Fault<UserServiceGetUserError>>;"));
     // params struct + the runtime imports + the call table
     assert!(src.contains("use comline_runtime::client::Client;"));
     assert!(src.contains("pub struct UserServiceGetUserParams {"));
@@ -264,8 +265,10 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
     assert!(src.contains("pub struct Rejected {"));
     // per-function enum from the throw ordinal
     assert!(src.contains("pub enum ChatSendError {\n    Rejected(Rejected),\n}"));
-    // a non-throwing request/response function still gets an (empty) enum
-    assert!(src.contains("pub enum ChatPingError {\n}"));
+    // A non-throwing request/response function names the never type instead
+    // of minting an uninhabited enum of its own.
+    assert!(src.contains("pub type ChatPingError = ::core::convert::Infallible;"));
+    assert!(!src.contains("pub enum ChatPingError"));
     // per-protocol union + From impl
     assert!(src.contains("pub enum ChatError {\n    Rejected(Rejected),\n}"));
     assert!(src.contains("impl From<ChatSendError> for ChatError"));
@@ -276,17 +279,31 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
     // client maps that ordinal back
     assert!(src.contains("Envelope::Err { id: 0u16, body } =>"));
     // `-> ()` (Unit) is request/response with an empty ack
-    assert!(src.contains("fn ping(&self) -> Result<(), ChatPingError>;"));
+    assert!(src.contains("fn ping(&self) -> Result<(), Fault<ChatPingError>>;"));
     // both addresses on the wire; the framing picks
     assert!(src.contains(r#"self.0.call(Call::new(1, "ping"), &())"#));
     // a `str` arg is borrowed
-    assert!(src.contains("fn send(&self, body: &str) -> Result<(), ChatSendError>;"));
+    assert!(src.contains("fn send(&self, body: &str) -> Result<(), Fault<ChatSendError>>;"));
     assert!(src.contains(
         "pub struct ChatSendParams<'a> {\n    #[serde(borrow)]\n    pub body: &'a str,\n}"
     ));
     assert!(
         src.contains("pub fn send(&mut self, body: &str) -> Result<(), CallError<ChatSendError>>")
     );
+
+    // Every request/response arm can answer with a fault, including the one
+    // whose error type is uninhabited.
+    assert!(src.contains("Err(Fault::Internal) => reply.fault(),"));
+    assert!(src.contains("Err(Fault::App(never)) => match never {},"));
+    assert!(src.contains("Err(Fault::App(ChatSendError::Rejected(e))) => {"));
+    // and the client turns a peer's fault back into a runtime error
+    assert!(src.contains("Envelope::Fault => Err(CallError::Runtime(RuntimeError::Provider)),"));
+
+    // the `message` the schema requires is what `Display` renders
+    assert!(src.contains("impl core::fmt::Display for Rejected {"));
+    assert!(src.contains("impl core::fmt::Display for ChatSendError {"));
+    // the union delegates to the error struct's own rendering
+    assert!(src.contains("ChatError::Rejected(e) => e.fmt(f),"));
 
     // one-way `poke`: no error enum, a plain trait method, a `notify` client
     assert!(!src.contains("ChatPokeError"));
@@ -943,5 +960,72 @@ fn a_file_with_a_struct_still_imports_serde() {
     assert!(
         out.contains("use serde::{Deserialize, Serialize};"),
         "got: {out}"
+    );
+}
+
+/// `! A, B`. The IR has always modelled `throws` as a list, so the generator
+/// needed nothing for this — but nothing proved it either, because the
+/// grammar could only ever produce one.
+#[test]
+fn a_function_with_several_throws_gets_a_variant_for_each() {
+    let error = |ordinal: u16, name: &str| FrozenUnit::Error {
+        docstring: None,
+        parameters: vec![],
+        ordinal,
+        imported_from: None,
+        name: name.to_string(),
+        message: format!("{name} happened"),
+        fields: vec![],
+        span: None,
+    };
+    let proto = FrozenUnit::Protocol {
+        docstring: String::new(),
+        parameters: vec![],
+        name: "Vault".to_string(),
+        functions: vec![FrozenUnit::Function {
+            docstring: String::new(),
+            name: "open".to_string(),
+            parameters: vec![],
+            arguments: vec![],
+            _return: Some(KindValue::Unit),
+            // The `!` clause's own order, which need not be ordinal order.
+            throws: vec![1, 0],
+            span: (0, 0),
+        }],
+        span: (0, 0),
+    };
+    let schemas = vec![(
+        "vault".to_string(),
+        vec![error(0, "NotFound"), error(1, "Denied"), proto],
+    )];
+    let src = generate_rust(&code_req(&schemas))
+        .unwrap()
+        .remove(0)
+        .contents;
+
+    // Variants follow the clause, so the author sees what they wrote.
+    assert!(
+        src.contains("pub enum VaultOpenError {\n    Denied(Denied),\n    NotFound(NotFound),\n}"),
+        "{src}"
+    );
+    // The union is ordinal-sorted and deduplicated, as it always was.
+    assert!(
+        src.contains("pub enum VaultError {\n    NotFound(NotFound),\n    Denied(Denied),\n}"),
+        "{src}"
+    );
+    // Both raise paths reach the wire at their own ordinal.
+    assert!(src.contains("reply.err(1u16, &body);"), "{src}");
+    assert!(src.contains("reply.err(0u16, &body);"), "{src}");
+    // And both come back typed on the client.
+    assert!(src.contains("Envelope::Err { id: 0u16, body } =>"), "{src}");
+    assert!(src.contains("Envelope::Err { id: 1u16, body } =>"), "{src}");
+    // One Display arm per variant.
+    assert!(
+        src.contains("VaultOpenError::Denied(e) => e.fmt(f),"),
+        "{src}"
+    );
+    assert!(
+        src.contains("VaultOpenError::NotFound(e) => e.fmt(f),"),
+        "{src}"
     );
 }

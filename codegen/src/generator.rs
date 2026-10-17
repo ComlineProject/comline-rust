@@ -243,8 +243,8 @@ fn schema_source(
         output.push_str(
             "use comline_runtime::client::Client;\n\
              use comline_runtime::contract::{\n    \
-                 Call, CallError, Dispatch, Envelope, Handshake, Kind, Reply, RuntimeError,\n    \
-                 WireFormat, FRAMING_DATAGRAM,\n\
+                 Call, CallError, Dispatch, Envelope, Fault, Handshake, Kind, Reply,\n    \
+                 RuntimeError, WireFormat, FRAMING_DATAGRAM,\n\
              };\n\
              use comline_runtime::serve::Server;\n\
              use comline_runtime::transport::Transport;\n",
@@ -255,6 +255,7 @@ fn schema_source(
             "CallError",
             "Dispatch",
             "Envelope",
+            "Fault",
             "Framing",
             "Handshake",
             "Kind",
@@ -297,8 +298,13 @@ fn schema_source(
             FrozenUnit::Enum { name, variants, .. } => {
                 output.push_str(&data_enum(name, variants));
             }
-            FrozenUnit::Error { name, fields, .. } => {
-                output.push_str(&error_struct(name, fields, &imports));
+            FrozenUnit::Error {
+                name,
+                message,
+                fields,
+                ..
+            } => {
+                output.push_str(&error_struct(name, message, fields, &imports));
             }
             FrozenUnit::TypeAlias { name, target, .. } => {
                 output.push_str(&type_alias(name, target, &imports));
@@ -415,10 +421,36 @@ fn constant(docstring: Option<&str>, name: &str, kind_value: &KindValue) -> Stri
     s
 }
 
-fn error_struct(name: &str, fields: &[FrozenUnit], imports: &HashMap<String, String>) -> String {
+/// An `error`'s payload struct, plus the `Display` that renders the `message`
+/// the schema requires. Without it the sentence the author wrote was dropped
+/// on the floor and a raised error printed as its `Debug` shape at best.
+///
+/// No `core::error::Error` impl: that trait is only stable from Rust 1.81,
+/// and this generator's target declares `rust#1.70.0` (`LANG_VERSION`, which
+/// it also writes into the generated manifest as `rust-version`). It belongs
+/// with a `rust#1.81.0` target.
+fn error_struct(
+    name: &str,
+    message: &str,
+    fields: &[FrozenUnit],
+    imports: &HashMap<String, String>,
+) -> String {
+    let field_names: Vec<String> = fields
+        .iter()
+        .filter_map(|f| match f {
+            FrozenUnit::Field { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
     format!(
-        "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub struct {name} {{\n{}}}\n\n",
-        field_lines(fields, imports)
+        "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub struct {name} {{\n{}}}\n\n\
+         impl core::fmt::Display for {name} {{\n    \
+             fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {{\n        \
+                 {}\n    \
+             }}\n\
+         }}\n\n",
+        field_lines(fields, imports),
+        crate::message::render(message, &field_names).write_call("f"),
     )
 }
 
@@ -436,6 +468,45 @@ fn data_enum(name: &str, variants: &[FrozenUnit]) -> String {
         }
     }
     s.push_str("}\n\n");
+    s
+}
+
+/// One generated error type: the per-function `<Proto><Fn>Error`, or the
+/// protocol-wide `<Proto>Error` union. `throws` is `(ordinal, error name)` in
+/// the order the variants should appear.
+///
+/// With nothing to put in it this emits a **type alias to the never type**
+/// rather than `pub enum Foo {}`. It names the same thing — a function that
+/// declares no `!` cannot raise anything, and the wire has no ordinal for a
+/// failure the schema never described — but it names it the way every Rust
+/// reader already knows, and `Infallible` brings `Display`, `Copy`, `Eq` and
+/// `Hash`, where an empty enum brings nothing at all. The name survives, so
+/// hand-written code and docs that spell it keep working, and the
+/// dispatcher's `match never {}` arm stays valid because `Infallible` is
+/// uninhabited too.
+///
+/// A `Display` impl only makes sense on the real enum: the alias is a foreign
+/// type, so implementing a trait for it here would not even compile.
+fn error_type(name: &str, throws: &[(u16, String)]) -> String {
+    if throws.is_empty() {
+        return format!("pub type {name} = ::core::convert::Infallible;\n\n");
+    }
+
+    let mut s = format!("#[derive(Debug, Clone, PartialEq)]\npub enum {name} {{\n");
+    for (_, err) in throws {
+        s.push_str(&format!("    {err}({err}),\n"));
+    }
+    s.push_str("}\n\n");
+
+    s.push_str(&format!(
+        "impl core::fmt::Display for {name} {{\n    \
+             fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {{\n        \
+                 match self {{\n"
+    ));
+    for (_, err) in throws {
+        s.push_str(&format!("            {name}::{err}(e) => e.fmt(f),\n"));
+    }
+    s.push_str("        }\n    }\n}\n\n");
     s
 }
 
@@ -567,20 +638,13 @@ fn protocol(
         }
     }
 
-    // 2. one schema-only error enum per request/response function (empty when
-    //    it throws nothing). One-way functions have no error channel.
+    // 2. one schema-only error type per request/response function. One-way
+    //    functions have no error channel at all.
     for f in &fns {
         if f.one_way {
             continue;
         }
-        s.push_str(&format!(
-            "#[derive(Debug, Clone, PartialEq)]\npub enum {} {{\n",
-            f.err_ty
-        ));
-        for (_, err) in &f.throws {
-            s.push_str(&format!("    {err}({err}),\n"));
-        }
-        s.push_str("}\n\n");
+        s.push_str(&error_type(&f.err_ty, &f.throws));
     }
 
     // 2b. per-protocol union of every `!`, additive, for one broad handler
@@ -588,13 +652,7 @@ fn protocol(
     union.sort_by_key(|(ord, _)| *ord);
     union.dedup_by_key(|(ord, _)| *ord);
     let union_ty = format!("{proto}Error");
-    s.push_str(&format!(
-        "#[derive(Debug, Clone, PartialEq)]\npub enum {union_ty} {{\n"
-    ));
-    for (_, err) in &union {
-        s.push_str(&format!("    {err}({err}),\n"));
-    }
-    s.push_str("}\n\n");
+    s.push_str(&error_type(&union_ty, &union));
     for f in &fns {
         if f.throws.is_empty() {
             continue;
@@ -619,8 +677,11 @@ fn protocol(
         if f.one_way {
             s.push_str(&format!("    fn {}(&self{args});\n", f.name));
         } else {
+            // `Fault<E>` rather than a bare `E`: an implementation can fail
+            // in ways its schema never described, and before this it could
+            // only panic. `E` may be uninhabited while `Fault<E>` is not.
             s.push_str(&format!(
-                "    fn {}(&self{args}) -> Result<{}, {}>;\n",
+                "    fn {}(&self{args}) -> Result<{}, Fault<{}>>;\n",
                 f.name, f.ret, f.err_ty
             ));
         }
@@ -666,11 +727,30 @@ fn protocol(
     ));
     for (i, f) in fns.iter().enumerate() {
         l.push(format!("            {i} => {{"));
+        // Params that will not decode are this call's failure, not the
+        // connection's. A request/response call answers with a fault; a
+        // one-way call has no response frame, so there is nowhere to say so
+        // and it stops here. Doing this in the dispatcher rather than
+        // leaving it to `Server` is what makes the call's arity count: the
+        // server cannot see it.
+        let on_undecodable: Vec<String> = if f.one_way {
+            vec!["                    Err(_) => return Ok(()),".into()]
+        } else {
+            vec![
+                "                    Err(_) => {".into(),
+                "                        reply.fault();".into(),
+                "                        return Ok(());".into(),
+                "                    }".into(),
+            ]
+        };
         let call_args = match &f.params_ty {
             Some(ty) => {
                 l.push(format!(
-                    "                let p: {ty} = fmt.decode(params)?;"
+                    "                let p: {ty} = match fmt.decode(params) {{"
                 ));
+                l.push("                    Ok(p) => p,".into());
+                l.extend(on_undecodable);
+                l.push("                };".into());
                 f.args
                     .iter()
                     .map(|a| format!("p.{}", a.name))
@@ -678,7 +758,10 @@ fn protocol(
                     .join(", ")
             }
             None => {
-                l.push("                let _: () = fmt.decode(params)?;".into());
+                l.push("                let _: () = match fmt.decode(params) {".into());
+                l.push("                    Ok(unit) => unit,".into());
+                l.extend(on_undecodable);
+                l.push("                };".into());
                 String::new()
             }
         };
@@ -696,7 +779,7 @@ fn protocol(
             l.push("                    }".into());
             for (ord, err) in &f.throws {
                 l.push(format!(
-                    "                    Err({}::{err}(e)) => {{",
+                    "                    Err(Fault::App({}::{err}(e))) => {{",
                     f.err_ty
                 ));
                 l.push("                        let mut body = Vec::new();".into());
@@ -707,8 +790,11 @@ fn protocol(
                 l.push("                    }".into());
             }
             if f.throws.is_empty() {
-                l.push("                    Err(never) => match never {},".into());
+                // The error type is `Infallible`, so this arm is unreachable -
+                // it is what keeps the `match` exhaustive.
+                l.push("                    Err(Fault::App(never)) => match never {},".into());
             }
+            l.push("                    Err(Fault::Internal) => reply.fault(),".into());
             l.push("                }".into());
         }
         l.push("                Ok(())".into());
@@ -838,6 +924,10 @@ fn protocol(
         }
         l.push(
             "            Envelope::Err { id, .. } => Err(CallError::Runtime(RuntimeError::Remote { id })),"
+                .into(),
+        );
+        l.push(
+            "            Envelope::Fault => Err(CallError::Runtime(RuntimeError::Provider)),"
                 .into(),
         );
         l.push("        }".into());
