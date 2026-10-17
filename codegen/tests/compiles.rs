@@ -297,7 +297,12 @@ fn build_generated_crate(
     // and the generator change that needs it cannot both be proved until the
     // runtime is merged and a rev exists to point at - which is the wrong way
     // round. Set `COMLINE_RUNTIME_PATH=../runtime/runtime/core`.
-    if let Ok(runtime) = std::env::var("COMLINE_RUNTIME_PATH") {
+    // An empty value counts as unset, so `COMLINE_RUNTIME_PATH=` in a shell
+    // falls back to the pinned rev rather than panicking on an empty path.
+    if let Some(runtime) = std::env::var("COMLINE_RUNTIME_PATH")
+        .ok()
+        .filter(|p| !p.is_empty())
+    {
         let runtime = std::fs::canonicalize(&runtime)
             .unwrap_or_else(|e| panic!("COMLINE_RUNTIME_PATH {runtime}: {e}"));
         let manifest = dir.join("Cargo.toml");
