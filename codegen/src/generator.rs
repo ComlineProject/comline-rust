@@ -17,6 +17,7 @@ use comline_core::schema::ir::frozen::unit::{FrozenArgument, FrozenUnit};
 
 use eyre::Result;
 
+use comline_codegen::collisions::{self, Derived};
 use comline_codegen::modules::{NamespaceTree, TreeLayout};
 use comline_codegen::naming::{pascal, screaming_snake};
 use comline_codegen::stdlib::{self, is_std_namespace};
@@ -44,6 +45,16 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     // actually there" subtlety with it.
     let std = stdlib::split(req.schemas, req.external_std);
     let schemas = std.emitted.as_ref();
+
+    // Before emitting anything: a name this generator is about to invent may
+    // already mean something in the schema. `protocol Gateway` plus an
+    // `error GatewayError` used to emit two types of that name and leave the
+    // author with a redefinition error pointing into code they never wrote.
+    // Checked for every schema first, so a collision in the last one does not
+    // arrive after the earlier files are already written.
+    for (namespace, units) in schemas {
+        collisions::check(namespace, units, derived_names(units))?;
+    }
 
     match req.mode {
         // No manifest to add `comline_std` to on the caller's behalf here
@@ -469,6 +480,78 @@ fn data_enum(name: &str, variants: &[FrozenUnit]) -> String {
     }
     s.push_str("}\n\n");
     s
+}
+
+/// Every name this generator will invent for `units`, each described the way a
+/// person reading a build failure needs it.
+///
+/// This is the half of collision checking that cannot live in
+/// `comline-codegen`: what gets derived is a fact about *Rust* output, not
+/// about the schema. Keep it in step with the emitters below — a name added
+/// there and not here is a collision that still reaches the compiler.
+fn derived_names(units: &[FrozenUnit]) -> Vec<Derived> {
+    let mut derived = Vec::new();
+    let mut any_protocol = false;
+
+    for unit in units {
+        let FrozenUnit::Protocol {
+            name: proto,
+            functions,
+            ..
+        } = unit
+        else {
+            continue;
+        };
+        any_protocol = true;
+
+        derived.push(Derived::new(
+            format!("{proto}Error"),
+            format!("protocol `{proto}`'s error union"),
+        ));
+        derived.push(Derived::new(
+            format!("{proto}Dispatcher"),
+            format!("protocol `{proto}`'s dispatcher"),
+        ));
+        derived.push(Derived::new(
+            format!("{proto}Client"),
+            format!("protocol `{proto}`'s client"),
+        ));
+        derived.push(Derived::new(
+            format!("{}_CALLS", screaming_snake(proto)),
+            format!("protocol `{proto}`'s call table"),
+        ));
+
+        for function in functions {
+            let FrozenUnit::Function {
+                name,
+                arguments,
+                _return,
+                ..
+            } = function
+            else {
+                continue;
+            };
+            let from = format!("protocol `{proto}`, function `{name}`");
+            // A one-way function gets no error type (nowhere to deliver one).
+            if _return.is_some() {
+                derived.push(Derived::new(
+                    format!("{proto}{}Error", pascal(name)),
+                    format!("{from}'s error type"),
+                ));
+            }
+            if !arguments.is_empty() {
+                derived.push(Derived::new(
+                    format!("{proto}{}Params", pascal(name)),
+                    format!("{from}'s params struct"),
+                ));
+            }
+        }
+    }
+
+    if any_protocol {
+        derived.push(Derived::new("IR_HASH", "the schema's IR hash constant"));
+    }
+    derived
 }
 
 /// One generated error type: the per-function `<Proto><Fn>Error`, or the
