@@ -17,17 +17,20 @@ use comline_core::schema::ir::frozen::unit::{FrozenArgument, FrozenUnit};
 
 use eyre::Result;
 
+use crate::validate::{self, Member};
+
 use comline_codegen::collisions::{self, Derived};
 use comline_codegen::modules::{NamespaceTree, TreeLayout};
 use comline_codegen::naming::{pascal, screaming_snake};
 use comline_codegen::stdlib::{self, is_std_namespace};
 use comline_codegen::symbols::{error_names, Origin, SymbolTable};
+use comline_codegen::validation::{ValidateOnDecode, Validation};
 use comline_codegen::{GenRequest, GeneratedFile, Mode, PackageMeta};
 
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "ae214701b08521f2e0f0a480afa387d0ec4d646c";
+const RUNTIME_REV: &str = "19144b2d91c0b0964fb92d82e64e2e4b90871234";
 
 /// `comline_std` — std's own pre-generated bindings, referenced instead of
 /// inlined when `external_std` is on. Same git-pin shape as
@@ -57,16 +60,31 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
         check_supported(namespace, units)?;
     }
 
+    // What each value's validation runs, resolved against every schema in
+    // the request - a validator or alias can come from one this crate
+    // doesn't emit (std's, under `external_std`).
+    let model = Validation::new(req.schemas);
+    let render = |namespace: &str, units: &[FrozenUnit]| {
+        schema_source(
+            namespace,
+            units,
+            req.schemas,
+            default_framing,
+            req.external_std,
+            &model,
+            req.validate_on_decode,
+        )
+    };
+
     match req.mode {
         // No manifest to add `comline_std` to on the caller's behalf here
         // (unlike `lib` mode's `Cargo.toml`, below) - a file that ends up
         // referencing it gets a comment naming the dependency line to add
         // by hand.
-        Mode::Code => Ok(schemas
+        Mode::Code => schemas
             .iter()
             .map(|(namespace, units)| {
-                let contents =
-                    schema_source(units, req.schemas, default_framing, req.external_std);
+                let contents = render(namespace, units)?;
                 let contents = if contents.contains("comline_std::") {
                     format!(
                         "// This file references `comline_std` - add it to your Cargo.toml:\n\
@@ -83,16 +101,33 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
                 } else {
                     contents
                 };
-                GeneratedFile { path: PathBuf::from(format!("{namespace}.rs")), contents }
+                // A protocol already needs the runtime, and says so by using
+                // it throughout; validation alone is easy to miss.
+                let contents = if contents.contains("comline_runtime::validation::")
+                    && !contents.contains("use comline_runtime::")
+                {
+                    format!(
+                        "// This file uses `comline_runtime` - add it to your Cargo.toml:\n\
+                         // comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{RUNTIME_REV}\" }}\n{contents}"
+                    )
+                } else {
+                    contents
+                };
+                Ok(GeneratedFile { path: PathBuf::from(format!("{namespace}.rs")), contents })
             })
-            .collect()),
+            .collect(),
 
         Mode::Lib => {
             let tree = NamespaceTree::build(schemas, &RustLayout)?;
 
-            let has_protocol = schemas
+            // Rendered before the manifest, which has to know what they use.
+            let sources: HashMap<&str, String> = schemas
                 .iter()
-                .any(|(_, units)| units.iter().any(|u| matches!(u, FrozenUnit::Protocol { .. })));
+                .map(|(namespace, units)| Ok((namespace.as_str(), render(namespace, units)?)))
+                .collect::<Result<_>>()?;
+
+            // A protocol links the runtime, and so does any validation.
+            let needs_runtime = sources.values().any(|s| s.contains("comline_runtime::"));
 
             let needs_big_array = schemas.iter().any(|(_, units)| uses_big_array(units));
 
@@ -101,7 +136,7 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
                 contents: cargo_toml(
                     &req.package,
                     &req.lang_version,
-                    has_protocol,
+                    needs_runtime,
                     std.needs_std_dependency,
                     needs_big_array,
                 ),
@@ -109,8 +144,8 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
             // The render closure takes every schema in the request, not just
             // the ones in this tree: a reference resolves against all of
             // them, including an external `std` this crate emits no file for.
-            files.extend(tree.emit("src", &RustLayout, &|_namespace, units| {
-                schema_source(units, req.schemas, default_framing, req.external_std)
+            files.extend(tree.emit("src", &RustLayout, &|namespace, _units| {
+                sources.get(namespace).cloned().unwrap_or_default()
             }));
             Ok(files)
         }
@@ -182,7 +217,7 @@ impl TreeLayout for RustLayout {
 fn cargo_toml(
     pkg: &PackageMeta,
     lang_version: &str,
-    has_protocol: bool,
+    needs_runtime: bool,
     needs_std_dep: bool,
     needs_big_array: bool,
 ) -> String {
@@ -191,7 +226,7 @@ fn cargo_toml(
         deps.push_str(BIG_ARRAY_DEP);
         deps.push('\n');
     }
-    if has_protocol {
+    if needs_runtime {
         deps.push_str(&format!(
             "comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{RUNTIME_REV}\" }}\n"
         ));
@@ -221,11 +256,14 @@ fn cargo_toml(
 }
 
 fn schema_source(
+    namespace: &str,
     units: &[FrozenUnit],
     schemas: &[(String, Vec<FrozenUnit>)],
     default_framing: Option<&str>,
     external_std: bool,
-) -> String {
+    model: &Validation,
+    on_decode: ValidateOnDecode,
+) -> Result<String> {
     let has_protocol = units
         .iter()
         .any(|u| matches!(u, FrozenUnit::Protocol { .. }));
@@ -321,7 +359,8 @@ fn schema_source(
     for unit in units {
         match unit {
             FrozenUnit::Struct { name, fields, .. } => {
-                output.push_str(&data_struct(name, fields, &imports));
+                let members = validate::field_members(model, namespace, name, fields)?;
+                output.push_str(&data_struct(name, fields, &imports, &members, on_decode)?);
             }
             FrozenUnit::Enum { name, variants, .. } => {
                 output.push_str(&data_enum(name, variants));
@@ -332,7 +371,10 @@ fn schema_source(
                 fields,
                 ..
             } => {
-                output.push_str(&error_struct(name, message, fields, &imports));
+                let members = validate::field_members(model, namespace, name, fields)?;
+                output.push_str(&error_struct(
+                    name, message, fields, &imports, &members, on_decode,
+                )?);
             }
             FrozenUnit::TypeAlias { name, target, .. } => {
                 output.push_str(&type_alias(name, target, &imports));
@@ -359,13 +401,16 @@ fn schema_source(
                     default_framing,
                     &errors,
                     &imports,
-                ));
+                    namespace,
+                    model,
+                    on_decode,
+                )?);
             }
             _ => {}
         }
     }
 
-    output
+    Ok(output)
 }
 
 // ── data types ─────────────────────────────────────────────────────────────
@@ -398,11 +443,20 @@ fn field_lines(fields: &[FrozenUnit], imports: &HashMap<String, String>) -> Stri
     s
 }
 
-fn data_struct(name: &str, fields: &[FrozenUnit], imports: &HashMap<String, String>) -> String {
-    format!(
-        "#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {name} {{\n{}}}\n\n",
-        field_lines(fields, imports)
-    )
+fn data_struct(
+    name: &str,
+    fields: &[FrozenUnit],
+    imports: &HashMap<String, String>,
+    members: &[Member],
+    on_decode: ValidateOnDecode,
+) -> Result<String> {
+    let lines = field_lines(fields, imports);
+    Ok(format!(
+        "#[derive(Debug, Clone, Serialize, Deserialize)]\n{}pub struct {name} {{\n{lines}}}\n\n{}{}",
+        validate::try_from_attribute(name, on_decode, members),
+        validate::validate_impl(name, "", members)?,
+        validate::decode_shadow(name, on_decode, members, &lines),
+    ))
 }
 
 /// `type NAME = TARGET;` - transparent like Rust's own `type` (not a
@@ -475,7 +529,9 @@ fn error_struct(
     message: &str,
     fields: &[FrozenUnit],
     imports: &HashMap<String, String>,
-) -> String {
+    members: &[Member],
+    on_decode: ValidateOnDecode,
+) -> Result<String> {
     let field_names: Vec<String> = fields
         .iter()
         .filter_map(|f| match f {
@@ -483,16 +539,19 @@ fn error_struct(
             _ => None,
         })
         .collect();
-    format!(
-        "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub struct {name} {{\n{}}}\n\n\
+    let lines = field_lines(fields, imports);
+    Ok(format!(
+        "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\n{}pub struct {name} {{\n{lines}}}\n\n\
          impl core::fmt::Display for {name} {{\n    \
              fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {{\n        \
                  {}\n    \
              }}\n\
-         }}\n\n",
-        field_lines(fields, imports),
+         }}\n\n{}{}",
+        validate::try_from_attribute(name, on_decode, members),
         crate::message::render(message, &field_names).write_call("f"),
-    )
+        validate::validate_impl(name, "", members)?,
+        validate::decode_shadow(name, on_decode, members, &lines),
+    ))
 }
 
 fn data_enum(name: &str, variants: &[FrozenUnit]) -> String {
@@ -709,7 +768,10 @@ fn protocol(
     default_framing: Option<&str>,
     errors: &HashMap<u16, String>,
     imports: &HashMap<String, String>,
-) -> String {
+    namespace: &str,
+    model: &Validation,
+    on_decode: ValidateOnDecode,
+) -> Result<String> {
     let framing = framing_choice(parameters, default_framing);
     let fns: Vec<FnInfo> = functions
         .iter()
@@ -727,11 +789,25 @@ fn protocol(
             _ => None,
         })
         .collect();
+    // What each function's arguments check, in `fns` order. An argument
+    // carries checks only through a `type` alias.
+    let param_members: Vec<Vec<Member>> = functions
+        .iter()
+        .filter_map(|f| match f {
+            FrozenUnit::Function { name, arguments, .. } => Some(validate::argument_members(
+                model,
+                namespace,
+                &format!("{proto}.{name}"),
+                arguments,
+            )),
+            _ => None,
+        })
+        .collect::<Result<_>>()?;
 
     let mut s = String::new();
 
     // 1. params struct per function that takes arguments
-    for f in &fns {
+    for (f, members) in fns.iter().zip(&param_members) {
         if let Some(ty) = &f.params_ty {
             let lt = if f.params_borrows { "<'a>" } else { "" };
             s.push_str(&format!(
@@ -744,6 +820,7 @@ fn protocol(
                 s.push_str(&format!("    pub {}: {},\n", arg.name, arg.field_ty));
             }
             s.push_str("}\n\n");
+            s.push_str(&validate::validate_impl(ty, lt, members)?);
         }
     }
 
@@ -860,6 +937,15 @@ fn protocol(
                 l.push("                    Ok(p) => p,".into());
                 l.extend(on_undecodable);
                 l.push("                };".into());
+                // Params that decode but fail their checks stop the same way.
+                if on_decode != ValidateOnDecode::Off && validate::any_checks(&param_members[i]) {
+                    let stop: &[&str] = if f.one_way {
+                        &["return Ok(());"]
+                    } else {
+                        &["reply.fault();", "return Ok(());"]
+                    };
+                    l.extend(validate::params_check(stop));
+                }
                 f.args
                     .iter()
                     .map(|a| format!("p.{}", a.name))
@@ -1047,7 +1133,7 @@ fn protocol(
     l.push(String::new());
     s.push_str(&l.join("\n"));
 
-    s
+    Ok(s)
 }
 
 // `errors` and `imports` are two unrelated lookup tables (ordinal → error
