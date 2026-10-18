@@ -10,29 +10,18 @@
 //! are all the data a raised error carries, and binding anything else in at
 //! the raise site is not in the language yet.
 //!
-//! ## Why an unknown path becomes literal text rather than an error
+//! ## The template's own escapes
 //!
-//! The frozen template cannot be trusted to distinguish a placeholder from an
-//! escaped brace. `InterpolatedString::reconstruct` in core re-inserts a
-//! placeholder as `{a.b.c}` but collapses an escaped `{{` / `}}` down to a
-//! *bare* `{` / `}`, so
+//! The frozen template is `{path}` placeholders and literal text, with a
+//! literal brace written `{{` / `}}`. An f-string's escapes arrive that
+//! way, and so does every brace of a plain `"..."` message, which never
+//! interpolates. So a single `{` always opens a placeholder.
 //!
-//! ```text
-//! message = "literal {{brace}} here"   ->   literal {brace} here
-//! ```
+//! ## Why an unknown path still becomes literal text rather than an error
 //!
-//! arrives here indistinguishable from a real placeholder. Treating a path
-//! that is not one of this error's fields as ordinary text recovers the
-//! author's intent in exactly that case, and is the forgiving choice in every
-//! other: a message is diagnostic text, and refusing to generate over one is
-//! worse than printing it as written. Fixing `reconstruct` moves the frozen
-//! IR and therefore the schema hash, so it is its own change.
-//!
-//! The upshot is that a template arriving here holds no escape sequences of
-//! its own: `reconstruct` has already resolved them. There are only
-//! `{path}` placeholders and literal text, and that literal text may contain
-//! bare braces — which this module re-escapes on the way into a Rust format
-//! string.
+//! A message is diagnostic text, and refusing to generate over one is worse
+//! than printing it as written. A path that names nothing this error (or
+//! validator) can bind prints as the author wrote it.
 
 /// A rendered template: a Rust format string and the argument expressions it
 /// interpolates, in order.
@@ -43,13 +32,20 @@ pub struct Rendered {
 }
 
 impl Rendered {
+    /// The message as it prints, for a template with no arguments: the
+    /// format string with its doubled braces single again. A string used
+    /// as is (`write_str`, `.into()`) would print them doubled.
+    pub fn literal(&self) -> String {
+        self.format.replace("{{", "{").replace("}}", "}")
+    }
+
     /// The body of a `Display::fmt`, given the formatter's name.
     ///
     /// With no arguments this is a `write_str`, which avoids running the
     /// format machinery (and clippy's `write_literal`) over a constant.
     pub fn write_call(&self, formatter: &str) -> String {
         if self.args.is_empty() {
-            format!("{formatter}.write_str({:?})", self.format)
+            format!("{formatter}.write_str({:?})", self.literal())
         } else {
             format!(
                 "write!({formatter}, {:?}, {})",
@@ -76,9 +72,22 @@ pub fn render_with(template: &str, resolve: impl Fn(&str) -> Option<String>) -> 
     let mut args: Vec<String> = Vec::new();
     let mut rest = template;
 
-    while let Some(open) = rest.find('{') {
-        push_literal(&mut format, &rest[..open]);
-        rest = &rest[open..];
+    while let Some(at) = rest.find(['{', '}']) {
+        push_literal(&mut format, &rest[..at]);
+        rest = &rest[at..];
+
+        // `{{` / `}}`: a literal brace.
+        if let Some(after) = rest.strip_prefix("{{").or_else(|| rest.strip_prefix("}}")) {
+            push_literal(&mut format, &rest[..1]);
+            rest = after;
+            continue;
+        }
+        // A lone `}` is text too.
+        if rest.starts_with('}') {
+            push_literal(&mut format, "}");
+            rest = &rest[1..];
+            continue;
+        }
 
         let Some(close) = rest.find('}') else {
             // Unterminated: the rest is literal text.
@@ -146,17 +155,13 @@ mod tests {
         assert_eq!(r.write_call("f"), r#"f.write_str("flatly refused")"#);
     }
 
-    /// The `reconstruct` collapse: `{{brace}}` reaches us as `{brace}`, and
-    /// `brace` is not a field, so it prints as the author wrote it.
+    /// A path naming nothing it can bind prints as the author wrote it.
     #[test]
     fn a_path_that_is_not_a_field_stays_literal_text() {
         let r = render("literal {brace} here", &fields(&["key"]));
         assert!(r.args.is_empty());
         assert_eq!(r.format, "literal {{brace}} here");
-        assert_eq!(
-            r.write_call("f"),
-            r#"f.write_str("literal {{brace}} here")"#
-        );
+        assert_eq!(r.write_call("f"), r#"f.write_str("literal {brace} here")"#);
     }
 
     /// A field the error does not declare is not an argument either — the
@@ -168,18 +173,19 @@ mod tests {
         assert_eq!(r.format, "{{self.missing}}");
     }
 
-    /// Core resolves the IDL's `{{` / `}}` escapes before freezing, so this
-    /// module never sees one. Every brace that reaches it is either a
-    /// placeholder's or literal text, and literal text is re-escaped for
-    /// Rust's formatter — so the rendered output matches the message the
-    /// author wrote, braces and all.
+    /// `{{` / `}}` in the template are literal braces, never a placeholder,
+    /// even around a field's own path - and `write_str` prints them single.
     #[test]
-    fn a_literal_brace_round_trips_through_the_format_string() {
-        let r = render("a { and a }", &fields(&[]));
+    fn an_escaped_brace_is_literal_even_around_a_field() {
+        let r = render("{{self.key}} is {self.key}", &fields(&["key"]));
+        assert_eq!(r.format, "{{self.key}} is {}");
+        assert_eq!(r.args, vec!["self.key"]);
+
+        // A plain message's braces all arrive escaped.
+        let r = render("a {{ and a }}", &fields(&[]));
         assert!(r.args.is_empty());
         assert_eq!(r.format, "a {{ and a }}");
-        // What `write_str` actually prints is the original text.
-        assert_eq!(r.write_call("f"), r#"f.write_str("a {{ and a }}")"#);
+        assert_eq!(r.write_call("f"), r#"f.write_str("a { and a }")"#);
     }
 
     #[test]

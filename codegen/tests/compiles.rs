@@ -91,6 +91,8 @@ fn chat_schema() -> Vec<FrozenUnit> {
             message: "rejected: {self.why}".into(),
             fields: vec![field("why", "string")],
             span: Some((0, 0)),
+            message_span: None,
+            uninterpolated: vec![],
         },
         FrozenUnit::Protocol {
             docstring: "Chat".into(),
@@ -454,7 +456,7 @@ validator Range for u32 {
 
     validate {
         assert(value >= params.min and value <= params.max,
-               "{value.name} must be between {params.min} and {params.max}, got {value}")
+               f"{value.name} must be between {params.min} and {params.max}, got {value}")
     }
 }
 

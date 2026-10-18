@@ -211,6 +211,8 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
             span: (0, 0),
         }],
         span: Some((0, 0)),
+        message_span: None,
+        uninterpolated: vec![],
     };
     let proto = FrozenUnit::Protocol {
         docstring: "Chat".to_string(),
@@ -980,6 +982,8 @@ fn a_function_with_several_throws_gets_a_variant_for_each() {
         message: format!("{name} happened"),
         fields: vec![],
         span: None,
+        message_span: None,
+        uninterpolated: vec![],
     };
     let proto = FrozenUnit::Protocol {
         docstring: String::new(),
@@ -1047,6 +1051,8 @@ fn a_derived_name_that_collides_with_a_declaration_is_refused() {
         message: "no".into(),
         fields: vec![],
         span: None,
+        message_span: None,
+        uninterpolated: vec![],
     };
     let proto = FrozenUnit::Protocol {
         docstring: String::new(),
@@ -1266,7 +1272,7 @@ fn validated(source: &str) -> Vec<(String, Vec<FrozenUnit>)> {
 }
 
 const NON_EMPTY: &str = "validator NonEmpty for string {\n    validate {\n        \
-                         assert(value.length > 0, \"{value.name} is empty\")\n    }\n}\n\
+                         assert(value.length > 0, f\"{value.name} is empty\")\n    }\n}\n\
                          struct Note {\n    @validators = [NonEmpty()]\n    text: string\n}\n";
 
 fn app_file(files: &[comline_codegen::GeneratedFile]) -> &str {
