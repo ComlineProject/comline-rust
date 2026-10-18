@@ -11,8 +11,24 @@ use std::process::Command;
 
 use comline_codegen::{GenRequest, Mode, PackageMeta};
 use comline_codegen_rust::generate_rust;
-use comline_core::schema::ir::compiler::interpreted::kind_search::{KindValue, Primitive};
+use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
 use comline_core::schema::ir::frozen::unit::{ConfigValue, FrozenArgument, FrozenUnit};
+
+/// The type a schema spells `written` - a primitive name, a named type, or
+/// either followed by `[]` / `[N]`.
+fn type_of(written: &str) -> TypeRef {
+    if let Some(rest) = written.strip_suffix(']') {
+        let (element, length) = rest.rsplit_once('[').expect("an array type");
+        return TypeRef::Array {
+            element: Box::new(type_of(element)),
+            length: (!length.is_empty()).then(|| length.parse().expect("an array length")),
+        };
+    }
+    match PrimitiveType::from_name(written) {
+        Some(p) => TypeRef::Primitive(p),
+        None => TypeRef::Named(written.to_string()),
+    }
+}
 
 fn field(name: &str, ty: &str) -> FrozenUnit {
     FrozenUnit::Field {
@@ -20,15 +36,16 @@ fn field(name: &str, ty: &str) -> FrozenUnit {
         parameters: vec![],
         optional: false,
         name: name.into(),
-        kind_value: KindValue::Namespaced(ty.into(), None),
+        ty: type_of(ty),
+        default: None,
         span: (0, 0),
     }
 }
 
-fn arg(name: &str, ty: KindValue) -> FrozenArgument {
+fn arg(name: &str, ty: TypeRef) -> FrozenArgument {
     FrozenArgument {
         name: name.into(),
-        kind: ty,
+        ty,
         span: (0, 0),
     }
 }
@@ -36,7 +53,7 @@ fn arg(name: &str, ty: KindValue) -> FrozenArgument {
 fn function(
     name: &str,
     args: Vec<FrozenArgument>,
-    ret: Option<KindValue>,
+    ret: Option<TypeRef>,
     throws: Vec<u16>,
 ) -> FrozenUnit {
     FrozenUnit::Function {
@@ -52,7 +69,7 @@ fn function(
 
 /// A schema with a struct, an `error`, and a protocol exercising: a throwing
 /// call, a non-throwing call returning a list, a zero-arg call, and a
-/// `KindValue::Unit` return. `@framing = "datagram"` keeps it on the datagram
+/// `TypeRef::Unit` return. `@framing = "datagram"` keeps it on the datagram
 /// stack even though the compile test sets a `jsonrpc` package default — so the
 /// datagram path (with all this machinery) still gets built.
 fn chat_schema() -> Vec<FrozenUnit> {
@@ -84,8 +101,8 @@ fn chat_schema() -> Vec<FrozenUnit> {
             functions: vec![
                 function(
                     "send",
-                    vec![arg("msg", KindValue::Namespaced("Message".into(), None))],
-                    Some(KindValue::Namespaced("Message".into(), None)),
+                    vec![arg("msg", TypeRef::Named("Message".to_string()))],
+                    Some(TypeRef::Named("Message".to_string())),
                     vec![0],
                 ),
                 // a `str` arg + a primitive: exercises the borrowed params
@@ -93,19 +110,19 @@ fn chat_schema() -> Vec<FrozenUnit> {
                 function(
                     "search",
                     vec![
-                        arg("query", KindValue::Namespaced("string".into(), None)),
-                        arg("limit", KindValue::Primitive(Primitive::U32(None))),
+                        arg("query", TypeRef::Primitive(PrimitiveType::String)),
+                        arg("limit", TypeRef::Primitive(PrimitiveType::U32)),
                     ],
-                    Some(KindValue::Namespaced("Message[]".into(), None)),
+                    Some(TypeRef::Array { element: Box::new(TypeRef::Named("Message".to_string())), length: None }),
                     vec![],
                 ),
                 function(
                     "history",
-                    vec![arg("limit", KindValue::Primitive(Primitive::U32(None)))],
-                    Some(KindValue::Namespaced("Message[]".into(), None)),
+                    vec![arg("limit", TypeRef::Primitive(PrimitiveType::U32))],
+                    Some(TypeRef::Array { element: Box::new(TypeRef::Named("Message".to_string())), length: None }),
                     vec![],
                 ),
-                function("wipe", vec![], Some(KindValue::Unit), vec![]),
+                function("wipe", vec![], Some(TypeRef::Unit), vec![]),
                 function("poke", vec![], None, vec![]),
                 // @timeout_ms = 3000 → the client emits `call_with_timeout`
                 FrozenUnit::Function {
@@ -115,8 +132,8 @@ fn chat_schema() -> Vec<FrozenUnit> {
                         value: ConfigValue::Integer(3000),
                     }],
                     name: "await_ack".into(),
-                    arguments: vec![arg("token", KindValue::Namespaced("string".into(), None))],
-                    _return: Some(KindValue::Unit),
+                    arguments: vec![arg("token", TypeRef::Primitive(PrimitiveType::String))],
+                    _return: Some(TypeRef::Unit),
                     throws: vec![],
                     span: (0, 0),
                 },
@@ -140,14 +157,14 @@ fn rpc_schema() -> Vec<FrozenUnit> {
         functions: vec![
             function(
                 "echo",
-                vec![arg("line", KindValue::Namespaced("string".into(), None))],
-                Some(KindValue::Namespaced("string".into(), None)),
+                vec![arg("line", TypeRef::Primitive(PrimitiveType::String))],
+                Some(TypeRef::Primitive(PrimitiveType::String)),
                 vec![],
             ),
             function(
                 "tick",
                 vec![],
-                Some(KindValue::Primitive(Primitive::U32(None))),
+                Some(TypeRef::Primitive(PrimitiveType::U32)),
                 vec![],
             ),
         ],
@@ -164,8 +181,8 @@ fn rpc_default_schema() -> Vec<FrozenUnit> {
         name: "Clock".into(),
         functions: vec![function(
             "now",
-            vec![arg("tz", KindValue::Namespaced("string".into(), None))],
-            Some(KindValue::Primitive(Primitive::U64(None))),
+            vec![arg("tz", TypeRef::Primitive(PrimitiveType::String))],
+            Some(TypeRef::Primitive(PrimitiveType::U64)),
             vec![],
         )],
         span: (0, 0),
@@ -340,29 +357,66 @@ fn build_generated_crate(
 /// spelling instead of Rust's `i`.
 #[test]
 fn a_generated_crate_with_constants_builds() {
-    let constant = |name: &str, kind: Primitive| FrozenUnit::Constant {
+    let constant = |name: &str, ty: PrimitiveType, value: Literal| FrozenUnit::Constant {
         docstring: None,
         name: name.to_string(),
-        kind_value: KindValue::Primitive(kind),
+        ty: TypeRef::Primitive(ty),
+        value: Some(value),
         span: (0, 0),
     };
+    use Literal::{Bool, Integer};
+    use PrimitiveType as P;
     let schemas = vec![(
         "limits".to_string(),
         vec![
-            constant("MAX_RETRIES", Primitive::U8(Some(5))),
-            constant("WINDOW", Primitive::U16(Some(1024))),
-            constant("CAPACITY", Primitive::U32(Some(70000))),
-            constant("TOTAL", Primitive::U64(Some(5_000_000_000))),
-            constant("HUGE", Primitive::U128(Some(1))),
-            constant("OFFSET", Primitive::S8(Some(-3))),
-            constant("DELTA", Primitive::S16(Some(-300))),
-            constant("DRIFT", Primitive::S32(Some(-70000))),
-            constant("SKEW", Primitive::S64(Some(-5_000_000_000))),
-            constant("DEEP", Primitive::S128(Some(-1))),
-            constant("DEBUG", Primitive::Boolean(Some(true))),
-            constant("QUIET", Primitive::Boolean(Some(false))),
-            constant("SERVICE_NAME", Primitive::String(Some("store".to_string()))),
+            constant("MAX_RETRIES", P::U8, Integer(5)),
+            constant("WINDOW", P::U16, Integer(1024)),
+            constant("CAPACITY", P::U32, Integer(70000)),
+            constant("TOTAL", P::U64, Integer(5_000_000_000)),
+            constant("HUGE", P::U128, Integer(1)),
+            constant("OFFSET", P::S8, Integer(-3)),
+            constant("DELTA", P::S16, Integer(-300)),
+            constant("DRIFT", P::S32, Integer(-70000)),
+            constant("SKEW", P::S64, Integer(-5_000_000_000)),
+            constant("DEEP", P::S128, Integer(-1)),
+            constant("DEBUG", P::Bool, Bool(true)),
+            constant("QUIET", P::Bool, Bool(false)),
+            constant("SERVICE_NAME", P::String, Literal::String("store".to_string())),
         ],
     )];
     build_generated_crate("constants", &schemas, None, false);
+}
+
+/// Exact float widths and fixed arrays, compiled: `[u8; 4]` through serde's
+/// own derive, `[u8; 64]` through `serde_big_array` (whose dependency the
+/// generated `Cargo.toml` has to declare), and an integer-written float
+/// constant that needs its decimal point.
+#[test]
+fn a_generated_crate_with_floats_and_fixed_arrays_builds() {
+    let schemas = vec![(
+        "shapes".to_string(),
+        vec![
+            FrozenUnit::Struct {
+                docstring: None,
+                parameters: vec![],
+                name: "Sample".to_string(),
+                fields: vec![
+                    field("ratio", "f32"),
+                    field("precise", "f64"),
+                    field("rgba", "u8[4]"),
+                    field("digest", "u8[64]"),
+                    field("rows", "u16[3][]"),
+                ],
+                span: (0, 0),
+            },
+            FrozenUnit::Constant {
+                docstring: None,
+                name: "SCALE".to_string(),
+                ty: TypeRef::Primitive(PrimitiveType::F32),
+                value: Some(Literal::Integer(2)),
+                span: (0, 0),
+            },
+        ],
+    )];
+    build_generated_crate("fixed_arrays", &schemas, None, false);
 }

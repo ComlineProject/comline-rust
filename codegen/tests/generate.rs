@@ -1,6 +1,6 @@
 use comline_codegen::{GenRequest, Mode, PackageMeta};
 use comline_codegen_rust::generate_rust;
-use comline_core::schema::ir::compiler::interpreted::kind_search::{KindValue, Primitive};
+use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
 use comline_core::schema::ir::frozen::unit::{ConfigValue, FrozenArgument, FrozenUnit};
 
 fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
@@ -42,7 +42,7 @@ fn user_struct() -> FrozenUnit {
                 parameters: vec![],
                 optional: false,
                 name: "id".to_string(),
-                kind_value: KindValue::Namespaced("s32".to_string(), None),
+                ty: TypeRef::Primitive(PrimitiveType::S32), default: None,
                 span: (0, 0),
             },
             FrozenUnit::Field {
@@ -50,7 +50,7 @@ fn user_struct() -> FrozenUnit {
                 parameters: vec![],
                 optional: false,
                 name: "username".to_string(),
-                kind_value: KindValue::Namespaced("string".to_string(), None),
+                ty: TypeRef::Primitive(PrimitiveType::String), default: None,
                 span: (0, 0),
             },
             FrozenUnit::Field {
@@ -58,7 +58,7 @@ fn user_struct() -> FrozenUnit {
                 parameters: vec![],
                 optional: false,
                 name: "tags".to_string(),
-                kind_value: KindValue::Namespaced("string[]".to_string(), None),
+                ty: TypeRef::Array { element: Box::new(TypeRef::Primitive(PrimitiveType::String)), length: None }, default: None,
                 span: (0, 0),
             },
         ],
@@ -87,8 +87,8 @@ fn code_mode_generates_enum_and_protocol() {
         docstring: None,
         name: "Status".to_string(),
         variants: vec![
-            FrozenUnit::EnumVariant(KindValue::EnumVariant("Active".to_string(), None), (0, 0)),
-            FrozenUnit::EnumVariant(KindValue::EnumVariant("Inactive".to_string(), None), (0, 0)),
+            FrozenUnit::EnumVariant("Active".to_string(), (0, 0)),
+            FrozenUnit::EnumVariant("Inactive".to_string(), (0, 0)),
         ],
         span: (0, 0),
     };
@@ -102,10 +102,10 @@ fn code_mode_generates_enum_and_protocol() {
             parameters: vec![],
             arguments: vec![FrozenArgument {
                 name: "id".to_string(),
-                kind: KindValue::Primitive(Primitive::S32(None)),
+                ty: TypeRef::Primitive(PrimitiveType::S32),
                 span: (0, 0),
             }],
-            _return: Some(KindValue::Namespaced("User".to_string(), None)),
+            _return: Some(TypeRef::Named("User".to_string())),
             throws: vec![],
             span: (0, 0),
         }],
@@ -150,7 +150,7 @@ fn code_mode_emits_a_type_alias_and_fields_reference_it_by_name() {
     let alias = FrozenUnit::TypeAlias {
         docstring: None,
         name: "UserId".to_string(),
-        target: KindValue::Namespaced("u64".to_string(), None),
+        target: TypeRef::Primitive(PrimitiveType::U64),
         span: (0, 0),
     };
     let user = FrozenUnit::Struct {
@@ -162,7 +162,7 @@ fn code_mode_emits_a_type_alias_and_fields_reference_it_by_name() {
             parameters: vec![],
             optional: false,
             name: "sender".to_string(),
-            kind_value: KindValue::Namespaced("UserId".to_string(), None),
+            ty: TypeRef::Named("UserId".to_string()), default: None,
             span: (0, 0),
         }],
         span: (0, 0),
@@ -204,7 +204,7 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
             parameters: vec![],
             optional: false,
             name: "why".to_string(),
-            kind_value: KindValue::Namespaced("string".to_string(), None),
+            ty: TypeRef::Primitive(PrimitiveType::String), default: None,
             span: (0, 0),
         }],
         span: Some((0, 0)),
@@ -221,10 +221,10 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
                 parameters: vec![],
                 arguments: vec![FrozenArgument {
                     name: "body".to_string(),
-                    kind: KindValue::Namespaced("string".to_string(), None),
+                    ty: TypeRef::Primitive(PrimitiveType::String),
                     span: (0, 0),
                 }],
-                _return: Some(KindValue::Unit),
+                _return: Some(TypeRef::Unit),
                 throws: vec![0],
                 span: (0, 0),
             },
@@ -233,7 +233,7 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
                 name: "ping".to_string(),
                 parameters: vec![],
                 arguments: vec![],
-                _return: Some(KindValue::Unit),
+                _return: Some(TypeRef::Unit),
                 throws: vec![],
                 span: (0, 0),
             },
@@ -244,7 +244,7 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
                 parameters: vec![],
                 arguments: vec![FrozenArgument {
                     name: "note".to_string(),
-                    kind: KindValue::Namespaced("string".to_string(), None),
+                    ty: TypeRef::Primitive(PrimitiveType::String),
                     span: (0, 0),
                 }],
                 _return: None,
@@ -328,7 +328,7 @@ fn timeout_ms_annotation_emits_call_with_timeout() {
                     value: ConfigValue::Integer(2500),
                 }],
                 arguments: vec![],
-                _return: Some(KindValue::Primitive(Primitive::U32(None))),
+                _return: Some(TypeRef::Primitive(PrimitiveType::U32)),
                 throws: vec![],
                 span: (0, 0),
             },
@@ -338,7 +338,7 @@ fn timeout_ms_annotation_emits_call_with_timeout() {
                 name: "fast".to_string(),
                 parameters: vec![],
                 arguments: vec![],
-                _return: Some(KindValue::Primitive(Primitive::U32(None))),
+                _return: Some(TypeRef::Primitive(PrimitiveType::U32)),
                 throws: vec![],
                 span: (0, 0),
             },
@@ -372,7 +372,7 @@ fn framing_annotation_selects_jsonrpc_for_the_connect_and_serve_helpers() {
             name: "now".to_string(),
             parameters: vec![],
             arguments: vec![],
-            _return: Some(KindValue::Primitive(Primitive::U32(None))),
+            _return: Some(TypeRef::Primitive(PrimitiveType::U32)),
             throws: vec![],
             span: (0, 0),
         }],
@@ -414,7 +414,7 @@ fn one_plain_protocol(name: &str) -> Vec<FrozenUnit> {
             name: "now".to_string(),
             parameters: vec![],
             arguments: vec![],
-            _return: Some(KindValue::Primitive(Primitive::U32(None))),
+            _return: Some(TypeRef::Primitive(PrimitiveType::U32)),
             throws: vec![],
             span: (0, 0),
         }],
@@ -478,7 +478,7 @@ fn an_all_one_way_protocol_leaves_the_dispatch_reply_param_unbound() {
             parameters: vec![],
             arguments: vec![FrozenArgument {
                 name: "topic".to_string(),
-                kind: KindValue::Namespaced("string".to_string(), None),
+                ty: TypeRef::Primitive(PrimitiveType::String),
                 span: (0, 0),
             }],
             _return: None,
@@ -668,7 +668,7 @@ fn cross_namespace_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
                 parameters: vec![],
                 optional: false,
                 name: "value".to_string(),
-                kind_value: KindValue::Namespaced("Shared".to_string(), None),
+                ty: TypeRef::Named("Shared".to_string()), default: None,
                 span: (0, 0),
             }],
             span: (0, 0),
@@ -683,7 +683,7 @@ fn cross_namespace_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
             parameters: vec![],
             optional: false,
             name: "n".to_string(),
-            kind_value: KindValue::Namespaced("u32".to_string(), None),
+            ty: TypeRef::Primitive(PrimitiveType::U32), default: None,
             span: (0, 0),
         }],
         span: (0, 0),
@@ -756,7 +756,7 @@ fn std_reference_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
                 parameters: vec![],
                 optional: false,
                 name: "request".to_string(),
-                kind_value: KindValue::Namespaced("Request".to_string(), None),
+                ty: TypeRef::Named("Request".to_string()), default: None,
                 span: (0, 0),
             }],
             span: (0, 0),
@@ -771,7 +771,7 @@ fn std_reference_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
             parameters: vec![],
             optional: false,
             name: "uri".to_string(),
-            kind_value: KindValue::Namespaced("string".to_string(), None),
+            ty: TypeRef::Primitive(PrimitiveType::String), default: None,
             span: (0, 0),
         }],
         span: (0, 0),
@@ -884,25 +884,25 @@ fn constants_are_emitted_with_the_type_they_declared() {
             FrozenUnit::Constant {
                 docstring: Some("How many times a client retries.".to_string()),
                 name: "MAX_RETRIES".to_string(),
-                kind_value: KindValue::Primitive(Primitive::U8(Some(5))),
+                ty: TypeRef::Primitive(PrimitiveType::U8), value: Some(Literal::Integer(5)),
                 span: (0, 0),
             },
             FrozenUnit::Constant {
                 docstring: None,
                 name: "SERVICE_NAME".to_string(),
-                kind_value: KindValue::Primitive(Primitive::String(Some("store".to_string()))),
+                ty: TypeRef::Primitive(PrimitiveType::String), value: Some(Literal::String("store".to_string())),
                 span: (0, 0),
             },
             FrozenUnit::Constant {
                 docstring: None,
                 name: "DEBUG".to_string(),
-                kind_value: KindValue::Primitive(Primitive::Boolean(Some(true))),
+                ty: TypeRef::Primitive(PrimitiveType::Bool), value: Some(Literal::Bool(true)),
                 span: (0, 0),
             },
             FrozenUnit::Constant {
                 docstring: None,
                 name: "OFFSET".to_string(),
-                kind_value: KindValue::Primitive(Primitive::S16(Some(-3))),
+                ty: TypeRef::Primitive(PrimitiveType::S16), value: Some(Literal::Integer(-3)),
                 span: (0, 0),
             },
         ],
@@ -939,7 +939,7 @@ fn a_file_with_nothing_to_derive_imports_no_serde() {
         vec![FrozenUnit::Constant {
             docstring: None,
             name: "MAX".to_string(),
-            kind_value: KindValue::Primitive(Primitive::U8(Some(1))),
+            ty: TypeRef::Primitive(PrimitiveType::U8), value: Some(Literal::Integer(1)),
             span: (0, 0),
         }],
     )];
@@ -987,7 +987,7 @@ fn a_function_with_several_throws_gets_a_variant_for_each() {
             name: "open".to_string(),
             parameters: vec![],
             arguments: vec![],
-            _return: Some(KindValue::Unit),
+            _return: Some(TypeRef::Unit),
             // The `!` clause's own order, which need not be ordinal order.
             throws: vec![1, 0],
             span: (0, 0),
@@ -1084,7 +1084,7 @@ fn a_derived_per_function_name_collides_too() {
             name: "send".to_string(),
             parameters: vec![],
             arguments: vec![],
-            _return: Some(KindValue::Unit),
+            _return: Some(TypeRef::Unit),
             throws: vec![],
             span: (0, 0),
         }],
@@ -1112,7 +1112,7 @@ fn two_protocols_deriving_the_same_name_are_refused() {
             name: "send".to_string(),
             parameters: vec![],
             arguments: vec![],
-            _return: Some(KindValue::Unit),
+            _return: Some(TypeRef::Unit),
             throws: vec![],
             span: (0, 0),
         }],
@@ -1158,4 +1158,96 @@ fn a_one_way_function_reserves_no_error_name() {
     };
     let schemas = vec![("chat".to_string(), vec![declared, proto])];
     assert!(generate_rust(&code_req(&schemas)).is_ok());
+}
+
+/// Unions have no Rust rendering yet: the generator says so, instead of
+/// emitting a placeholder that fails to compile somewhere inside generated
+/// code.
+#[test]
+fn a_union_is_refused_with_a_clear_error() {
+    let schemas = vec![(
+        "api".to_string(),
+        vec![FrozenUnit::Struct {
+            docstring: None,
+            parameters: vec![],
+            name: "S".to_string(),
+            fields: vec![FrozenUnit::Field {
+                docstring: None,
+                parameters: vec![],
+                optional: false,
+                name: "either".to_string(),
+                ty: TypeRef::Union(vec![
+                    TypeRef::Primitive(PrimitiveType::String),
+                    TypeRef::Primitive(PrimitiveType::U32),
+                ]),
+                default: None,
+                span: (0, 0),
+            }],
+            span: (0, 0),
+        }],
+    )];
+    let err = generate_rust(&code_req(&schemas)).unwrap_err().to_string();
+    assert_eq!(
+        err,
+        "schema 'api', 'S.either': `union(string u32)` is a union, which the Rust generator can't render yet"
+    );
+}
+
+/// `serde_big_array` reaches a field's own type only - a big fixed array
+/// nested in a list, or optional, is refused up front.
+#[test]
+fn a_big_fixed_array_out_of_reach_of_the_attribute_is_refused() {
+    let big = TypeRef::Array { element: Box::new(TypeRef::Primitive(PrimitiveType::U8)), length: Some(64) };
+    for (optional, ty) in [
+        (true, big.clone()),
+        (false, TypeRef::Array { element: Box::new(big.clone()), length: None }),
+    ] {
+        let schemas = vec![(
+            "api".to_string(),
+            vec![FrozenUnit::Struct {
+                docstring: None,
+                parameters: vec![],
+                name: "S".to_string(),
+                fields: vec![FrozenUnit::Field {
+                    docstring: None,
+                    parameters: vec![],
+                    optional,
+                    name: "d".to_string(),
+                    ty,
+                    default: None,
+                    span: (0, 0),
+                }],
+                span: (0, 0),
+            }],
+        )];
+        let err = generate_rust(&code_req(&schemas)).unwrap_err().to_string();
+        assert!(err.contains("a fixed array longer than 32 here"), "{err}");
+    }
+}
+
+/// A field that is a big fixed array gets the attribute, and code mode
+/// says which dependency that needs.
+#[test]
+fn a_big_fixed_array_field_uses_serde_big_array() {
+    let schemas = vec![(
+        "api".to_string(),
+        vec![FrozenUnit::Struct {
+            docstring: None,
+            parameters: vec![],
+            name: "S".to_string(),
+            fields: vec![FrozenUnit::Field {
+                docstring: None,
+                parameters: vec![],
+                optional: false,
+                name: "digest".to_string(),
+                ty: TypeRef::Array { element: Box::new(TypeRef::Primitive(PrimitiveType::U8)), length: Some(64) },
+                default: None,
+                span: (0, 0),
+            }],
+            span: (0, 0),
+        }],
+    )];
+    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    assert!(src.starts_with("// This file uses `serde_big_array` - add it to your Cargo.toml:\n// serde-big-array = \"0.5\"\n"), "{src}");
+    assert!(src.contains("    #[serde(with = \"serde_big_array::BigArray\")]\n    pub digest: [u8; 64],\n"), "{src}");
 }
