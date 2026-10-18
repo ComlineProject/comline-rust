@@ -1219,7 +1219,7 @@ fn map_str_type(s: &str, imports: &HashMap<String, String>) -> String {
         return format!("Vec<{}>", map_str_type(inner, imports));
     }
     match s {
-        "string" | "str" => "String".to_string(),
+        "string" => "String".to_string(),
         "bool" => "bool".to_string(),
         "float" => "f64".to_string(),
         "int" => "i32".to_string(),
