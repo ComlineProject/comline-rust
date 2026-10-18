@@ -40,6 +40,10 @@ const STD_GIT: &str = "https://github.com/ComlineProject/comline-rust";
 pub const STD_REV: &str = "30a70cb30dfbd9e1812e85ea1949df02410c4d7e";
 
 pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
+    // What this generator can't render at all is refused up front, every use
+    // named, before a single file is produced.
+    comline_codegen::features::refuse_unsupported("Rust", req, crate::SUPPORT)?;
+
     let default_framing = req.default_framing.as_deref();
 
     // Only *emission* is narrowed by `external_std`; `req.schemas` stays
@@ -57,7 +61,6 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     // arrive after the earlier files are already written.
     for (namespace, units) in schemas {
         collisions::check(namespace, units, derived_names(units))?;
-        check_supported(namespace, units)?;
     }
 
     // What each value's validation runs, resolved against every schema in
@@ -426,7 +429,7 @@ fn field_lines(fields: &[FrozenUnit], imports: &HashMap<String, String>) -> Stri
         } = field
         {
             // serde's own derive covers arrays up to 32; past that the field
-            // goes through `serde_big_array`. `check_supported` has already
+            // goes through `serde_big_array`. `refuse_unsupported` has already
             // refused the cases this attribute can't reach.
             if !*optional && is_big_array(ty) {
                 s.push_str("    #[serde(with = \"serde_big_array::BigArray\")]\n");
@@ -1330,8 +1333,8 @@ fn rust_type(ty: &TypeRef, imports: &HashMap<String, String>) -> String {
             format!("[{}; {n}]", rust_type(element, imports))
         }
         TypeRef::Unit => "()".to_string(),
-        // Refused by `check_supported` before anything is rendered.
-        TypeRef::Union(_) => unreachable!("check_supported refuses unions"),
+        // Refused by `refuse_unsupported` before anything is rendered.
+        TypeRef::Union(_) => unreachable!("refuse_unsupported refuses unions"),
     }
 }
 
@@ -1375,65 +1378,6 @@ fn uses_big_array(units: &[FrozenUnit]) -> bool {
         }
         _ => false,
     })
-}
-
-/// Refuse, up front, a type this generator can't render into Rust that
-/// compiles - instead of emitting it anyway and leaving the error inside
-/// generated code:
-/// - a union (no Rust rendering yet);
-/// - a fixed array longer than 32 anywhere but as a struct or error field's
-///   own, non-optional type - the one place `serde_big_array`'s field
-///   attribute reaches.
-fn check_supported(namespace: &str, units: &[FrozenUnit]) -> Result<()> {
-    fn problem(ty: &TypeRef, big_array_ok: bool) -> Option<&'static str> {
-        match ty {
-            TypeRef::Union(_) => Some("a union, which the Rust generator can't render yet"),
-            TypeRef::Array { element, length } => {
-                if matches!(length, Some(n) if *n > 32) && !big_array_ok {
-                    return Some(
-                        "a fixed array longer than 32 here - it's supported only as a struct \
-                         or error field's own, non-optional type",
-                    );
-                }
-                problem(element, false)
-            }
-            _ => None,
-        }
-    }
-    let check = |owner: String, ty: &TypeRef, big_array_ok: bool| -> Result<()> {
-        match problem(ty, big_array_ok) {
-            Some(what) => eyre::bail!("schema '{namespace}', {owner}: `{ty}` is {what}"),
-            None => Ok(()),
-        }
-    };
-    for unit in units {
-        match unit {
-            FrozenUnit::Struct { name, fields, .. } | FrozenUnit::Error { name, fields, .. } => {
-                for field in fields {
-                    if let FrozenUnit::Field { name: field, ty, optional, .. } = field {
-                        check(format!("'{name}.{field}'"), ty, !*optional)?;
-                    }
-                }
-            }
-            FrozenUnit::TypeAlias { name, target, .. } => {
-                check(format!("type alias '{name}'"), target, false)?;
-            }
-            FrozenUnit::Protocol { name, functions, .. } => {
-                for function in functions {
-                    if let FrozenUnit::Function { name: f, arguments, _return, .. } = function {
-                        for arg in arguments {
-                            check(format!("'{name}.{f}' argument '{}'", arg.name), &arg.ty, false)?;
-                        }
-                        if let Some(ret) = _return {
-                            check(format!("'{name}.{f}' return"), ret, false)?;
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
 }
 
 // `import_paths` is private, so unlike the rest of this generator's
