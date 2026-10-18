@@ -11,7 +11,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use comline_core::schema::ir::compiler::interpreted::kind_search::{KindValue, Primitive};
+use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
 use comline_core::schema::ir::frozen::schema_ir_hash;
 use comline_core::schema::ir::frozen::unit::{FrozenArgument, FrozenUnit};
 
@@ -54,6 +54,7 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     // arrive after the earlier files are already written.
     for (namespace, units) in schemas {
         collisions::check(namespace, units, derived_names(units))?;
+        check_supported(namespace, units)?;
     }
 
     match req.mode {
@@ -74,6 +75,14 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
                 } else {
                     contents
                 };
+                let contents = if contents.contains("serde_big_array::") {
+                    format!(
+                        "// This file uses `serde_big_array` - add it to your Cargo.toml:\n\
+                         // {BIG_ARRAY_DEP}\n{contents}"
+                    )
+                } else {
+                    contents
+                };
                 GeneratedFile { path: PathBuf::from(format!("{namespace}.rs")), contents }
             })
             .collect()),
@@ -85,6 +94,8 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
                 .iter()
                 .any(|(_, units)| units.iter().any(|u| matches!(u, FrozenUnit::Protocol { .. })));
 
+            let needs_big_array = schemas.iter().any(|(_, units)| uses_big_array(units));
+
             let mut files = vec![GeneratedFile {
                 path: PathBuf::from("Cargo.toml"),
                 contents: cargo_toml(
@@ -92,6 +103,7 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
                     &req.lang_version,
                     has_protocol,
                     std.needs_std_dependency,
+                    needs_big_array,
                 ),
             }];
             // The render closure takes every schema in the request, not just
@@ -172,8 +184,13 @@ fn cargo_toml(
     lang_version: &str,
     has_protocol: bool,
     needs_std_dep: bool,
+    needs_big_array: bool,
 ) -> String {
     let mut deps = String::from("serde = { version = \"1\", features = [\"derive\"] }\n");
+    if needs_big_array {
+        deps.push_str(BIG_ARRAY_DEP);
+        deps.push('\n');
+    }
     if has_protocol {
         deps.push_str(&format!(
             "comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{RUNTIME_REV}\" }}\n"
@@ -323,10 +340,11 @@ fn schema_source(
             FrozenUnit::Constant {
                 docstring,
                 name,
-                kind_value,
+                ty,
+                value,
                 ..
             } => {
-                output.push_str(&constant(docstring.as_deref(), name, kind_value));
+                output.push_str(&constant(docstring.as_deref(), name, ty, value.as_ref()));
             }
             FrozenUnit::Protocol {
                 name,
@@ -357,18 +375,24 @@ fn field_lines(fields: &[FrozenUnit], imports: &HashMap<String, String>) -> Stri
     for field in fields {
         if let FrozenUnit::Field {
             name,
-            kind_value,
+            ty,
             optional,
             ..
         } = field
         {
-            let ty = rust_type(kind_value, imports);
-            let ty = if *optional {
-                format!("Option<{ty}>")
+            // serde's own derive covers arrays up to 32; past that the field
+            // goes through `serde_big_array`. `check_supported` has already
+            // refused the cases this attribute can't reach.
+            if !*optional && is_big_array(ty) {
+                s.push_str("    #[serde(with = \"serde_big_array::BigArray\")]\n");
+            }
+            let rust = rust_type(ty, imports);
+            let rust = if *optional {
+                format!("Option<{rust}>")
             } else {
-                ty
+                rust
             };
-            s.push_str(&format!("    pub {name}: {ty},\n"));
+            s.push_str(&format!("    pub {name}: {rust},\n"));
         }
     }
     s
@@ -382,21 +406,20 @@ fn data_struct(name: &str, fields: &[FrozenUnit], imports: &HashMap<String, Stri
 }
 
 /// `type NAME = TARGET;` - transparent like Rust's own `type` (not a
-/// newtype): `rust_type` already maps any `KindValue` to a real Rust type
+/// newtype): `rust_type` already maps any type to a real Rust type
 /// expression, named or primitive, so this is the same mapping every field
 /// already goes through, just at the top level of the file instead of
 /// inside a struct.
-fn type_alias(name: &str, target: &KindValue, imports: &HashMap<String, String>) -> String {
+fn type_alias(name: &str, target: &TypeRef, imports: &HashMap<String, String>) -> String {
     format!("pub type {name} = {};\n\n", rust_type(target, imports))
 }
 
 /// `const MAX_RETRIES: u8 = 5` -> `pub const MAX_RETRIES: u8 = 5;`.
 ///
 /// Declarations used to vanish here: a schema of nothing but constants
-/// generated an empty file in both targets. The type comes from the
-/// primitive the IR carries, which is only trustworthy since core stopped
-/// inferring it from the literal (core#92) - before that a `u8` constant
-/// would have been emitted as `u64`.
+/// generated an empty file in both targets. The type is the declared one
+/// the IR carries, next to the literal - never inferred from the literal,
+/// which once emitted a `u8` constant as `u64`.
 ///
 /// Rendered from the primitive directly rather than through
 /// [`rust_type`]: a `const` is not a struct field, and the two differ. A
@@ -404,24 +427,31 @@ fn type_alias(name: &str, target: &KindValue, imports: &HashMap<String, String>)
 /// explicit `'static` a `const` would accept is what clippy's
 /// `redundant_static_lifetimes` fires on, which is the same generated-code
 /// noise the conditional serde import above exists to avoid.
-fn constant(docstring: Option<&str>, name: &str, kind_value: &KindValue) -> String {
-    let KindValue::Primitive(primitive) = kind_value else {
-        // Validation refuses a constant of a named type ("only primitives
-        // allowed"), so this is unreachable from a real build. Emitting
-        // nothing rather than guessing keeps it that way.
+fn constant(
+    docstring: Option<&str>,
+    name: &str,
+    ty: &TypeRef,
+    value: Option<&Literal>,
+) -> String {
+    // Validation refuses a constant that isn't a primitive with a literal
+    // value, so neither early return is reachable from a real build.
+    // Emitting nothing rather than guessing keeps it that way.
+    let Some(primitive) = ty.as_primitive() else {
         return String::new();
     };
-    let Some(literal) = primitive.value_str() else {
-        // The grammar requires `= VALUE`, so a constant always has one.
-        return String::new();
-    };
-
-    let (ty, value) = match primitive {
-        Primitive::String(_) => ("&str".to_string(), format!("{literal:?}")),
-        Primitive::Boolean(_) => ("bool".to_string(), literal),
-        // Every integer width names itself in Rust except the IDL's
-        // `s`-prefixed signed ones, which `map_str_type` already translates.
-        other => (map_str_type(other.name(), &HashMap::new()), literal),
+    let (ty, value) = match (primitive, value) {
+        (PrimitiveType::String, Some(Literal::String(text))) => {
+            ("&str".to_string(), format!("{text:?}"))
+        }
+        // A float constant written as an integer (`= 2`) needs a decimal
+        // point to be a float in Rust.
+        (p, Some(Literal::Integer(i))) if p.is_float() => {
+            (primitive_type(p).to_string(), format!("{i}.0"))
+        }
+        (p, Some(literal @ (Literal::Integer(_) | Literal::Bool(_)))) => {
+            (primitive_type(p).to_string(), literal.to_string())
+        }
+        _ => return String::new(),
     };
 
     let mut s = String::new();
@@ -470,11 +500,7 @@ fn data_enum(name: &str, variants: &[FrozenUnit]) -> String {
         "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]\npub enum {name} {{\n"
     );
     for variant in variants {
-        if let FrozenUnit::EnumVariant(kv, _) = variant {
-            let variant_name = match kv {
-                KindValue::EnumVariant(n, _) | KindValue::Namespaced(n, _) => n.clone(),
-                _ => "Unknown".to_string(),
-            };
+        if let FrozenUnit::EnumVariant(variant_name, _) = variant {
             s.push_str(&format!("    {variant_name},\n"));
         }
     }
@@ -622,7 +648,7 @@ struct FnInfo {
     throws: Vec<(u16, String)>,
     /// `_return: None` — fire-and-forget: `Client::notify`, the dispatcher
     /// writes no envelope, the trait method returns `()` with no error. An
-    /// explicit `-> ()` (`KindValue::Unit`) is *not* this — it's a normal
+    /// explicit `-> ()` (`TypeRef::Unit`) is *not* this — it's a normal
     /// request/response with an empty ack (§4.4).
     one_way: bool,
     /// `@timeout_ms = N` on the function — the client method calls
@@ -1034,7 +1060,7 @@ fn fn_info(
     name: &str,
     parameters: &[FrozenUnit],
     arguments: &[FrozenArgument],
-    ret: &Option<KindValue>,
+    ret: &Option<TypeRef>,
     throws: &[u16],
     errors: &HashMap<u16, String>,
     imports: &HashMap<String, String>,
@@ -1044,7 +1070,7 @@ fn fn_info(
     let args: Vec<Arg> = arguments
         .iter()
         .map(|a| {
-            let (sig_ty, field_ty) = arg_types(&a.kind, imports);
+            let (sig_ty, field_ty) = arg_types(&a.ty, imports);
             Arg {
                 name: a.name.clone(),
                 sig_ty,
@@ -1060,8 +1086,8 @@ fn fn_info(
     };
     let one_way = ret.is_none();
     let ret = match ret {
-        None | Some(KindValue::Unit) => "()".to_string(),
-        Some(kv) => rust_type(kv, imports),
+        None | Some(TypeRef::Unit) => "()".to_string(),
+        Some(ty) => rust_type(ty, imports),
     };
     // A one-way function carries no `!` (nowhere to deliver it); ignore any.
     let throws: &[u16] = if one_way { &[] } else { throws };
@@ -1107,11 +1133,13 @@ fn annotation<'a>(parameters: &'a [FrozenUnit], key: &str) -> Option<Cow<'a, str
 /// A `str` / `string` arg is passed by reference and decoded borrowed from
 /// the receive buffer; everything else is owned (borrowed arrays / nested
 /// borrowed structs are a follow-up).
-fn arg_types(kind: &KindValue, imports: &HashMap<String, String>) -> (String, String) {
-    let owned = rust_type(kind, imports);
-    match owned.as_str() {
-        "String" => ("&str".to_string(), "&'a str".to_string()),
-        _ => (owned.clone(), owned),
+fn arg_types(ty: &TypeRef, imports: &HashMap<String, String>) -> (String, String) {
+    match ty {
+        TypeRef::Primitive(PrimitiveType::String) => ("&str".to_string(), "&'a str".to_string()),
+        _ => {
+            let owned = rust_type(ty, imports);
+            (owned.clone(), owned)
+        }
     }
 }
 
@@ -1204,42 +1232,122 @@ fn rust_path(origin: &Origin, external_std: bool) -> String {
     format!("crate::{}::{declared}", namespace.replace('/', "::"))
 }
 
-fn rust_type(kind: &KindValue, imports: &HashMap<String, String>) -> String {
-    match kind {
-        KindValue::Primitive(p) => map_str_type(p.name(), imports),
-        KindValue::Namespaced(name, _) => map_str_type(name, imports),
-        KindValue::EnumVariant(name, _) => name.clone(),
-        KindValue::Unit => "()".to_string(),
-        _ => "/* unknown_kind */".to_string(),
-    }
-}
-
-fn map_str_type(s: &str, imports: &HashMap<String, String>) -> String {
-    if let Some(inner) = s.strip_suffix("[]") {
-        return format!("Vec<{}>", map_str_type(inner, imports));
-    }
-    match s {
-        "string" => "String".to_string(),
-        "bool" => "bool".to_string(),
-        "float" => "f64".to_string(),
-        "int" => "i32".to_string(),
-        "u8" | "u16" | "u32" | "u64" | "u128" => s.to_string(),
-        // IDL spells signed integers with an `s` prefix (s8/s16/s32/s64);
-        // Rust's own primitives are always `i`-prefixed, so this is a real
-        // translation, not a passthrough.
-        "s8" => "i8".to_string(),
-        "s16" => "i16".to_string(),
-        "s32" => "i32".to_string(),
-        "s64" => "i64".to_string(),
-        "s128" => "i128".to_string(),
+fn rust_type(ty: &TypeRef, imports: &HashMap<String, String>) -> String {
+    match ty {
+        TypeRef::Primitive(p) => primitive_type(*p).to_string(),
         // The map already holds the full path, which is what makes an
         // aliased import resolve to the name the other schema really
         // exports rather than to this schema's name for it.
-        other => match imports.get(other) {
-            Some(path) => path.clone(),
-            None => other.to_string(),
-        },
+        TypeRef::Named(name) => imports.get(name).cloned().unwrap_or_else(|| name.clone()),
+        TypeRef::Array { element, length: None } => format!("Vec<{}>", rust_type(element, imports)),
+        TypeRef::Array { element, length: Some(n) } => {
+            format!("[{}; {n}]", rust_type(element, imports))
+        }
+        TypeRef::Unit => "()".to_string(),
+        // Refused by `check_supported` before anything is rendered.
+        TypeRef::Union(_) => unreachable!("check_supported refuses unions"),
     }
+}
+
+fn primitive_type(p: PrimitiveType) -> &'static str {
+    match p {
+        // IDL spells signed integers with an `s` prefix; Rust's own
+        // primitives are always `i`-prefixed.
+        PrimitiveType::S8 => "i8",
+        PrimitiveType::S16 => "i16",
+        PrimitiveType::S32 => "i32",
+        PrimitiveType::S64 => "i64",
+        PrimitiveType::S128 => "i128",
+        PrimitiveType::U8 => "u8",
+        PrimitiveType::U16 => "u16",
+        PrimitiveType::U32 => "u32",
+        PrimitiveType::U64 => "u64",
+        PrimitiveType::U128 => "u128",
+        PrimitiveType::F32 => "f32",
+        PrimitiveType::F64 => "f64",
+        PrimitiveType::Bool => "bool",
+        PrimitiveType::String => "String",
+    }
+}
+
+/// The dependency line a crate needs once a field is a fixed array longer
+/// than serde's derive covers.
+const BIG_ARRAY_DEP: &str = "serde-big-array = \"0.5\"";
+
+/// A fixed array past serde's built-in 32.
+fn is_big_array(ty: &TypeRef) -> bool {
+    matches!(ty, TypeRef::Array { length: Some(n), .. } if *n > 32)
+}
+
+/// Whether any struct or error field here needs `serde_big_array`.
+fn uses_big_array(units: &[FrozenUnit]) -> bool {
+    units.iter().any(|unit| match unit {
+        FrozenUnit::Struct { fields, .. } | FrozenUnit::Error { fields, .. } => {
+            fields.iter().any(|f| {
+                matches!(f, FrozenUnit::Field { ty, optional: false, .. } if is_big_array(ty))
+            })
+        }
+        _ => false,
+    })
+}
+
+/// Refuse, up front, a type this generator can't render into Rust that
+/// compiles - instead of emitting it anyway and leaving the error inside
+/// generated code:
+/// - a union (no Rust rendering yet);
+/// - a fixed array longer than 32 anywhere but as a struct or error field's
+///   own, non-optional type - the one place `serde_big_array`'s field
+///   attribute reaches.
+fn check_supported(namespace: &str, units: &[FrozenUnit]) -> Result<()> {
+    fn problem(ty: &TypeRef, big_array_ok: bool) -> Option<&'static str> {
+        match ty {
+            TypeRef::Union(_) => Some("a union, which the Rust generator can't render yet"),
+            TypeRef::Array { element, length } => {
+                if matches!(length, Some(n) if *n > 32) && !big_array_ok {
+                    return Some(
+                        "a fixed array longer than 32 here - it's supported only as a struct \
+                         or error field's own, non-optional type",
+                    );
+                }
+                problem(element, false)
+            }
+            _ => None,
+        }
+    }
+    let check = |owner: String, ty: &TypeRef, big_array_ok: bool| -> Result<()> {
+        match problem(ty, big_array_ok) {
+            Some(what) => eyre::bail!("schema '{namespace}', {owner}: `{ty}` is {what}"),
+            None => Ok(()),
+        }
+    };
+    for unit in units {
+        match unit {
+            FrozenUnit::Struct { name, fields, .. } | FrozenUnit::Error { name, fields, .. } => {
+                for field in fields {
+                    if let FrozenUnit::Field { name: field, ty, optional, .. } = field {
+                        check(format!("'{name}.{field}'"), ty, !*optional)?;
+                    }
+                }
+            }
+            FrozenUnit::TypeAlias { name, target, .. } => {
+                check(format!("type alias '{name}'"), target, false)?;
+            }
+            FrozenUnit::Protocol { name, functions, .. } => {
+                for function in functions {
+                    if let FrozenUnit::Function { name: f, arguments, _return, .. } = function {
+                        for arg in arguments {
+                            check(format!("'{name}.{f}' argument '{}'", arg.name), &arg.ty, false)?;
+                        }
+                        if let Some(ret) = _return {
+                            check(format!("'{name}.{f}' return"), ret, false)?;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 // `import_paths` is private, so unlike the rest of this generator's
