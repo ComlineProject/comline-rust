@@ -32,16 +32,20 @@ pub struct Rendered {
 }
 
 impl Rendered {
+    /// The message as it prints, for a template with no arguments: the
+    /// format string with its doubled braces single again. A string used
+    /// as is (`write_str`, `.into()`) would print them doubled.
+    pub fn literal(&self) -> String {
+        self.format.replace("{{", "{").replace("}}", "}")
+    }
+
     /// The body of a `Display::fmt`, given the formatter's name.
     ///
     /// With no arguments this is a `write_str`, which avoids running the
     /// format machinery (and clippy's `write_literal`) over a constant.
     pub fn write_call(&self, formatter: &str) -> String {
         if self.args.is_empty() {
-            // `write_str` prints its argument as is: the format string's
-            // doubled braces would print doubled.
-            let text = self.format.replace("{{", "{").replace("}}", "}");
-            format!("{formatter}.write_str({text:?})")
+            format!("{formatter}.write_str({:?})", self.literal())
         } else {
             format!(
                 "write!({formatter}, {:?}, {})",

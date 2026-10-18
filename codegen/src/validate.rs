@@ -367,7 +367,7 @@ fn message_expr(template: &str, check: &Check, base: &TypeRef) -> String {
         }
     });
     if rendered.args.is_empty() {
-        format!("{:?}.into()", rendered.format)
+        format!("{:?}.into()", rendered.literal())
     } else {
         format!("format!({:?}, {})", rendered.format, rendered.args.join(", "))
     }
