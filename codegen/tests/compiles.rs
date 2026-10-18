@@ -9,6 +9,7 @@
 use std::fs;
 use std::process::Command;
 
+use comline_codegen::validation::ValidateOnDecode;
 use comline_codegen::{GenRequest, Mode, PackageMeta};
 use comline_codegen_rust::generate_rust;
 use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
@@ -295,8 +296,16 @@ fn build_generated_crate(
         lang_version: comline_codegen_rust::LANG_VERSION.into(),
         default_framing,
         external_std,
+        validate_on_decode: Default::default(),
     };
-    let files = generate_rust(&req).expect("generation");
+    check_generated_crate(label, &req, None);
+}
+
+/// Generate `req` into a temp dir and `cargo build` it - or, given a test
+/// file, add it as `tests/behaviour.rs` (with `serde_json` to decode with)
+/// and `cargo test` it, so what the generated code *does* is checked too.
+fn check_generated_crate(label: &str, req: &GenRequest, behaviour: Option<&str>) {
+    let files = generate_rust(req).expect("generation");
 
     let dir = std::env::temp_dir().join(format!(
         "comline-rust-compiletest-{label}-{}",
@@ -332,9 +341,18 @@ fn build_generated_crate(
         fs::write(&manifest, contents).unwrap();
     }
 
+    if let Some(test) = behaviour {
+        fs::create_dir_all(dir.join("tests")).unwrap();
+        fs::write(dir.join("tests/behaviour.rs"), test).unwrap();
+        let manifest = dir.join("Cargo.toml");
+        let mut contents = fs::read_to_string(&manifest).unwrap();
+        contents.push_str("\n[dev-dependencies]\nserde_json = \"1\"\n");
+        fs::write(&manifest, contents).unwrap();
+    }
+
     // Isolated target dir so it doesn't fight this crate's build lock.
     let status = Command::new(env!("CARGO"))
-        .args(["build", "--quiet"])
+        .args([if behaviour.is_some() { "test" } else { "build" }, "--quiet"])
         .current_dir(&dir)
         .env("CARGO_TARGET_DIR", dir.join("target"))
         .status()
@@ -420,3 +438,158 @@ fn a_generated_crate_with_floats_and_fixed_arrays_builds() {
     )];
     build_generated_crate("fixed_arrays", &schemas, None, false);
 }
+
+/// The IDL the validation tests generate from: std's `StringBounds` (bound
+/// through a constant), a local validator over a number, an alias carrying
+/// checks, an optional field and an array of the alias, a struct nested in
+/// another, and a function argument checked through the alias.
+const VALIDATED: &str = r#"
+use std::validators::StringBounds
+
+const MIN_HANDLE: u32 = 2
+
+validator Range for u32 {
+    min: u32 = 0
+    max: u32 = 100
+
+    validate {
+        assert(value >= params.min and value <= params.max,
+               "{value.name} must be between {params.min} and {params.max}, got {value}")
+    }
+}
+
+@validators = [StringBounds(min_chars = MIN_HANDLE, max_chars = 8)]
+type Handle = string
+
+struct Profile {
+    handle: Handle
+    @validators = [Range(max = 120)]
+    age: u32
+    optional nickname: Handle
+    friends: Handle[]
+}
+
+struct Post {
+    author: Profile
+    @validators = [StringBounds(min_chars = 1)]
+    body: string
+}
+
+protocol Social {
+    function rename(to: Handle) -> Handle;
+}
+"#;
+
+fn validated_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
+    use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
+    use comline_core::schema::ir::compiler::Compile;
+    use comline_core::package::stdlib;
+    // std's own `validators.ids`, as every build gets it.
+    let (_, std_validators) = stdlib::schemas()
+        .find(|(namespace, _)| namespace.join("/") == "std/validators")
+        .expect("std ships validators");
+    vec![
+        (
+            "std/validators".to_string(),
+            IncrementalInterpreter::from_source(std_validators),
+        ),
+        ("app".to_string(), IncrementalInterpreter::from_source(VALIDATED)),
+    ]
+}
+
+/// The generated `validate()` / `validate_first()`, run: every failure
+/// collected with its path and message, nested values and array elements
+/// included, an absent optional skipped - and decoding, with
+/// `validate_on_decode = "collect"`, refusing a value that fails.
+#[test]
+fn generated_validators_run() {
+    let schemas = validated_schemas();
+    let req = GenRequest {
+        mode: Mode::Lib,
+        schemas: &schemas,
+        package: PackageMeta {
+            name: "comline-codegen-rust-compiletest".into(),
+            version: "0.0.0".into(),
+        },
+        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        default_framing: None,
+        external_std: false,
+        validate_on_decode: ValidateOnDecode::Collect,
+    };
+    check_generated_crate("validators", &req, Some(VALIDATED_BEHAVIOUR));
+}
+
+const VALIDATED_BEHAVIOUR: &str = r##"
+use comline_codegen_rust_compiletest::app::{Post, Profile, SocialRenameParams};
+use comline_runtime::validation::{Validate, ValidationErrors};
+
+fn profile() -> Profile {
+    Profile { handle: "ada".into(), age: 30, nickname: None, friends: vec!["bob".into()] }
+}
+
+fn failures(errors: ValidationErrors) -> Vec<(String, String)> {
+    errors.0.into_iter().map(|e| (e.field, e.message)).collect()
+}
+
+fn pairs(expected: &[(&str, &str)]) -> Vec<(String, String)> {
+    expected.iter().map(|(f, m)| (f.to_string(), m.to_string())).collect()
+}
+
+#[test]
+fn a_valid_value_passes() {
+    assert!(profile().validate().is_ok());
+    assert!(profile().validate_first().is_ok());
+}
+
+#[test]
+fn every_failure_is_collected_with_its_path() {
+    let bad = Profile {
+        handle: "a".into(),
+        age: 200,
+        nickname: Some("far_too_long".into()),
+        friends: vec!["ok".into(), "x".into()],
+    };
+    assert_eq!(
+        failures(bad.validate().unwrap_err()),
+        pairs(&[
+            ("handle", "handle must be at least 2 characters"),
+            ("age", "age must be between 0 and 120, got 200"),
+            ("nickname", "nickname must be at most 8 characters"),
+            ("friends[1]", "friends[1] must be at least 2 characters"),
+        ])
+    );
+    assert_eq!(bad.validate_first().unwrap_err().field, "handle");
+}
+
+#[test]
+fn length_counts_characters_not_bytes() {
+    // Eight characters, sixteen bytes.
+    let p = Profile { handle: "éééééééé".into(), ..profile() };
+    assert!(p.validate().is_ok());
+}
+
+#[test]
+fn a_nested_value_is_validated_under_its_path() {
+    let post = Post { author: Profile { handle: "a".into(), ..profile() }, body: String::new() };
+    let fields: Vec<String> = post.validate().unwrap_err().0.into_iter().map(|e| e.field).collect();
+    assert_eq!(fields, ["author.handle", "body"]);
+}
+
+#[test]
+fn an_argument_is_validated_through_its_alias() {
+    let params = SocialRenameParams { to: "x".into() };
+    assert_eq!(params.validate_first().unwrap_err().field, "to");
+}
+
+#[test]
+fn decoding_runs_the_checks() {
+    let ok: Result<Profile, _> =
+        serde_json::from_str(r#"{"handle":"ada","age":3,"nickname":null,"friends":[]}"#);
+    assert!(ok.is_ok());
+    let bad = serde_json::from_str::<Profile>(
+        r#"{"handle":"a","age":3,"nickname":null,"friends":[]}"#,
+    )
+    .unwrap_err();
+    assert!(bad.to_string().contains("handle must be at least 2 characters"), "{bad}");
+}
+"##;

@@ -14,6 +14,7 @@ fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
         lang_version: comline_codegen_rust::LANG_VERSION.into(),
         default_framing: None,
         external_std: false,
+        validate_on_decode: Default::default(),
     }
 }
 
@@ -28,6 +29,7 @@ fn lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
         lang_version: comline_codegen_rust::LANG_VERSION.into(),
         default_framing: None,
         external_std: false,
+        validate_on_decode: Default::default(),
     }
 }
 
@@ -149,6 +151,7 @@ fn code_mode_generates_enum_and_protocol() {
 fn code_mode_emits_a_type_alias_and_fields_reference_it_by_name() {
     let alias = FrozenUnit::TypeAlias {
         docstring: None,
+        parameters: vec![],
         name: "UserId".to_string(),
         target: TypeRef::Primitive(PrimitiveType::U64),
         span: (0, 0),
@@ -1250,4 +1253,85 @@ fn a_big_fixed_array_field_uses_serde_big_array() {
     let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
     assert!(src.starts_with("// This file uses `serde_big_array` - add it to your Cargo.toml:\n// serde-big-array = \"0.5\"\n"), "{src}");
     assert!(src.contains("    #[serde(with = \"serde_big_array::BigArray\")]\n    pub digest: [u8; 64],\n"), "{src}");
+}
+
+// ── validators ─────────────────────────────────────────────────────────────
+
+fn validated(source: &str) -> Vec<(String, Vec<FrozenUnit>)> {
+    use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
+    use comline_core::schema::ir::compiler::Compile;
+    vec![("app".to_string(), IncrementalInterpreter::from_source(source))]
+}
+
+const NON_EMPTY: &str = "validator NonEmpty for string {\n    validate {\n        \
+                         assert(value.length > 0, \"{value.name} is empty\")\n    }\n}\n\
+                         struct Note {\n    @validators = [NonEmpty()]\n    text: string\n}\n";
+
+fn app_file(files: &[comline_codegen::GeneratedFile]) -> &str {
+    &files
+        .iter()
+        .find(|f| f.path.ends_with("app.rs"))
+        .expect("app.rs")
+        .contents
+}
+
+#[test]
+fn a_checked_struct_implements_validate_and_decodes_unchanged_by_default() {
+    let schemas = validated(NON_EMPTY);
+    let files = generate_rust(&code_req(&schemas)).unwrap();
+    let app = app_file(&files);
+    assert!(app.contains("impl comline_runtime::validation::Validate for Note {"), "{app}");
+    assert!(app.contains("if !((value.chars().count() as i128) > 0) {"), "{app}");
+    assert!(app.contains("message: format!(\"{} is empty\", path),"), "{app}");
+    assert!(!app.contains("try_from"), "off leaves decoding alone:\n{app}");
+}
+
+#[test]
+fn validate_on_decode_first_decodes_through_validate_first() {
+    let schemas = validated(NON_EMPTY);
+    let req = GenRequest {
+        validate_on_decode: comline_codegen::validation::ValidateOnDecode::First,
+        ..code_req(&schemas)
+    };
+    let app = generate_rust(&req).unwrap().remove(0).contents;
+    assert!(app.contains("#[serde(try_from = \"__NoteUnchecked\")]\npub struct Note {"), "{app}");
+    assert!(app.contains("type Error = comline_runtime::validation::ValidationError;"), "{app}");
+    assert!(app.contains("comline_runtime::validation::Validate::validate_first(&value)?;"), "{app}");
+}
+
+#[test]
+fn code_mode_names_the_runtime_dependency_validation_needs() {
+    let schemas = validated(NON_EMPTY);
+    let app = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    assert!(
+        app.starts_with("// This file uses `comline_runtime` - add it to your Cargo.toml:\n"),
+        "{app}"
+    );
+}
+
+#[test]
+fn lib_mode_depends_on_the_runtime_for_validation_alone() {
+    let schemas = validated(NON_EMPTY);
+    let files = generate_rust(&lib_req(&schemas)).unwrap();
+    let manifest = &files.iter().find(|f| f.path.ends_with("Cargo.toml")).unwrap().contents;
+    assert!(manifest.contains("comline-runtime = { git = "), "{manifest}");
+}
+
+#[test]
+fn a_struct_without_checks_gets_no_validate_impl() {
+    let schemas = validated("struct Plain {\n    n: u32\n}\n");
+    let files = generate_rust(&lib_req(&schemas)).unwrap();
+    assert!(!app_file(&files).contains("Validate"));
+    let manifest = &files.iter().find(|f| f.path.ends_with("Cargo.toml")).unwrap().contents;
+    assert!(!manifest.contains("comline-runtime"), "{manifest}");
+}
+
+#[test]
+fn a_validator_missing_from_the_request_is_an_error_naming_the_field() {
+    let schemas = validated("struct Note {\n    @validators = [Gone()]\n    text: string\n}\n");
+    let error = generate_rust(&code_req(&schemas)).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "schema 'app', 'Note.text': validator 'Gone' isn't declared in any schema being generated"
+    );
 }

@@ -62,6 +62,16 @@ impl Rendered {
 
 /// Render `template` against the names of the error's own fields.
 pub fn render(template: &str, fields: &[String]) -> Rendered {
+    render_with(template, |path| match path.strip_prefix("self.") {
+        Some(field) if fields.iter().any(|f| f == field) => Some(format!("self.{field}")),
+        _ => None,
+    })
+}
+
+/// Render `template`, turning each `{path}` into the argument expression
+/// `resolve` gives for it. A path `resolve` doesn't know stays literal text,
+/// for the reason in the module docs.
+pub fn render_with(template: &str, resolve: impl Fn(&str) -> Option<String>) -> Rendered {
     let mut format = String::new();
     let mut args: Vec<String> = Vec::new();
     let mut rest = template;
@@ -76,14 +86,13 @@ pub fn render(template: &str, fields: &[String]) -> Rendered {
             return Rendered { format, args };
         };
 
-        let path = &rest[1..close];
-        match path.strip_prefix("self.") {
-            Some(field) if fields.iter().any(|f| f == field) => {
+        match resolve(&rest[1..close]) {
+            Some(arg) => {
                 format.push_str("{}");
-                args.push(format!("self.{field}"));
+                args.push(arg);
             }
-            // Not one of this error's fields — see the module docs.
-            _ => push_literal(&mut format, &rest[..=close]),
+            // Nothing it names - see the module docs.
+            None => push_literal(&mut format, &rest[..=close]),
         }
         rest = &rest[close + 1..];
     }

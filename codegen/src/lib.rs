@@ -11,6 +11,7 @@
 
 mod generator;
 mod message;
+mod validate;
 
 pub use generator::{generate_rust, STD_REV};
 
