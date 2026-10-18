@@ -1192,7 +1192,8 @@ fn a_union_is_refused_with_a_clear_error() {
     let err = generate_rust(&code_req(&schemas)).unwrap_err().to_string();
     assert_eq!(
         err,
-        "schema 'api', 'S.either': `union(string u32)` is a union, which the Rust generator can't render yet"
+        "the Rust generator doesn't support unions (unions): Rust has no anonymous sum type to render one as\n  \
+         - schema 'api', struct 'S', field 'either'"
     );
 }
 
@@ -1224,7 +1225,8 @@ fn a_big_fixed_array_out_of_reach_of_the_attribute_is_refused() {
             }],
         )];
         let err = generate_rust(&code_req(&schemas)).unwrap_err().to_string();
-        assert!(err.contains("a fixed array longer than 32 here"), "{err}");
+        assert!(err.contains("doesn't support fixed arrays over 32 elements, nested"), "{err}");
+        assert!(err.contains("schema 'api', struct 'S', field 'd'"), "{err}");
     }
 }
 
