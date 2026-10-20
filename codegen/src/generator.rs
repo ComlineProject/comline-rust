@@ -22,6 +22,7 @@ use eyre::Result;
 use crate::validate::{self, Member};
 
 use comline_codegen::collisions::{self, Derived};
+use comline_codegen::connections;
 use comline_codegen::modules::{NamespaceTree, TreeLayout};
 use comline_codegen::naming::{pascal, screaming_snake};
 use comline_codegen::stdlib::{self, is_std_namespace};
@@ -32,7 +33,7 @@ use comline_codegen::{GenRequest, GeneratedFile, Mode, PackageMeta};
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "87446e337b1ec8356a2ee7c1672616bef30e2df4";
+const RUNTIME_REV: &str = "9ef1aa5cd8692bbd797f4fe124a73d89f5227b9f";
 
 /// `comline_std` — std's own pre-generated bindings, referenced instead of
 /// inlined when `external_std` is on. Same git-pin shape as
@@ -78,7 +79,7 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     // Checked for every schema first, so a collision in the last one does not
     // arrive after the earlier files are already written.
     for (namespace, units) in schemas {
-        collisions::check(namespace, units, derived_names(units))?;
+        collisions::check(namespace, units, derived_names(units, default_framing))?;
     }
 
     // What each value's validation runs, resolved against every schema in
@@ -288,6 +289,16 @@ fn schema_source(
     let has_protocol = units
         .iter()
         .any(|u| matches!(u, FrozenUnit::Protocol { .. }));
+    // Which runtime API this file's protocols use: the lockstep `Client` /
+    // `Server`, a `Connection`, or both.
+    let on_connection = |u: &FrozenUnit| match u {
+        FrozenUnit::Protocol { parameters, .. } => {
+            Some(connections::on_connection(parameters, default_framing))
+        }
+        _ => None,
+    };
+    let has_lockstep = units.iter().any(|u| on_connection(u) == Some(false));
+    let has_connection = units.iter().any(|u| on_connection(u) == Some(true));
     let errors = error_names(units);
     let imports = import_paths(units, schemas, external_std);
 
@@ -311,15 +322,29 @@ fn schema_source(
     if needs_serde {
         output.push_str("use serde::{Deserialize, Serialize};\n");
     }
+    if has_lockstep {
+        output.push_str("use comline_runtime::client::Client;\n");
+    }
+    if has_connection {
+        output.push_str("use comline_runtime::connection::Connection;\n");
+    }
     if has_protocol {
         output.push_str(
-            "use comline_runtime::client::Client;\n\
-             use comline_runtime::contract::{\n    \
+            "use comline_runtime::contract::{\n    \
                  Call, CallError, Dispatch, Envelope, Fault, Kind, Reply, RuntimeError, WireFormat,\n\
-             };\n\
-             use comline_runtime::serve::Server;\n\
-             use comline_runtime::transport::Transport;\n",
+             };\n",
         );
+    }
+    if has_connection {
+        output.push_str(
+            "use comline_runtime::contract::{ConnectionFraming, Peer, ProtocolNumber};\n",
+        );
+    }
+    if has_lockstep {
+        output.push_str("use comline_runtime::serve::Server;\n");
+    }
+    if has_protocol {
+        output.push_str("use comline_runtime::transport::Transport;\n");
     }
     output.push('\n');
 
@@ -329,6 +354,14 @@ fn schema_source(
              /// two ends of a connection must agree on it, and the handshake checks.\n\
              pub const IR_HASH: u64 = {:#018x};\n\n",
             schema_ir_hash(units)
+        ));
+    }
+    if has_connection {
+        output.push_str(&format!(
+            "/// Digest of every schema in the package — what a connection's handshake\n\
+             /// checks, so both ends agree on each protocol's number.\n\
+             pub const CONNECTION_IR_HASH: u64 = {:#018x};\n\n",
+            connections::connection_ir_hash(schemas)
         ));
     }
 
@@ -374,6 +407,7 @@ fn schema_source(
                     name,
                     functions,
                     parameters,
+                    schemas,
                     default_framing,
                     &errors,
                     &imports,
@@ -550,20 +584,24 @@ fn data_enum(name: &str, variants: &[FrozenUnit]) -> String {
 /// `comline-codegen`: what gets derived is a fact about *Rust* output, not
 /// about the schema. Keep it in step with the emitters below — a name added
 /// there and not here is a collision that still reaches the compiler.
-fn derived_names(units: &[FrozenUnit]) -> Vec<Derived> {
+fn derived_names(units: &[FrozenUnit], default_framing: Option<&str>) -> Vec<Derived> {
     let mut derived = Vec::new();
     let mut any_protocol = false;
+    let mut any_connection = false;
 
     for unit in units {
         let FrozenUnit::Protocol {
             name: proto,
             functions,
+            parameters,
             ..
         } = unit
         else {
             continue;
         };
         any_protocol = true;
+        let connection = connections::on_connection(parameters, default_framing);
+        any_connection |= connection;
 
         derived.push(Derived::new(
             format!("{proto}Error"),
@@ -573,10 +611,17 @@ fn derived_names(units: &[FrozenUnit]) -> Vec<Derived> {
             format!("{proto}Dispatcher"),
             format!("protocol `{proto}`'s dispatcher"),
         ));
-        derived.push(Derived::new(
-            format!("{proto}Client"),
-            format!("protocol `{proto}`'s client"),
-        ));
+        if connection {
+            derived.push(Derived::new(
+                format!("{proto}Sender"),
+                format!("protocol `{proto}`'s sender"),
+            ));
+        } else {
+            derived.push(Derived::new(
+                format!("{proto}Client"),
+                format!("protocol `{proto}`'s client"),
+            ));
+        }
         derived.push(Derived::new(
             format!("{}_CALLS", screaming_snake(proto)),
             format!("protocol `{proto}`'s call table"),
@@ -611,6 +656,9 @@ fn derived_names(units: &[FrozenUnit]) -> Vec<Derived> {
 
     if any_protocol {
         derived.push(Derived::new("IR_HASH", "the schema's IR hash constant"));
+    }
+    if any_connection {
+        derived.push(Derived::new("CONNECTION_IR_HASH", "the package's connection hash constant"));
     }
     derived
 }
@@ -723,6 +771,12 @@ fn framing_for(name: &str) -> Option<FramingChoice> {
             explicit: true,
         }),
         "datagram" => Some(DATAGRAM_FRAMING),
+        // A protocol on it runs on a `Connection`, which names its framing
+        // itself; this only says the name is known.
+        comline_core::schema::idl::annotations::FRAMING_DATAGRAM2 => Some(FramingChoice {
+            ty: "comline_runtime::contract::Datagram2Framing",
+            explicit: false,
+        }),
         _ => None,
     }
 }
@@ -758,10 +812,12 @@ fn framing_choice(parameters: &[FrozenUnit], default_framing: Option<&str>) -> F
         .unwrap_or(DATAGRAM_FRAMING)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn protocol(
     proto: &str,
     functions: &[FrozenUnit],
     parameters: &[FrozenUnit],
+    schemas: &[(String, Vec<FrozenUnit>)],
     default_framing: Option<&str>,
     errors: &HashMap<u16, String>,
     imports: &HashMap<String, String>,
@@ -770,6 +826,22 @@ fn protocol(
     on_decode: ValidateOnDecode,
 ) -> Result<String> {
     let framing = framing_choice(parameters, default_framing);
+    // On a connection: handlers take the peer, the dispatcher is provided
+    // on a `Connection`, and a sender calls through any `Peer`.
+    let connection = connections::on_connection(parameters, default_framing);
+    if connection && framing.explicit {
+        return Err(eyre::eyre!(
+            "protocol `{proto}`: JSON-RPC on a connection isn't supported yet - use \
+             `@framing = \"datagram@2\"` (ComlineProject/runtime#19)"
+        ));
+    }
+    let number = if connection {
+        connections::protocol_number(schemas, namespace, proto).ok_or_else(|| {
+            eyre::eyre!("protocol `{proto}` has no number: more than 65536 protocols in the package")
+        })?
+    } else {
+        0
+    };
     let fns: Vec<FnInfo> = functions
         .iter()
         .filter_map(|f| match f {
@@ -855,8 +927,11 @@ fn protocol(
 
     // 3. provider trait + the call table
     s.push_str(&format!("pub trait {proto} {{\n"));
+    // On a connection, every handler is given the peer that called it, to
+    // call it back.
+    let peer_arg = if connection { ", peer: &mut impl Peer" } else { "" };
     for f in &fns {
-        let args = sig_args(&f.args);
+        let args = format!("{peer_arg}{}", sig_args(&f.args));
         if f.one_way {
             s.push_str(&format!("    fn {}(&self{args});\n", f.name));
         } else {
@@ -904,178 +979,154 @@ fn protocol(
     l.push(format!("        {calls_const}"));
     l.push("    }".into());
     l.push(String::new());
-    l.push("    fn dispatch<W: WireFormat>(".into());
-    l.push("        &self,".into());
-    l.push("        call: Kind,".into());
-    l.push("        params: &[u8],".into());
-    l.push("        fmt: &W,".into());
-    l.push(format!("        {reply_param}: &mut Reply,"));
-    l.push("    ) -> Result<(), RuntimeError> {".into());
-    l.push(format!(
-        "        match call.resolve({calls_const}).ok_or(RuntimeError::UnknownCall)? {{"
-    ));
-    for (i, f) in fns.iter().enumerate() {
-        l.push(format!("            {i} => {{"));
-        // Params that will not decode are this call's failure, not the
-        // connection's. A request/response call answers with a fault; a
-        // one-way call has no response frame, so there is nowhere to say so
-        // and it stops here. Doing this in the dispatcher rather than
-        // leaving it to `Server` is what makes the call's arity count: the
-        // server cannot see it.
-        let on_undecodable: Vec<String> = if f.one_way {
-            vec!["                    Err(_) => return Ok(()),".into()]
-        } else {
-            vec![
-                "                    Err(_) => {".into(),
-                "                        reply.fault();".into(),
-                "                        return Ok(());".into(),
-                "                    }".into(),
-            ]
-        };
-        let call_args = match &f.params_ty {
-            Some(ty) => {
-                l.push(format!(
-                    "                let p: {ty} = match fmt.decode(params) {{"
-                ));
-                l.push("                    Ok(p) => p,".into());
-                l.extend(on_undecodable);
-                l.push("                };".into());
-                // Params that decode but fail their checks stop the same way.
-                if on_decode != ValidateOnDecode::Off && validate::any_checks(&param_members[i]) {
-                    let stop: &[&str] = if f.one_way {
-                        &["return Ok(());"]
-                    } else {
-                        &["reply.fault();", "return Ok(());"]
-                    };
-                    l.extend(validate::params_check(stop));
-                }
-                f.args
-                    .iter()
-                    .map(|a| format!("p.{}", a.name))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }
-            None => {
-                l.push("                let _: () = match fmt.decode(params) {".into());
-                l.push("                    Ok(unit) => unit,".into());
-                l.extend(on_undecodable);
-                l.push("                };".into());
-                String::new()
-            }
-        };
-        let call = format!("self.0.{}({call_args})", f.name);
-        if f.one_way {
-            // Run the handler; record nothing — the `Server` sees `Outcome::None`
-            // and replies with nothing.
-            l.push(format!("                {call};"));
-        } else {
-            l.push(format!("                match {call} {{"));
-            l.push("                    Ok(value) => {".into());
-            l.push("                        let mut body = Vec::new();".into());
-            l.push("                        fmt.encode(&value, &mut body)?;".into());
-            l.push("                        reply.ok(&body);".into());
-            l.push("                    }".into());
-            for (ord, err) in &f.throws {
-                l.push(format!(
-                    "                    Err(Fault::App({}::{err}(e))) => {{",
-                    f.err_ty
-                ));
-                l.push("                        let mut body = Vec::new();".into());
-                l.push("                        fmt.encode(&e, &mut body)?;".into());
-                l.push(format!(
-                    "                        reply.err({ord}u16, &body);"
-                ));
-                l.push("                    }".into());
-            }
-            if f.throws.is_empty() {
-                // The error type is `Infallible`, so this arm is unreachable -
-                // it is what keeps the `match` exhaustive.
-                l.push("                    Err(Fault::App(never)) => match never {},".into());
-            }
-            l.push("                    Err(Fault::Internal) => reply.fault(),".into());
-            l.push("                }".into());
-        }
-        l.push("                Ok(())".into());
-        l.push("            }".into());
+    if connection {
+        // Its handlers take the peer, which only a connection has.
+        l.push("    /// Only served on a connection, whose handlers are given the peer:".into());
+        l.push("    /// anywhere else the caller hears a fault.".into());
+        l.push("    fn dispatch<W: WireFormat>(".into());
+        l.push("        &self,".into());
+        l.push("        _call: Kind,".into());
+        l.push("        _params: &[u8],".into());
+        l.push("        _fmt: &W,".into());
+        l.push("        reply: &mut Reply,".into());
+        l.push("    ) -> Result<(), RuntimeError> {".into());
+        l.push("        reply.fault();".into());
+        l.push("        Ok(())".into());
+        l.push("    }".into());
+        l.push(String::new());
+        l.push("    fn dispatch_with<P: Peer>(".into());
+        l.push("        &self,".into());
+        l.push("        call: Kind,".into());
+        l.push("        params: &[u8],".into());
+        l.push(format!("        {reply_param}: &mut Reply,"));
+        l.push("        peer: &mut P,".into());
+        l.push("    ) -> Result<(), RuntimeError> {".into());
+        l.extend(dispatch_arms(&fns, &param_members, &calls_const, "peer.format()", "peer", on_decode));
+    } else {
+        l.push("    fn dispatch<W: WireFormat>(".into());
+        l.push("        &self,".into());
+        l.push("        call: Kind,".into());
+        l.push("        params: &[u8],".into());
+        l.push("        fmt: &W,".into());
+        l.push(format!("        {reply_param}: &mut Reply,"));
+        l.push("    ) -> Result<(), RuntimeError> {".into());
+        l.extend(dispatch_arms(&fns, &param_members, &calls_const, "fmt", "", on_decode));
     }
-    l.push("            _ => Err(RuntimeError::UnknownCall),".into());
-    l.push("        }".into());
     l.push("    }".into());
     l.push("}".into());
     l.push(String::new());
     l.push(format!("impl<S: {proto}> {proto}Dispatcher<S> {{"));
-    if no_handshake {
-        l.push("    /// Serve this protocol over `transport`. No handshake runs".into());
-        l.push("    /// (`@handshake = \"none\"`): nothing checks the peer's schema or encoding.".into());
+    if connection {
+        l.push("    /// This protocol's number on a connection.".into());
+        l.push(format!("    pub const PROTOCOL: ProtocolNumber = {number};"));
+        l.push(String::new());
+        l.push("    /// Provide this protocol on `conn`: the peer's calls to it come here.".into());
+        if no_handshake {
+            l.push("    /// Open `conn` with `Connection::accept_with` and `NoHandshake`".into());
+            l.push("    /// (`@handshake = \"none\"`).".into());
+        } else {
+            l.push("    /// Open `conn` with `Connection::accept(transport, format, CONNECTION_IR_HASH)`.".into());
+        }
+        l.push("    pub fn provide_on<T: Transport, W: WireFormat, F: ConnectionFraming>(".into());
+        l.push("        self,".into());
+        l.push("        conn: &mut Connection<T, W, F>,".into());
+        l.push("    ) where".into());
+        l.push("        S: 'static,".into());
+        l.push("    {".into());
+        l.push("        conn.provide(Self::PROTOCOL, self)".into());
+        l.push("    }".into());
     } else {
-        l.push("    /// Serve this protocol over `transport`, running the connection".into());
-        l.push("    /// handshake (`IR_HASH` + `format`'s and the framing's names) against".into());
-        l.push("    /// the peer first.".into());
+        if no_handshake {
+            l.push("    /// Serve this protocol over `transport`. No handshake runs".into());
+            l.push("    /// (`@handshake = \"none\"`): nothing checks the peer's schema or encoding.".into());
+        } else {
+            l.push("    /// Serve this protocol over `transport`, running the connection".into());
+            l.push("    /// handshake (`IR_HASH` + `format`'s and the framing's names) against".into());
+            l.push("    /// the peer first.".into());
+        }
+        l.push(
+            "    pub fn serve<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)".into(),
+        );
+        l.push("    -> Result<(), RuntimeError> {".into());
+        let server = if framing.explicit {
+            l.push(format!("        let framing = {};", framing.ty));
+            "Server::with_framing(self, format, framing)"
+        } else {
+            "Server::new(self, format)"
+        };
+        if no_handshake {
+            l.push(format!("        {server}.serve_with(transport, &mut {NO_HANDSHAKE}, IR_HASH)"));
+        } else {
+            l.push(format!("        {server}.serve(transport, IR_HASH)"));
+        }
+        l.push("    }".into());
     }
-    l.push(
-        "    pub fn serve<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)".into(),
-    );
-    l.push("    -> Result<(), RuntimeError> {".into());
-    let server = if framing.explicit {
-        l.push(format!("        let framing = {};", framing.ty));
-        "Server::with_framing(self, format, framing)"
-    } else {
-        "Server::new(self, format)"
-    };
-    if no_handshake {
-        l.push(format!("        {server}.serve_with(transport, &mut {NO_HANDSHAKE}, IR_HASH)"));
-    } else {
-        l.push(format!("        {server}.serve(transport, IR_HASH)"));
-    }
-    l.push("    }".into());
     l.push("}".into());
     l.push(String::new());
     l.push(String::new());
     s.push_str(&l.join("\n"));
 
-    // 5. consumer stub — wraps a `Client`
-    let client_ty = if framing.explicit {
-        format!("Client<T, W, {}>", framing.ty)
-    } else {
-        "Client<T, W>".to_string()
-    };
+    // 5. consumer stub — wraps a `Client`, or on a connection, a `Peer`
     let mut l: Vec<String> = Vec::new();
     l.extend(unverified_doc.iter().cloned());
-    l.push(format!("pub struct {proto}Client<T, W>(pub {client_ty});"));
-    l.push(String::new());
-    l.push(format!(
-        "impl<T: Transport, W: WireFormat> {proto}Client<T, W> {{"
-    ));
-    l.push(format!("    pub fn new(client: {client_ty}) -> Self {{"));
-    l.push("        Self(client)".into());
-    l.push("    }".into());
-    l.push(String::new());
-    if no_handshake {
-        l.push("    /// Bind to the provider. No handshake runs (`@handshake = \"none\"`).".into());
-    } else {
-        l.push("    /// Bind + run the connection handshake against the provider.".into());
-    }
-    l.push("    pub fn connect(transport: T, format: W) -> Result<Self, RuntimeError> {".into());
-    if no_handshake {
-        let framing_expr = if framing.explicit {
-            l.push(format!("        let framing = {};", framing.ty));
-            "framing"
-        } else {
-            DATAGRAM_FRAMING.ty
-        };
+    // A connection's call takes the protocol number first.
+    let protocol_arg = if connection { "Self::PROTOCOL, " } else { "" };
+    if connection {
         l.push(format!(
-            "        Ok(Self(Client::connect_with(transport, format, {framing_expr}, &mut {NO_HANDSHAKE}, IR_HASH)?))"
+            "/// Calls protocol `{proto}` on the other end of a connection: the peer a"
         ));
-    } else if framing.explicit {
-        l.push(format!("        let framing = {};", framing.ty));
-        l.push(
-            "        Ok(Self(Client::connect_with_framing(transport, format, framing, IR_HASH)?))"
-                .into(),
-        );
+        l.push("/// `Connection` reaches, or the one a handler was given.".into());
+        l.push(format!("pub struct {proto}Sender<'p, P: Peer>(pub &'p mut P);"));
+        l.push(String::new());
+        l.push(format!("impl<'p, P: Peer> {proto}Sender<'p, P> {{"));
+        l.push("    /// This protocol's number on a connection.".into());
+        l.push(format!("    pub const PROTOCOL: ProtocolNumber = {number};"));
+        l.push(String::new());
+        l.push("    pub fn new(peer: &'p mut P) -> Self {".into());
+        l.push("        Self(peer)".into());
+        l.push("    }".into());
     } else {
-        l.push("        Ok(Self(Client::connect(transport, format, IR_HASH)?))".into());
+        let client_ty = if framing.explicit {
+            format!("Client<T, W, {}>", framing.ty)
+        } else {
+            "Client<T, W>".to_string()
+        };
+        l.push(format!("pub struct {proto}Client<T, W>(pub {client_ty});"));
+        l.push(String::new());
+        l.push(format!(
+            "impl<T: Transport, W: WireFormat> {proto}Client<T, W> {{"
+        ));
+        l.push(format!("    pub fn new(client: {client_ty}) -> Self {{"));
+        l.push("        Self(client)".into());
+        l.push("    }".into());
+        l.push(String::new());
+        if no_handshake {
+            l.push("    /// Bind to the provider. No handshake runs (`@handshake = \"none\"`).".into());
+        } else {
+            l.push("    /// Bind + run the connection handshake against the provider.".into());
+        }
+        l.push("    pub fn connect(transport: T, format: W) -> Result<Self, RuntimeError> {".into());
+        if no_handshake {
+            let framing_expr = if framing.explicit {
+                l.push(format!("        let framing = {};", framing.ty));
+                "framing"
+            } else {
+                DATAGRAM_FRAMING.ty
+            };
+            l.push(format!(
+                "        Ok(Self(Client::connect_with(transport, format, {framing_expr}, &mut {NO_HANDSHAKE}, IR_HASH)?))"
+            ));
+        } else if framing.explicit {
+            l.push(format!("        let framing = {};", framing.ty));
+            l.push(
+                "        Ok(Self(Client::connect_with_framing(transport, format, framing, IR_HASH)?))"
+                    .into(),
+            );
+        } else {
+            l.push("        Ok(Self(Client::connect(transport, format, IR_HASH)?))".into());
+        }
+        l.push("    }".into());
     }
-    l.push("    }".into());
     for (i, f) in fns.iter().enumerate() {
         let args = sig_args(&f.args);
         let param_expr = match &f.params_ty {
@@ -1100,7 +1151,7 @@ fn protocol(
                 "    pub fn {}(&mut self{args}) -> Result<(), RuntimeError> {{",
                 f.name
             ));
-            l.push(format!("        self.0.notify({addr}, {param_expr})"));
+            l.push(format!("        self.0.notify({protocol_arg}{addr}, {param_expr})"));
             l.push("    }".into());
             continue;
         }
@@ -1110,9 +1161,9 @@ fn protocol(
         ));
         let call = match f.timeout_ms {
             Some(ms) => format!(
-                "self.0.call_with_timeout({addr}, {param_expr}, core::time::Duration::from_millis({ms}))"
+                "self.0.call_with_timeout({protocol_arg}{addr}, {param_expr}, core::time::Duration::from_millis({ms}))"
             ),
-            None => format!("self.0.call({addr}, {param_expr})"),
+            None => format!("self.0.call({protocol_arg}{addr}, {param_expr})"),
         };
         l.push(format!("        let (reply, fmt) = {call}?;"));
         l.push("        match reply {".into());
@@ -1148,6 +1199,116 @@ fn protocol(
     s.push_str(&l.join("\n"));
 
     Ok(s)
+}
+
+/// The body of a dispatcher's `match` on the call: decode the params with
+/// `fmt` (an expression: `fmt`, or `peer.format()` on a connection), run the
+/// handler (given `peer` first when `peer` names it), and record the
+/// outcome. Ends with the `match`'s closing brace.
+fn dispatch_arms(
+    fns: &[FnInfo],
+    param_members: &[Vec<Member>],
+    calls_const: &str,
+    fmt: &str,
+    peer: &str,
+    on_decode: ValidateOnDecode,
+) -> Vec<String> {
+    let mut l: Vec<String> = Vec::new();
+    l.push(format!(
+        "        match call.resolve({calls_const}).ok_or(RuntimeError::UnknownCall)? {{"
+    ));
+    for (i, f) in fns.iter().enumerate() {
+        l.push(format!("            {i} => {{"));
+        // Params that will not decode are this call's failure, not the
+        // connection's. A request/response call answers with a fault; a
+        // one-way call has no response frame, so there is nowhere to say so
+        // and it stops here. Doing this in the dispatcher rather than
+        // leaving it to `Server` is what makes the call's arity count: the
+        // server cannot see it.
+        let on_undecodable: Vec<String> = if f.one_way {
+            vec!["                    Err(_) => return Ok(()),".into()]
+        } else {
+            vec![
+                "                    Err(_) => {".into(),
+                "                        reply.fault();".into(),
+                "                        return Ok(());".into(),
+                "                    }".into(),
+            ]
+        };
+        let call_args = match &f.params_ty {
+            Some(ty) => {
+                l.push(format!(
+                    "                let p: {ty} = match {fmt}.decode(params) {{"
+                ));
+                l.push("                    Ok(p) => p,".into());
+                l.extend(on_undecodable);
+                l.push("                };".into());
+                // Params that decode but fail their checks stop the same way.
+                if on_decode != ValidateOnDecode::Off && validate::any_checks(&param_members[i]) {
+                    let stop: &[&str] = if f.one_way {
+                        &["return Ok(());"]
+                    } else {
+                        &["reply.fault();", "return Ok(());"]
+                    };
+                    l.extend(validate::params_check(stop));
+                }
+                f.args
+                    .iter()
+                    .map(|a| format!("p.{}", a.name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+            None => {
+                l.push(format!("                let _: () = match {fmt}.decode(params) {{"));
+                l.push("                    Ok(unit) => unit,".into());
+                l.extend(on_undecodable);
+                l.push("                };".into());
+                String::new()
+            }
+        };
+        let call_args = match (peer.is_empty(), call_args.is_empty()) {
+            (true, _) => call_args,
+            (false, true) => peer.to_string(),
+            (false, false) => format!("{peer}, {call_args}"),
+        };
+        let call = format!("self.0.{}({call_args})", f.name);
+        if f.one_way {
+            // Run the handler; record nothing — the `Server` sees `Outcome::None`
+            // and replies with nothing.
+            l.push(format!("                {call};"));
+        } else {
+            l.push(format!("                match {call} {{"));
+            l.push("                    Ok(value) => {".into());
+            l.push("                        let mut body = Vec::new();".into());
+            l.push(format!("                        {fmt}.encode(&value, &mut body)?;"));
+            l.push("                        reply.ok(&body);".into());
+            l.push("                    }".into());
+            for (ord, err) in &f.throws {
+                l.push(format!(
+                    "                    Err(Fault::App({}::{err}(e))) => {{",
+                    f.err_ty
+                ));
+                l.push("                        let mut body = Vec::new();".into());
+                l.push(format!("                        {fmt}.encode(&e, &mut body)?;"));
+                l.push(format!(
+                    "                        reply.err({ord}u16, &body);"
+                ));
+                l.push("                    }".into());
+            }
+            if f.throws.is_empty() {
+                // The error type is `Infallible`, so this arm is unreachable -
+                // it is what keeps the `match` exhaustive.
+                l.push("                    Err(Fault::App(never)) => match never {},".into());
+            }
+            l.push("                    Err(Fault::Internal) => reply.fault(),".into());
+            l.push("                }".into());
+        }
+        l.push("                Ok(())".into());
+        l.push("            }".into());
+    }
+    l.push("            _ => Err(RuntimeError::UnknownCall),".into());
+    l.push("        }".into());
+    l
 }
 
 // `errors` and `imports` are two unrelated lookup tables (ordinal → error

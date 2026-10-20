@@ -65,6 +65,7 @@ with the fixtures that prove each claim, is in
 | `validate_on_decode` <br><sub>`validate-on-decode`</sub> | ✅ supported |
 | JSON-RPC framing <br><sub>`framing-jsonrpc`</sub> | ✅ supported |
 | no handshake <br><sub>`handshake-none`</sub> | ✅ supported |
+| connections <br><sub>`connections`</sub> | 🟡 partial: over `datagram@2`; JSON-RPC on a connection isn't supported yet (runtime#19) |
 
 <!-- features:end -->
 
