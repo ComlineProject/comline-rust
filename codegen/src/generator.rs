@@ -30,7 +30,7 @@ use comline_codegen::{GenRequest, GeneratedFile, Mode, PackageMeta};
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "c168c4954a76b7ad45f88b82d2b027e3e433cdf2";
+const RUNTIME_REV: &str = "87446e337b1ec8356a2ee7c1672616bef30e2df4";
 
 /// `comline_std` — std's own pre-generated bindings, referenced instead of
 /// inlined when `external_std` is on. Same git-pin shape as
@@ -289,20 +289,6 @@ fn schema_source(
     let errors = error_names(units);
     let imports = import_paths(units, schemas, external_std);
 
-    // Which framings the protocols in this file reach for. A non-datagram pick
-    // pulls in the `Framing` trait (its helpers call `framing.name()`); the
-    // datagram default pulls in the `FRAMING_DATAGRAM` name constant.
-    let protocol_framings = || {
-        units.iter().filter_map(|u| match u {
-            FrozenUnit::Protocol { parameters, .. } => {
-                Some(framing_choice(parameters, default_framing))
-            }
-            _ => None,
-        })
-    };
-    let needs_framing_trait = protocol_framings().any(|f| f.explicit);
-    let needs_datagram_const = protocol_framings().any(|f| !f.explicit);
-
     // Only a `derive`d type needs serde, and a schema can legitimately
     // declare none - `std/validators` declares only validators, so its
     // generated file was an unused import and nothing else, which is a
@@ -323,43 +309,12 @@ fn schema_source(
     if needs_serde {
         output.push_str("use serde::{Deserialize, Serialize};\n");
     }
-    if has_protocol && !needs_framing_trait {
-        // The common case — kept byte-for-byte for the conformance goldens.
+    if has_protocol {
         output.push_str(
             "use comline_runtime::client::Client;\n\
              use comline_runtime::contract::{\n    \
-                 Call, CallError, Dispatch, Envelope, Fault, Handshake, Kind, Reply,\n    \
-                 RuntimeError, WireFormat, FRAMING_DATAGRAM,\n\
+                 Call, CallError, Dispatch, Envelope, Fault, Kind, Reply, RuntimeError, WireFormat,\n\
              };\n\
-             use comline_runtime::serve::Server;\n\
-             use comline_runtime::transport::Transport;\n",
-        );
-    } else if has_protocol {
-        let mut names = vec![
-            "Call",
-            "CallError",
-            "Dispatch",
-            "Envelope",
-            "Fault",
-            "Framing",
-            "Handshake",
-            "Kind",
-            "Reply",
-            "RuntimeError",
-            "WireFormat",
-        ];
-        if needs_datagram_const {
-            names.push("FRAMING_DATAGRAM");
-        }
-        output.push_str("use comline_runtime::client::Client;\n");
-        output.push_str("use comline_runtime::contract::{\n");
-        for name in names {
-            output.push_str("    ");
-            output.push_str(name);
-            output.push_str(",\n");
-        }
-        output.push_str(
-            "};\n\
              use comline_runtime::serve::Server;\n\
              use comline_runtime::transport::Transport;\n",
         );
@@ -369,7 +324,7 @@ fn schema_source(
     if has_protocol {
         output.push_str(&format!(
             "/// Canonical digest of the frozen IR this file was generated from — the\n\
-             /// two ends of a connection [`Handshake`] must agree on it.\n\
+             /// two ends of a connection must agree on it, and the handshake checks.\n\
              pub const IR_HASH: u64 = {:#018x};\n\n",
             schema_ir_hash(units)
         ));
@@ -1021,25 +976,17 @@ fn protocol(
     l.push(String::new());
     l.push(format!("impl<S: {proto}> {proto}Dispatcher<S> {{"));
     l.push("    /// Serve this protocol over `transport`, running the connection".into());
-    l.push("    /// handshake (`IR_HASH` + `format`'s name) against the peer first.".into());
+    l.push("    /// handshake (`IR_HASH` + `format`'s and the framing's names) against".into());
+    l.push("    /// the peer first.".into());
     l.push(
         "    pub fn serve<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)".into(),
     );
     l.push("    -> Result<(), RuntimeError> {".into());
     if framing.explicit {
         l.push(format!("        let framing = {};", framing.ty));
-        l.push(
-            "        let hs = Handshake::new(IR_HASH, format.name(), framing.name(), 0);".into(),
-        );
-        l.push(
-            "        Server::with_framing(self, format, framing).serve_handshaked(transport, hs)"
-                .into(),
-        );
+        l.push("        Server::with_framing(self, format, framing).serve(transport, IR_HASH)".into());
     } else {
-        l.push(
-            "        let hs = Handshake::new(IR_HASH, format.name(), FRAMING_DATAGRAM, 0);".into(),
-        );
-        l.push("        Server::new(self, format).serve_handshaked(transport, hs)".into());
+        l.push("        Server::new(self, format).serve(transport, IR_HASH)".into());
     }
     l.push("    }".into());
     l.push("}".into());
@@ -1068,17 +1015,11 @@ fn protocol(
     if framing.explicit {
         l.push(format!("        let framing = {};", framing.ty));
         l.push(
-            "        let hs = Handshake::new(IR_HASH, format.name(), framing.name(), 0);".into(),
-        );
-        l.push(
-            "        Ok(Self(Client::connect_with_framing(transport, format, framing, hs)?))"
+            "        Ok(Self(Client::connect_with_framing(transport, format, framing, IR_HASH)?))"
                 .into(),
         );
     } else {
-        l.push(
-            "        let hs = Handshake::new(IR_HASH, format.name(), FRAMING_DATAGRAM, 0);".into(),
-        );
-        l.push("        Ok(Self(Client::connect(transport, format, hs)?))".into());
+        l.push("        Ok(Self(Client::connect(transport, format, IR_HASH)?))".into());
     }
     l.push("    }".into());
     for (i, f) in fns.iter().enumerate() {

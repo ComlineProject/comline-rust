@@ -140,11 +140,11 @@ fn code_mode_generates_enum_and_protocol() {
     // handshake: an IR fingerprint + connect / serve helpers
     assert!(src.contains("pub const IR_HASH: u64 = 0x"));
     assert!(src.contains("pub fn connect(transport: T, format: W) -> Result<Self, RuntimeError>"));
-    assert!(src.contains("let hs = Handshake::new(IR_HASH, format.name(), FRAMING_DATAGRAM, 0);"));
+    assert!(src.contains("Ok(Self(Client::connect(transport, format, IR_HASH)?))"));
     assert!(src.contains("impl<S: UserService> UserServiceDispatcher<S> {"));
     assert!(src
         .contains("pub fn serve<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)"));
-    assert!(src.contains("Server::new(self, format).serve_handshaked(transport, hs)"));
+    assert!(src.contains("Server::new(self, format).serve(transport, IR_HASH)"));
 }
 
 #[test]
@@ -389,22 +389,21 @@ fn framing_annotation_selects_jsonrpc_for_the_connect_and_serve_helpers() {
         .remove(0)
         .contents;
 
-    // the `Framing` trait is in scope (the helpers call `framing.name()`)
-    assert!(src.contains("\n    Framing,\n"));
+    // the runtime reads the framing's name itself, so the trait isn't imported
+    assert!(!src.contains("\n    Framing,\n"));
     // the client wraps a `Client` pinned to the JSON-RPC framing
     assert!(src.contains(
         "pub struct RpcClient<T, W>(pub Client<T, W, comline_runtime::framing::JsonRpcFraming>);"
     ));
-    // connect / serve pass the framing explicitly and hash its name
+    // connect / serve pass the framing explicitly
     assert!(src.contains("let framing = comline_runtime::framing::JsonRpcFraming;"));
-    assert!(src.contains("let hs = Handshake::new(IR_HASH, format.name(), framing.name(), 0);"));
-    assert!(src.contains("Ok(Self(Client::connect_with_framing(transport, format, framing, hs)?))"));
-    assert!(
-        src.contains("Server::with_framing(self, format, framing).serve_handshaked(transport, hs)")
-    );
+    assert!(src.contains(
+        "Ok(Self(Client::connect_with_framing(transport, format, framing, IR_HASH)?))"
+    ));
+    assert!(src.contains("Server::with_framing(self, format, framing).serve(transport, IR_HASH)"));
     // the datagram default never appears for an all-JSON-RPC schema
-    assert!(!src.contains("FRAMING_DATAGRAM"));
-    assert!(!src.contains("Client::connect(transport, format, hs)"));
+    assert!(!src.contains("DatagramFraming"));
+    assert!(!src.contains("Client::connect(transport, format, IR_HASH)"));
 }
 
 /// A protocol with no `@framing` of its own, plus a plain (annotated) one for
@@ -439,8 +438,8 @@ fn package_default_framing_applies_when_a_protocol_has_no_annotation() {
     assert!(src.contains(
         "pub struct RpcClient<T, W>(pub Client<T, W, comline_runtime::framing::JsonRpcFraming>);"
     ));
-    assert!(src.contains("Server::with_framing(self, format, framing).serve_handshaked"));
-    assert!(!src.contains("FRAMING_DATAGRAM"));
+    assert!(src.contains("Server::with_framing(self, format, framing).serve(transport, IR_HASH)"));
+    assert!(!src.contains("DatagramFraming"));
 }
 
 #[test]
@@ -480,9 +479,8 @@ fn an_explicit_datagram_annotation_opts_out_of_the_package_default() {
     assert!(!src.contains("JsonRpcFraming"));
     assert!(!src.contains("Framing,")); // trait not imported
     assert!(src.contains("pub struct RpcClient<T, W>(pub Client<T, W>);"));
-    assert!(src.contains("let hs = Handshake::new(IR_HASH, format.name(), FRAMING_DATAGRAM, 0);"));
-    assert!(src.contains("Server::new(self, format).serve_handshaked(transport, hs)"));
-    assert!(src.contains("Ok(Self(Client::connect(transport, format, hs)?))"));
+    assert!(src.contains("Server::new(self, format).serve(transport, IR_HASH)"));
+    assert!(src.contains("Ok(Self(Client::connect(transport, format, IR_HASH)?))"));
 }
 
 #[test]
