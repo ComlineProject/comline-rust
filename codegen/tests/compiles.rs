@@ -13,7 +13,7 @@ use comline_codegen::validation::ValidateOnDecode;
 use comline_codegen::{GenRequest, Mode, PackageMeta};
 use comline_codegen_rust::generate_rust;
 use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
-use comline_core::schema::ir::frozen::unit::{ConfigValue, FrozenArgument, FrozenUnit};
+use comline_core::schema::ir::frozen::unit::{ConfigValue, FrozenArgument, FrozenUnit, Guarantee};
 
 /// The type a schema spells `written` - a primitive name, a named type, or
 /// either followed by `[]` / `[N]`.
@@ -192,12 +192,46 @@ fn rpc_default_schema() -> Vec<FrozenUnit> {
     }]
 }
 
+/// `@handshake = "none"`, marked `@unverified` with the set core freezes,
+/// over `framing` (or the package default when `None`): the helpers must
+/// compile against the runtime's `NoHandshake` and `connect_with`.
+fn legacy_schema(name: &str, framing: Option<&str>) -> Vec<FrozenUnit> {
+    let mut parameters = vec![
+        FrozenUnit::Property { name: "handshake".into(), value: ConfigValue::Str("none".into()) },
+        FrozenUnit::Property {
+            name: "unverified".into(),
+            value: ConfigValue::Str("the gateway predates Comline".into()),
+        },
+        FrozenUnit::Unverified(vec![Guarantee::SchemaAgreement, Guarantee::EncodingAgreement]),
+    ];
+    if let Some(framing) = framing {
+        parameters.push(FrozenUnit::Property {
+            name: "framing".into(),
+            value: ConfigValue::Str(framing.into()),
+        });
+    }
+    vec![FrozenUnit::Protocol {
+        docstring: name.into(),
+        parameters,
+        name: name.into(),
+        functions: vec![function(
+            "charge",
+            vec![arg("cents", TypeRef::Primitive(PrimitiveType::U64))],
+            Some(TypeRef::Primitive(PrimitiveType::Bool)),
+            vec![],
+        )],
+        span: (0, 0),
+    }]
+}
+
 #[test]
 fn a_generated_protocol_crate_builds() {
     let schemas = vec![
         ("chat".to_string(), chat_schema()),
         ("rpc".to_string(), rpc_schema()),
         ("clock".to_string(), rpc_default_schema()),
+        ("legacy".to_string(), legacy_schema("Legacy", Some("datagram"))),
+        ("legacy_rpc".to_string(), legacy_schema("LegacyRpc", None)),
     ];
     // `chat` opts back to datagram with `@framing = "datagram"`; `clock`
     // (unannotated) takes this default; `rpc` names `jsonrpc` itself.

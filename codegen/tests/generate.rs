@@ -1355,3 +1355,65 @@ fn a_validator_missing_from_the_request_is_an_error_naming_the_field() {
         "schema 'app', 'Note.text': validator 'Gone' isn't declared in any schema being generated"
     );
 }
+
+#[test]
+fn handshake_none_runs_no_handshake_and_documents_what_is_given_up() {
+    use comline_core::schema::ir::frozen::unit::Guarantee;
+    // @handshake = "none" @unverified = "..." protocol Gate { function ping() -> u32; }
+    let proto = |framing: Option<&str>| {
+        let mut parameters = vec![
+            FrozenUnit::Property { name: "handshake".into(), value: ConfigValue::Str("none".into()) },
+            FrozenUnit::Property {
+                name: "unverified".into(),
+                value: ConfigValue::Str("the 2009 gateway".into()),
+            },
+            FrozenUnit::Unverified(vec![Guarantee::SchemaAgreement, Guarantee::EncodingAgreement]),
+        ];
+        if let Some(framing) = framing {
+            parameters.push(FrozenUnit::Property {
+                name: "framing".into(),
+                value: ConfigValue::Str(framing.into()),
+            });
+        }
+        FrozenUnit::Protocol {
+            docstring: "Gate".to_string(),
+            parameters,
+            name: "Gate".to_string(),
+            functions: vec![FrozenUnit::Function {
+                docstring: String::new(),
+                name: "ping".to_string(),
+                parameters: vec![],
+                arguments: vec![],
+                _return: Some(TypeRef::Primitive(PrimitiveType::U32)),
+                throws: vec![],
+                span: (0, 0),
+            }],
+            span: (0, 0),
+        }
+    };
+    let generate = |framing| {
+        let schemas = vec![("gate".to_string(), vec![proto(framing)])];
+        generate_rust(&code_req(&schemas)).unwrap().remove(0).contents
+    };
+
+    let src = generate(None);
+    assert!(src.contains(
+        "Server::new(self, format).serve_with(transport, &mut comline_runtime::handshake::NoHandshake, IR_HASH)"
+    ));
+    assert!(src.contains(
+        "Ok(Self(Client::connect_with(transport, format, comline_runtime::contract::DatagramFraming, \
+         &mut comline_runtime::handshake::NoHandshake, IR_HASH)?))"
+    ));
+    let doc = "/// **Unverified:** gives up schema agreement and encoding agreement (handshake `none`).\n\
+               /// Reason given: the 2009 gateway\n";
+    assert!(src.contains(&format!("{doc}pub struct GateDispatcher<S>(pub S);")));
+    assert!(src.contains(&format!("{doc}pub struct GateClient<T, W>")));
+
+    let rpc = generate(Some("jsonrpc"));
+    assert!(rpc.contains(
+        "Server::with_framing(self, format, framing).serve_with(transport, &mut comline_runtime::handshake::NoHandshake, IR_HASH)"
+    ));
+    assert!(rpc.contains(
+        "Ok(Self(Client::connect_with(transport, format, framing, &mut comline_runtime::handshake::NoHandshake, IR_HASH)?))"
+    ));
+}
