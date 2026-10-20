@@ -2,8 +2,8 @@
 [package]
 name = "comline_std"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.70.0"
+edition = "2024"
+rust-version = "1.85.0"
 # A schema namespace named `main` would otherwise be picked up as a
 # binary target (`src/main.rs`) with no `fn main`. Core refuses that
 # name outright now; this stays as a belt-and-braces guard for a

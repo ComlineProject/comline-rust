@@ -387,7 +387,18 @@ fn check_generated_crate(label: &str, req: &GenRequest, behaviour: Option<&str>)
     }
 
     // Isolated target dir so it doesn't fight this crate's build lock.
-    let status = Command::new(env!("CARGO"))
+    // `COMLINE_RUST_TOOLCHAIN=1.85.0` builds it with that toolchain (through
+    // rustup) instead of the one running this test: how CI proves the
+    // generator's floor.
+    let mut cargo = match std::env::var("COMLINE_RUST_TOOLCHAIN").ok().filter(|t| !t.is_empty()) {
+        Some(toolchain) => {
+            let mut rustup = Command::new("rustup");
+            rustup.args(["run", &toolchain, "cargo"]);
+            rustup
+        }
+        None => Command::new(env!("CARGO")),
+    };
+    let status = cargo
         .args([if behaviour.is_some() { "test" } else { "build" }, "--quiet"])
         .current_dir(&dir)
         .env("CARGO_TARGET_DIR", dir.join("target"))
@@ -751,3 +762,106 @@ fn a_handler_calls_back_and_the_server_calls_on_its_own() {
     assert_eq!(*seen.borrow(), ["hi", "again", "pushed", "ping"]);
 }
 "##;
+
+/// Names that are Rust keywords in some edition, everywhere a schema can put
+/// one: a schema (module), fields, an enum variant, an error and its message,
+/// a function and its arguments.
+const KEYWORDS: &str = r#"
+enum Mode {
+    Self
+    gen
+    Normal
+}
+
+struct Kw {
+    match: u8
+    self: string
+    gen: Mode
+    async: u8
+}
+
+error Fail {
+    message = f"failed at {self.crate}"
+    crate: u8
+}
+
+protocol Loop {
+    function loop(move: u8, self: Kw) -> Kw ! Fail;
+    function yield();
+}
+"#;
+
+const KEYWORDS_USE: &str = r#"
+use match::Kw
+
+struct Holder {
+    dyn: Kw
+}
+"#;
+
+/// The generated identifiers are escaped, and the wire keeps the schema's
+/// names: serde drops `r#`, and `self_` / `Self_` are renamed back.
+const KEYWORDS_BEHAVIOUR: &str = r##"
+use comline_codegen_rust_compiletest::r#match::*;
+use comline_codegen_rust_compiletest::api::Holder;
+
+#[test]
+fn the_wire_keeps_the_schema_s_names() {
+    let kw = Kw { r#match: 1, self_: "me".into(), r#gen: Mode::Self_, r#async: 2 };
+    let json = serde_json::to_string(&kw).unwrap();
+    assert_eq!(json, r#"{"match":1,"self":"me","gen":"Self","async":2}"#);
+    let back: Kw = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.self_, "me");
+    assert_eq!(serde_json::to_string(&Mode::r#gen).unwrap(), r#""gen""#);
+
+    let params = LoopLoopParams { r#move: 3, self_: kw.clone() };
+    let json = serde_json::to_string(&params).unwrap();
+    assert!(json.starts_with(r#"{"move":3,"self":{"#), "{json}");
+
+    let fail = Fail { crate_: 7 };
+    assert_eq!(fail.to_string(), "failed at 7");
+    assert_eq!(serde_json::to_string(&fail).unwrap(), r#"{"crate":7}"#);
+
+    let holder = Holder { r#dyn: kw };
+    assert!(serde_json::to_string(&holder).unwrap().starts_with(r#"{"dyn":{"match":1"#));
+    assert_eq!(LOOP_CALLS, &["loop", "yield"]);
+}
+
+struct Impl;
+
+impl Loop for Impl {
+    fn r#loop(&self, r#move: u8, self_: Kw) -> Result<Kw, comline_runtime::contract::Fault<LoopLoopError>> {
+        Ok(Kw { r#match: r#move, ..self_ })
+    }
+    fn r#yield(&self) {}
+}
+
+#[test]
+fn a_keyword_named_function_is_served() {
+    let _ = LoopDispatcher(Impl);
+}
+"##;
+
+#[test]
+fn keyword_names_build_and_keep_their_wire_names() {
+    use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
+    use comline_core::schema::ir::compiler::Compile;
+
+    let schemas = vec![
+        ("match".to_string(), IncrementalInterpreter::from_source(KEYWORDS)),
+        ("api".to_string(), IncrementalInterpreter::from_source(KEYWORDS_USE)),
+    ];
+    let req = GenRequest {
+        mode: Mode::Lib,
+        schemas: &schemas,
+        package: PackageMeta {
+            name: "comline-codegen-rust-compiletest".into(),
+            version: "0.0.0".into(),
+        },
+        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        default_framing: None,
+        external_std: false,
+        validate_on_decode: Default::default(),
+    };
+    check_generated_crate("keywords", &req, Some(KEYWORDS_BEHAVIOUR));
+}

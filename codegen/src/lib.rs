@@ -10,6 +10,7 @@
 //! See `design/generation.md`.
 
 mod generator;
+mod ident;
 mod message;
 mod validate;
 
@@ -20,15 +21,21 @@ use comline_codegen::Generator;
 pub use generator::{generate_rust, STD_REV};
 
 /// The oldest toolchain this generator generates for, its floor - what a
-/// congregation names as `rust#1.70.0`. Any later version reaches it too.
+/// congregation names as `rust#1.85.0`. Any later version reaches it too.
+///
+/// 1.85 because generated code can't build below it: the runtime's
+/// dependencies use the 2024 edition, which cargo before 1.85 can't parse.
+/// CI builds every generated test crate with this toolchain.
 /// Public so `xtask`, which generates `comline_std` through the very same
 /// entry point every consumer uses, can state it rather than repeat the
 /// literal.
-pub const LANG_VERSION: &str = "1.70.0";
+pub const LANG_VERSION: &str = "1.85.0";
 
 /// Which Rust versions this generator handles. No output changes above the
-/// floor yet. CI compiles the generated code with stable Rust (1.99), and
-/// Rust promises newer compilers build older code.
+/// floor: the 2024 edition, `async fn` in traits and `core::error::Error`
+/// are all available at it. CI compiles the generated code with the floor
+/// and with stable Rust (1.99), and Rust promises newer compilers build
+/// older code.
 pub const VERSIONS: Versions = Versions {
     floor: LANG_VERSION,
     changes: &[],

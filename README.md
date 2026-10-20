@@ -19,7 +19,8 @@ pending a rewrite against the current IR (G2c); a runtime and std-extra follow.
 
 Depends on `comline-codegen` (the language-neutral contract + `Registry`) and
 `comline-core` (the IR), both by git rev. `register(&mut Registry)` contributes
-the generator under `rust` at version `1.70.0`; the Comline CLI composes it into
+the generator under `rust` from version `1.85.0` on (its floor: generated code
+can't build on older Rust); the Comline CLI composes it into
 its `Registry` at startup.
 
 ```sh
