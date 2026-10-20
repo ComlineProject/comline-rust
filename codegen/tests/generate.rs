@@ -444,6 +444,20 @@ fn package_default_framing_applies_when_a_protocol_has_no_annotation() {
 }
 
 #[test]
+fn an_unknown_package_default_framing_is_an_error_not_datagram() {
+    let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
+    let req = GenRequest {
+        default_framing: Some("jsonrcp".to_string()),
+        ..code_req(&schemas)
+    };
+    let error = generate_rust(&req).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "unknown default framing `jsonrcp` - expected one of `jsonrpc`, `datagram`"
+    );
+}
+
+#[test]
 fn an_explicit_datagram_annotation_opts_out_of_the_package_default() {
     // @framing = "datagram" on the protocol, package default is jsonrpc.
     let mut units = one_plain_protocol("Rpc");
