@@ -14,14 +14,27 @@ mod message;
 mod validate;
 
 use comline_codegen::features::{Feature, Support, SupportTable};
+use comline_codegen::versions::Versions;
+use comline_codegen::Generator;
 
 pub use generator::{generate_rust, STD_REV};
 
-/// The toolchain version this generator registers under - what a
-/// congregation names as `rust#1.70.0`. Public so `xtask`, which generates
-/// `comline_std` through the very same entry point every consumer uses, can
-/// state it rather than repeat the literal.
+/// The oldest toolchain this generator generates for, its floor - what a
+/// congregation names as `rust#1.70.0`. Any later version reaches it too.
+/// Public so `xtask`, which generates `comline_std` through the very same
+/// entry point every consumer uses, can state it rather than repeat the
+/// literal.
 pub const LANG_VERSION: &str = "1.70.0";
+
+/// Which Rust versions this generator handles. No output changes above the
+/// floor yet. CI compiles the generated code with stable Rust (1.99), and
+/// Rust promises newer compilers build older code.
+pub const VERSIONS: Versions = Versions {
+    floor: LANG_VERSION,
+    changes: &[],
+    verified_up_to: "1.99",
+    forward_compatible: true,
+};
 
 /// What this generator implements, feature by feature. Each claim is proven
 /// by `comline-conformance`, not taken on trust: see `comline_codegen::features`.
@@ -61,5 +74,11 @@ pub const SUPPORT: SupportTable = &[
 
 /// Contribute the Rust generator to a CLI's [`Registry`](comline_codegen::Registry).
 pub fn register(registry: &mut comline_codegen::Registry) {
-    registry.register("rust", "rs", LANG_VERSION, generate_rust, SUPPORT);
+    registry.register(Generator {
+        language: "rust",
+        ext: "rs",
+        generate: generate_rust,
+        support: SUPPORT,
+        versions: VERSIONS,
+    });
 }
