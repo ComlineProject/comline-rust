@@ -30,7 +30,7 @@ use comline_codegen::{GenRequest, GeneratedFile, Mode, PackageMeta};
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "19144b2d91c0b0964fb92d82e64e2e4b90871234";
+const RUNTIME_REV: &str = "c168c4954a76b7ad45f88b82d2b027e3e433cdf2";
 
 /// `comline_std` — std's own pre-generated bindings, referenced instead of
 /// inlined when `external_std` is on. Same git-pin shape as
