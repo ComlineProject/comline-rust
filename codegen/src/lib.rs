@@ -51,6 +51,7 @@ pub const SUPPORT: SupportTable = &[
     (Feature::ExternalStd, Support::supported()),
     (Feature::ValidateOnDecode, Support::supported()),
     (Feature::FramingJsonRpc, Support::supported()),
+    (Feature::HandshakeNone, Support::supported()),
 ];
 
 /// Contribute the Rust generator to a CLI's [`Registry`](comline_codegen::Registry).

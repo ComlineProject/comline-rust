@@ -13,7 +13,9 @@ use std::path::PathBuf;
 
 use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
 use comline_core::schema::ir::frozen::schema_ir_hash;
+use comline_core::schema::idl::annotations::HANDSHAKE_NONE;
 use comline_core::schema::ir::frozen::unit::{FrozenArgument, FrozenUnit};
+use comline_core::schema::ir::unverified;
 
 use eyre::Result;
 
@@ -728,6 +730,27 @@ fn framing_for(name: &str) -> Option<FramingChoice> {
 /// Resolve a protocol's framing, most specific first: its own `@framing`
 /// annotation, then the package `default_framing` (`comline.toml`), then the
 /// datagram default. An unrecognised name at either level falls through.
+/// The runtime's `none` handshake, by path (only a `none` protocol uses it).
+const NO_HANDSHAKE: &str = "comline_runtime::handshake::NoHandshake";
+
+/// Doc lines naming what an `@unverified` protocol gives up, and why, for
+/// its dispatcher and client. Empty for a protocol that gives nothing up.
+fn unverified_doc(parameters: &[FrozenUnit]) -> Vec<String> {
+    let set = unverified::frozen_set(parameters);
+    if set.is_empty() {
+        return vec![];
+    }
+    let mut doc = vec![format!(
+        "/// **Unverified:** gives up {} ({}).",
+        unverified::describe(set),
+        unverified::cause(parameters)
+    )];
+    if let Some(reason) = unverified::reason(parameters) {
+        doc.push(format!("/// Reason given: {reason}"));
+    }
+    doc
+}
+
 fn framing_choice(parameters: &[FrozenUnit], default_framing: Option<&str>) -> FramingChoice {
     annotation(parameters, "framing")
         .and_then(|name| framing_for(&name))
@@ -857,8 +880,14 @@ fn protocol(
             .join(", ")
     ));
 
+    // `@handshake = "none"` (or the package default, which core has already
+    // written here): connect and serve run the runtime's `NoHandshake`.
+    let no_handshake = annotation(parameters, "handshake").as_deref() == Some(HANDSHAKE_NONE);
+    let unverified_doc = unverified_doc(parameters);
+
     // 4. dispatcher — implements the runtime `Dispatch` trait
     let mut l: Vec<String> = Vec::new();
+    l.extend(unverified_doc.iter().cloned());
     l.push(format!("pub struct {proto}Dispatcher<S>(pub S);"));
     l.push(String::new());
     // `reply` is only touched by request/response arms; a protocol that is
@@ -975,18 +1004,28 @@ fn protocol(
     l.push("}".into());
     l.push(String::new());
     l.push(format!("impl<S: {proto}> {proto}Dispatcher<S> {{"));
-    l.push("    /// Serve this protocol over `transport`, running the connection".into());
-    l.push("    /// handshake (`IR_HASH` + `format`'s and the framing's names) against".into());
-    l.push("    /// the peer first.".into());
+    if no_handshake {
+        l.push("    /// Serve this protocol over `transport`. No handshake runs".into());
+        l.push("    /// (`@handshake = \"none\"`): nothing checks the peer's schema or encoding.".into());
+    } else {
+        l.push("    /// Serve this protocol over `transport`, running the connection".into());
+        l.push("    /// handshake (`IR_HASH` + `format`'s and the framing's names) against".into());
+        l.push("    /// the peer first.".into());
+    }
     l.push(
         "    pub fn serve<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)".into(),
     );
     l.push("    -> Result<(), RuntimeError> {".into());
-    if framing.explicit {
+    let server = if framing.explicit {
         l.push(format!("        let framing = {};", framing.ty));
-        l.push("        Server::with_framing(self, format, framing).serve(transport, IR_HASH)".into());
+        "Server::with_framing(self, format, framing)"
     } else {
-        l.push("        Server::new(self, format).serve(transport, IR_HASH)".into());
+        "Server::new(self, format)"
+    };
+    if no_handshake {
+        l.push(format!("        {server}.serve_with(transport, &mut {NO_HANDSHAKE}, IR_HASH)"));
+    } else {
+        l.push(format!("        {server}.serve(transport, IR_HASH)"));
     }
     l.push("    }".into());
     l.push("}".into());
@@ -1001,6 +1040,7 @@ fn protocol(
         "Client<T, W>".to_string()
     };
     let mut l: Vec<String> = Vec::new();
+    l.extend(unverified_doc.iter().cloned());
     l.push(format!("pub struct {proto}Client<T, W>(pub {client_ty});"));
     l.push(String::new());
     l.push(format!(
@@ -1010,9 +1050,23 @@ fn protocol(
     l.push("        Self(client)".into());
     l.push("    }".into());
     l.push(String::new());
-    l.push("    /// Bind + run the connection handshake against the provider.".into());
+    if no_handshake {
+        l.push("    /// Bind to the provider. No handshake runs (`@handshake = \"none\"`).".into());
+    } else {
+        l.push("    /// Bind + run the connection handshake against the provider.".into());
+    }
     l.push("    pub fn connect(transport: T, format: W) -> Result<Self, RuntimeError> {".into());
-    if framing.explicit {
+    if no_handshake {
+        let framing_expr = if framing.explicit {
+            l.push(format!("        let framing = {};", framing.ty));
+            "framing"
+        } else {
+            DATAGRAM_FRAMING.ty
+        };
+        l.push(format!(
+            "        Ok(Self(Client::connect_with(transport, format, {framing_expr}, &mut {NO_HANDSHAKE}, IR_HASH)?))"
+        ));
+    } else if framing.explicit {
         l.push(format!("        let framing = {};", framing.ty));
         l.push(
             "        Ok(Self(Client::connect_with_framing(transport, format, framing, IR_HASH)?))"
