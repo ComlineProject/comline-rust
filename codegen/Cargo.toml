@@ -9,8 +9,8 @@ license = "GPL-3.0-only"
 # repository structure — no crates.io publishing at this stage). Pinned to the
 # same generation rev `comline-typescript` uses, so a CLI build has one
 # `comline-codegen`. Local iteration: add a `[patch]` onto a sibling checkout.
-comline-codegen = { git = "https://github.com/ComlineProject/generation", rev = "46ff2b0f98af9c3b6cf92a15f4cf311ef4c19d64" }
-comline-core = { git = "https://github.com/ComlineProject/core", rev = "bd9d9f4557e56db1dbcece1b6fae54c1fc5394fd" }
+comline-codegen = { git = "https://github.com/ComlineProject/generation", rev = "64136010b9e9ae7ccc2f6c1d8400bccb5da42e5e" }
+comline-core = { git = "https://github.com/ComlineProject/core", rev = "af0371f84994da906805cc8c9b6693236adb86f5" }
 
 eyre = "0.6.8"
 
