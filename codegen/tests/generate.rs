@@ -452,7 +452,7 @@ fn an_unknown_package_default_framing_is_an_error_not_datagram() {
     let error = generate_rust(&req).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "unknown default framing `jsonrcp` - expected one of `jsonrpc`, `datagram`"
+        "unknown default framing `jsonrcp` - expected one of `jsonrpc`, `datagram`, `datagram@2`"
     );
 }
 
@@ -1416,4 +1416,31 @@ fn handshake_none_runs_no_handshake_and_documents_what_is_given_up() {
     assert!(rpc.contains(
         "Ok(Self(Client::connect_with(transport, format, framing, &mut comline_runtime::handshake::NoHandshake, IR_HASH)?))"
     ));
+}
+
+#[test]
+fn datagram2_as_the_package_default_puts_protocols_on_a_connection() {
+    let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
+    let req = GenRequest {
+        default_framing: Some("datagram@2".to_string()),
+        ..code_req(&schemas)
+    };
+    let src = generate_rust(&req).unwrap().remove(0).contents;
+    assert!(src.contains("pub struct RpcSender<'p, P: Peer>(pub &'p mut P);"));
+    assert!(src.contains("pub const PROTOCOL: ProtocolNumber = 0;"));
+    assert!(src.contains("pub const CONNECTION_IR_HASH: u64"));
+    assert!(!src.contains("RpcClient"));
+}
+
+#[test]
+fn jsonrpc_on_a_connection_is_refused_for_now() {
+    let mut units = one_plain_protocol("Rpc");
+    let FrozenUnit::Protocol { parameters, .. } = units.iter_mut().find(|u| matches!(u, FrozenUnit::Protocol { .. })).unwrap() else {
+        unreachable!()
+    };
+    parameters.push(FrozenUnit::Property { name: "provider".into(), value: ConfigValue::Name("Client".into()) });
+    parameters.push(FrozenUnit::Property { name: "framing".into(), value: ConfigValue::Str("jsonrpc".into()) });
+    let schemas = vec![("rpc".to_string(), units)];
+    let error = generate_rust(&code_req(&schemas)).unwrap_err().to_string();
+    assert!(error.contains("JSON-RPC on a connection isn't supported yet"), "{error}");
 }

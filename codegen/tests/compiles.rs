@@ -629,3 +629,125 @@ fn decoding_runs_the_checks() {
     assert!(bad.to_string().contains("handle must be at least 2 characters"), "{bad}");
 }
 "##;
+
+/// Two protocols on one connection: `Chat`, which the accepting side
+/// provides, and `Events`, which the dialling side does.
+const CONNECTED: &str = r#"
+@framing = "datagram@2"
+protocol Chat {
+    function send(text: string) -> u64;
+    function count() -> u64;
+}
+
+@provider = Client
+@framing = "datagram@2"
+protocol Events {
+    function message(text: string) -> bool;
+    function ping();
+}
+"#;
+
+/// The generated connection API, run: a handler calls back the peer that
+/// called it through the generated sender, the accepting side calls the
+/// dialling side on its own, and per-connection data is kept between calls.
+#[test]
+fn generated_connection_protocols_call_both_ways() {
+    use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
+    use comline_core::schema::ir::compiler::Compile;
+
+    let schemas = vec![("link".to_string(), IncrementalInterpreter::from_source(CONNECTED))];
+    let req = GenRequest {
+        mode: Mode::Lib,
+        schemas: &schemas,
+        package: PackageMeta {
+            name: "comline-codegen-rust-compiletest".into(),
+            version: "0.0.0".into(),
+        },
+        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        default_framing: None,
+        external_std: false,
+        validate_on_decode: Default::default(),
+    };
+    let files = generate_rust(&req).unwrap();
+    let link = &files.iter().find(|f| f.path.ends_with("link.rs")).unwrap().contents;
+    assert!(link.contains("pub const PROTOCOL: ProtocolNumber = 1;"), "Events is the second protocol");
+    assert!(!link.contains("ChatClient"), "a connection protocol gets a sender, not a client");
+    check_generated_crate("connections", &req, Some(CONNECTED_BEHAVIOUR));
+}
+
+const CONNECTED_BEHAVIOUR: &str = r##"
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use comline_codegen_rust_compiletest::link::*;
+use comline_runtime::connection::Connection;
+use comline_runtime::contract::{Fault, Peer};
+use comline_runtime::format::Json;
+use comline_runtime::transport::duplex;
+
+struct Sent(u64);
+
+struct ChatImpl;
+
+impl Chat for ChatImpl {
+    fn send(&self, peer: &mut impl Peer, text: &str) -> Result<u64, Fault<ChatSendError>> {
+        let shown = EventsSender::new(peer).message(text).map_err(|_| Fault::Internal)?;
+        assert!(shown);
+        let sent = match peer.extensions().get_mut::<Sent>() {
+            Some(sent) => {
+                sent.0 += 1;
+                sent.0
+            }
+            None => {
+                peer.extensions().insert(Sent(1));
+                1
+            }
+        };
+        Ok(sent)
+    }
+
+    fn count(&self, peer: &mut impl Peer) -> Result<u64, Fault<ChatCountError>> {
+        Ok(peer.extensions().get::<Sent>().map_or(0, |s| s.0))
+    }
+}
+
+struct EventsImpl(Rc<RefCell<Vec<String>>>);
+
+impl Events for EventsImpl {
+    fn message(&self, _peer: &mut impl Peer, text: &str) -> Result<bool, Fault<EventsMessageError>> {
+        self.0.borrow_mut().push(text.to_string());
+        Ok(true)
+    }
+
+    fn ping(&self, _peer: &mut impl Peer) {
+        self.0.borrow_mut().push("ping".to_string());
+    }
+}
+
+#[test]
+fn a_handler_calls_back_and_the_server_calls_on_its_own() {
+    let (dialler, acceptor) = duplex();
+    let server = std::thread::spawn(move || {
+        let mut conn = Connection::accept(acceptor, Json, CONNECTION_IR_HASH).unwrap();
+        ChatDispatcher(ChatImpl).provide_on(&mut conn);
+        // Serve two calls, then call the client unprompted.
+        assert!(conn.serve_one().unwrap());
+        assert!(conn.serve_one().unwrap());
+        assert!(conn.serve_one().unwrap());
+        assert!(EventsSender::new(&mut conn).message("pushed").unwrap());
+        EventsSender::new(&mut conn).ping().unwrap();
+    });
+
+    let mut conn = Connection::connect(dialler, Json, CONNECTION_IR_HASH).unwrap();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    EventsDispatcher(EventsImpl(seen.clone())).provide_on(&mut conn);
+
+    let mut chat = ChatSender::new(&mut conn);
+    assert_eq!(chat.send("hi").unwrap(), 1);
+    assert_eq!(chat.send("again").unwrap(), 2);
+    assert_eq!(chat.count().unwrap(), 2);
+    conn.serve().unwrap();
+    server.join().unwrap();
+    assert_eq!(*seen.borrow(), ["hi", "again", "pushed", "ping"]);
+}
+"##;
