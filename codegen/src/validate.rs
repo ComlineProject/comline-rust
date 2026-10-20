@@ -99,11 +99,11 @@ pub fn validate_impl(ty: &str, lifetime: &str, members: &[Member]) -> Result<Str
         out.line(2, "{");
         out.line(3, &format!("let path = {RT}::field_path(path, {:?});", member.name));
         if member.optional {
-            out.line(3, &format!("if let Some(value) = &self.{} {{", member.name));
+            out.line(3, &format!("if let Some(value) = &self.{} {{", crate::ident::ident(&member.name)));
             plan(&mut out, 4, &member.plan)?;
             out.line(3, "}");
         } else {
-            out.line(3, &format!("let value = &self.{};", member.name));
+            out.line(3, &format!("let value = &self.{};", crate::ident::ident(&member.name)));
             plan(&mut out, 3, &member.plan)?;
         }
         out.line(2, "}");

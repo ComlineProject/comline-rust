@@ -19,6 +19,20 @@ jobs:
       - name: std-extra/ matches a fresh regen
         run: cargo run -p xtask -- --check
 
+  floor:
+    # Generated crates must build on the oldest toolchain the generator
+    # registers at (`LANG_VERSION`). The tests run on stable; the crates they
+    # generate are built with the floor toolchain.
+    name: Generated code builds at the floor (Rust 1.85.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable && rustup default stable
+      - run: rustup toolchain install 1.85.0 --profile minimal
+      - run: cargo test --verbose -p comline-codegen-rust --test compiles
+        env:
+          COMLINE_RUST_TOOLCHAIN: 1.85.0
+
   std_pin:
     # `STD_REV` can only point at a merge commit once that commit exists, so
     # this runs after the merge rather than on the PR that regenerates
