@@ -234,8 +234,9 @@ fn a_generated_protocol_crate_builds() {
         ("legacy_rpc".to_string(), legacy_schema("LegacyRpc", None)),
     ];
     // `chat` opts back to datagram with `@framing = "datagram"`; `clock`
-    // (unannotated) takes this default; `rpc` names `jsonrpc` itself.
-    build_generated_crate("protocol", &schemas, Some("jsonrpc".into()), false);
+    // (unannotated) is on a connection, `datagram@2` being the default; `rpc`
+    // names `jsonrpc` itself.
+    build_generated_crate("protocol", &schemas, false);
 }
 
 /// `lib` mode links `comline_std` rather than inlining std, which only
@@ -252,7 +253,7 @@ fn a_generated_crate_linking_comline_std_builds() {
         // into the dependency instead.
         ("std/http".to_string(), vec![]),
     ];
-    build_generated_crate("externalstd", &schemas, None, true);
+    build_generated_crate("externalstd", &schemas, true);
 }
 
 /// An aliased cross-schema import has to resolve to the name the *other*
@@ -296,7 +297,7 @@ fn a_generated_crate_with_an_aliased_import_builds() {
             ],
         ),
     ];
-    build_generated_crate("aliasimport", &schemas, None, false);
+    build_generated_crate("aliasimport", &schemas, false);
 }
 
 /// A struct whose field is typed by `std`'s `Request`, with the leaf import
@@ -319,7 +320,6 @@ fn uses_std_http() -> Vec<FrozenUnit> {
 fn build_generated_crate(
     label: &str,
     schemas: &[(String, Vec<FrozenUnit>)],
-    default_framing: Option<String>,
     external_std: bool,
 ) {
     let req = GenRequest {
@@ -330,7 +330,7 @@ fn build_generated_crate(
             version: "0.0.0".into(),
         },
         lang_version: comline_codegen_rust::LANG_VERSION.into(),
-        default_framing,
+        wire_format: "packed@1".into(),
         external_std,
         validate_on_decode: Default::default(),
         async_api: false,
@@ -454,7 +454,7 @@ fn a_generated_crate_with_constants_builds() {
             constant("SERVICE_NAME", P::String, Literal::String("store".to_string())),
         ],
     )];
-    build_generated_crate("constants", &schemas, None, false);
+    build_generated_crate("constants", &schemas, false);
 }
 
 /// Exact float widths and fixed arrays, compiled: `[u8; 4]` through serde's
@@ -488,7 +488,7 @@ fn a_generated_crate_with_floats_and_fixed_arrays_builds() {
             },
         ],
     )];
-    build_generated_crate("fixed_arrays", &schemas, None, false);
+    build_generated_crate("fixed_arrays", &schemas, false);
 }
 
 /// The IDL the validation tests generate from: std's `StringBounds` (bound
@@ -564,7 +564,7 @@ fn generated_validators_run() {
             version: "0.0.0".into(),
         },
         lang_version: comline_codegen_rust::LANG_VERSION.into(),
-        default_framing: None,
+        wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: ValidateOnDecode::Collect,
         async_api: false,
@@ -681,7 +681,7 @@ fn generated_connection_protocols_call_both_ways() {
             version: "0.0.0".into(),
         },
         lang_version: comline_codegen_rust::LANG_VERSION.into(),
-        default_framing: None,
+        wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
@@ -803,7 +803,7 @@ fn generated_jsonrpc_connection_protocols_call_both_ways() {
             version: "0.0.0".into(),
         },
         lang_version: comline_codegen_rust::LANG_VERSION.into(),
-        default_framing: None,
+        wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
@@ -854,7 +854,7 @@ fn bare_jsonrpc_names_that_would_clash_on_a_connection_are_refused() {
             schemas: &schemas,
             package: PackageMeta { name: "x".into(), version: "0.0.0".into() },
             lang_version: comline_codegen_rust::LANG_VERSION.into(),
-            default_framing: None,
+            wire_format: "packed@1".into(),
             external_std: false,
             validate_on_decode: Default::default(),
             async_api: false,
@@ -883,7 +883,7 @@ fn generated_async_connection_protocols_call_both_ways() {
             version: "0.0.0".into(),
         },
         lang_version: comline_codegen_rust::LANG_VERSION.into(),
-        default_framing: None,
+        wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: true,
@@ -978,6 +978,202 @@ async fn async_handlers_call_back_and_the_server_calls_on_its_own() {
 }
 "##;
 
+/// A package of several protocols across schemas, none naming a framing:
+/// `datagram@2` by default, so one connection carries them all.
+const GAME: &str = r#"
+protocol Account {
+    function login(name: string) -> u32;
+}
+
+protocol Player {
+    function level(id: u32) -> u16;
+}
+"#;
+
+const ITEMS: &str = r#"
+protocol Inventory {
+    function count(id: u32) -> u8;
+}
+
+@provider = Client
+protocol Events {
+    function changed(count: u8);
+}
+"#;
+
+fn game_request(schemas: &[(String, Vec<FrozenUnit>)], async_api: bool) -> GenRequest<'_> {
+    GenRequest {
+        mode: Mode::Lib,
+        schemas,
+        package: PackageMeta { name: "comline-codegen-rust-compiletest".into(), version: "0.0.0".into() },
+        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        wire_format: "packed@1".into(),
+        external_std: false,
+        validate_on_decode: Default::default(),
+        async_api,
+    }
+}
+
+fn game_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
+    use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
+    use comline_core::schema::ir::compiler::Compile;
+    vec![
+        ("game".to_string(), IncrementalInterpreter::from_source(GAME)),
+        ("items".to_string(), IncrementalInterpreter::from_source(ITEMS)),
+    ]
+}
+
+/// The package's `serve` and `connect`, run: every protocol the server
+/// provides on one connection through `Services`, the one the client
+/// provides through `ClientServices`, encoded with `packed@1`.
+#[test]
+fn services_serve_every_protocol_on_one_connection() {
+    let schemas = game_schemas();
+    let req = game_request(&schemas, false);
+    let files = generate_rust(&req).unwrap();
+    let lib = &files.iter().find(|f| f.path.ends_with("src/lib.rs")).unwrap().contents;
+    assert!(lib.contains("pub struct Services<Account, Player, Inventory> {"), "{lib}");
+    assert!(lib.contains("pub struct ClientServices<Events> {"), "{lib}");
+    assert!(lib.contains("pub type Format = comline_runtime::format::Packed;"), "{lib}");
+    check_generated_crate("services", &req, Some(SERVICES_BEHAVIOUR));
+}
+
+const SERVICES_BEHAVIOUR: &str = r##"
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use comline_codegen_rust_compiletest::game::*;
+use comline_codegen_rust_compiletest::items::*;
+use comline_codegen_rust_compiletest::{connect, serve, ClientServices, Format, Services};
+use comline_runtime::contract::{Fault, Peer, WireFormat};
+use comline_runtime::transport::duplex;
+
+struct AccountImpl;
+impl Account for AccountImpl {
+    fn login(&self, _peer: &mut impl Peer, name: &str) -> Result<u32, Fault<AccountLoginError>> {
+        Ok(name.len() as u32)
+    }
+}
+
+struct PlayerImpl;
+impl Player for PlayerImpl {
+    fn level(&self, _peer: &mut impl Peer, id: u32) -> Result<u16, Fault<PlayerLevelError>> {
+        Ok(id as u16 * 10)
+    }
+}
+
+/// Tells the client the count changed before answering.
+struct InventoryImpl;
+impl Inventory for InventoryImpl {
+    fn count(&self, peer: &mut impl Peer, id: u32) -> Result<u8, Fault<InventoryCountError>> {
+        let count = id as u8 + 1;
+        EventsSender::new(peer).changed(count).map_err(|_| Fault::Internal)?;
+        Ok(count)
+    }
+}
+
+struct EventsImpl(Rc<RefCell<Vec<u8>>>);
+impl Events for EventsImpl {
+    fn changed(&self, _peer: &mut impl Peer, count: u8) {
+        self.0.borrow_mut().push(count);
+    }
+}
+
+#[test]
+fn one_connection_carries_every_protocol() {
+    assert_eq!(Format::default().name(), "packed@1");
+    let (dialler, acceptor) = duplex();
+    let server = std::thread::spawn(move || {
+        serve(acceptor, Services { account: AccountImpl, player: PlayerImpl, inventory: InventoryImpl }).unwrap();
+    });
+
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let mut conn = connect(dialler, ClientServices { events: EventsImpl(seen.clone()) }).unwrap();
+    assert_eq!(AccountSender::new(&mut conn).login("ana").unwrap(), 3);
+    assert_eq!(PlayerSender::new(&mut conn).level(3).unwrap(), 30);
+    assert_eq!(InventorySender::new(&mut conn).count(4).unwrap(), 5);
+    assert_eq!(*seen.borrow(), [5]);
+
+    drop(conn);
+    server.join().unwrap();
+}
+"##;
+
+/// [`SERVICES_BEHAVIOUR`], async.
+#[test]
+fn async_services_serve_every_protocol_on_one_connection() {
+    let schemas = game_schemas();
+    let req = game_request(&schemas, true);
+    let files = generate_rust(&req).unwrap();
+    let lib = &files.iter().find(|f| f.path.ends_with("src/lib.rs")).unwrap().contents;
+    assert!(lib.contains("pub async fn serve<"), "{lib}");
+    check_generated_crate("async-services", &req, Some(ASYNC_SERVICES_BEHAVIOUR));
+}
+
+const ASYNC_SERVICES_BEHAVIOUR: &str = r##"
+use std::sync::mpsc;
+use std::time::Duration;
+
+use comline_codegen_rust_compiletest::game::*;
+use comline_codegen_rust_compiletest::items::*;
+use comline_codegen_rust_compiletest::{connect, serve, ClientServices, Services};
+use comline_runtime::async_connection::{async_duplex, AsyncPeer};
+use comline_runtime::contract::Fault;
+
+struct AccountImpl;
+impl Account for AccountImpl {
+    async fn login(&self, _peer: &impl AsyncPeer, name: &str) -> Result<u32, Fault<AccountLoginError>> {
+        Ok(name.len() as u32)
+    }
+}
+
+struct PlayerImpl;
+impl Player for PlayerImpl {
+    async fn level(&self, _peer: &impl AsyncPeer, id: u32) -> Result<u16, Fault<PlayerLevelError>> {
+        Ok(id as u16 * 10)
+    }
+}
+
+struct InventoryImpl;
+impl Inventory for InventoryImpl {
+    async fn count(&self, peer: &impl AsyncPeer, id: u32) -> Result<u8, Fault<InventoryCountError>> {
+        let count = id as u8 + 1;
+        EventsAsyncSender::new(peer).changed(count).map_err(|_| Fault::Internal)?;
+        Ok(count)
+    }
+}
+
+struct EventsImpl(mpsc::Sender<u8>);
+impl Events for EventsImpl {
+    async fn changed(&self, _peer: &impl AsyncPeer, count: u8) {
+        self.0.send(count).unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_connection_carries_every_protocol() {
+    let (dialler, acceptor) = async_duplex();
+    let server = tokio::spawn(serve(acceptor, Services { account: AccountImpl, player: PlayerImpl, inventory: InventoryImpl }));
+
+    let (seen, changes) = mpsc::channel();
+    let client = connect(dialler, ClientServices { events: EventsImpl(seen) }).await.unwrap();
+    let to_server = client.handle();
+    let client = tokio::spawn(client.run());
+
+    assert_eq!(AccountAsyncSender::new(&to_server).login("ana").await.unwrap(), 3);
+    assert_eq!(PlayerAsyncSender::new(&to_server).level(3).await.unwrap(), 30);
+    assert_eq!(InventoryAsyncSender::new(&to_server).count(4).await.unwrap(), 5);
+    // The one-way `changed` arrived before `count`'s reply, but its handler
+    // runs as a task of its own, so it may not have finished yet.
+    let changed = tokio::task::spawn_blocking(move || changes.recv_timeout(Duration::from_secs(5)));
+    assert_eq!(changed.await.unwrap(), Ok(5));
+
+    to_server.close();
+    client.await.unwrap().unwrap();
+    server.await.unwrap().unwrap();
+}
+"##;
+
 /// Names that are Rust keywords in some edition, everywhere a schema can put
 /// one: a schema (module), fields, an enum variant, an error and its message,
 /// a function and its arguments.
@@ -1045,15 +1241,22 @@ fn the_wire_keeps_the_schema_s_names() {
 struct Impl;
 
 impl Loop for Impl {
-    fn r#loop(&self, r#move: u8, self_: Kw) -> Result<Kw, comline_runtime::contract::Fault<LoopLoopError>> {
+    fn r#loop(
+        &self,
+        _peer: &mut impl comline_runtime::contract::Peer,
+        r#move: u8,
+        self_: Kw,
+    ) -> Result<Kw, comline_runtime::contract::Fault<LoopLoopError>> {
         Ok(Kw { r#match: r#move, ..self_ })
     }
-    fn r#yield(&self) {}
+    fn r#yield(&self, _peer: &mut impl comline_runtime::contract::Peer) {}
 }
 
 #[test]
 fn a_keyword_named_function_is_served() {
     let _ = LoopDispatcher(Impl);
+    // The package's `Services` field is escaped too.
+    let _ = comline_codegen_rust_compiletest::Services { r#loop: Impl };
 }
 "##;
 
@@ -1074,7 +1277,7 @@ fn keyword_names_build_and_keep_their_wire_names() {
             version: "0.0.0".into(),
         },
         lang_version: comline_codegen_rust::LANG_VERSION.into(),
-        default_framing: None,
+        wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,

@@ -12,7 +12,7 @@ fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
             version: "0.1.0".into(),
         },
         lang_version: comline_codegen_rust::LANG_VERSION.into(),
-        default_framing: None,
+        wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
@@ -28,11 +28,27 @@ fn lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
             version: "0.3.0".into(),
         },
         lang_version: comline_codegen_rust::LANG_VERSION.into(),
-        default_framing: None,
+        wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
     }
+}
+
+/// `units` with `@framing = "datagram"` on every protocol that names none:
+/// the lockstep `Client` / `Server`, now that a connection is the default.
+fn lockstep(mut units: Vec<FrozenUnit>) -> Vec<FrozenUnit> {
+    for unit in &mut units {
+        if let FrozenUnit::Protocol { parameters, .. } = unit {
+            if !parameters.iter().any(|p| matches!(p, FrozenUnit::Property { name, .. } if name == "framing")) {
+                parameters.push(FrozenUnit::Property {
+                    name: "framing".into(),
+                    value: ConfigValue::Str("datagram".into()),
+                });
+            }
+        }
+    }
+    units
 }
 
 fn user_struct() -> FrozenUnit {
@@ -116,7 +132,7 @@ fn code_mode_generates_enum_and_protocol() {
         span: (0, 0),
     };
 
-    let schemas = vec![("account".to_string(), vec![enum_unit, proto])];
+    let schemas = vec![("account".to_string(), lockstep(vec![enum_unit, proto]))];
     let src = generate_rust(&code_req(&schemas))
         .unwrap()
         .remove(0)
@@ -141,11 +157,12 @@ fn code_mode_generates_enum_and_protocol() {
     ));
     // handshake: an IR fingerprint + connect / serve helpers
     assert!(src.contains("pub const IR_HASH: u64 = 0x"));
-    assert!(src.contains("pub fn connect(transport: T, format: W) -> Result<Self, RuntimeError>"));
+    assert!(src.contains("pub fn connect_with_format(transport: T, format: W) -> Result<Self, RuntimeError>"));
     assert!(src.contains("Ok(Self(Client::connect(transport, format, IR_HASH)?))"));
     assert!(src.contains("impl<S: UserService> UserServiceDispatcher<S> {"));
+    assert!(src.contains("pub fn serve<T: Transport>(self, transport: &mut T) -> Result<(), RuntimeError> {"));
     assert!(src
-        .contains("pub fn serve<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)"));
+        .contains("pub fn serve_with_format<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)"));
     assert!(src.contains("Server::new(self, format).serve(transport, IR_HASH)"));
 }
 
@@ -262,7 +279,7 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
         span: (0, 0),
     };
 
-    let schemas = vec![("chat".to_string(), vec![rejected, proto])];
+    let schemas = vec![("chat".to_string(), lockstep(vec![rejected, proto]))];
     let src = generate_rust(&code_req(&schemas))
         .unwrap()
         .remove(0)
@@ -352,7 +369,7 @@ fn timeout_ms_annotation_emits_call_with_timeout() {
         ],
         span: (0, 0),
     };
-    let schemas = vec![("api".to_string(), vec![proto])];
+    let schemas = vec![("api".to_string(), lockstep(vec![proto]))];
     let src = generate_rust(&code_req(&schemas))
         .unwrap()
         .remove(0)
@@ -429,38 +446,20 @@ fn one_plain_protocol(name: &str) -> Vec<FrozenUnit> {
 }
 
 #[test]
-fn package_default_framing_applies_when_a_protocol_has_no_annotation() {
+fn an_unknown_wire_format_is_an_error() {
     let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
-    let req = GenRequest {
-        default_framing: Some("jsonrpc".to_string()),
-        ..code_req(&schemas)
-    };
-    let src = generate_rust(&req).unwrap().remove(0).contents;
-
-    assert!(src.contains(
-        "pub struct RpcClient<T, W>(pub Client<T, W, comline_runtime::framing::JsonRpcFraming>);"
-    ));
-    assert!(src.contains("Server::with_framing(self, format, framing).serve(transport, IR_HASH)"));
-    assert!(!src.contains("DatagramFraming"));
-}
-
-#[test]
-fn an_unknown_package_default_framing_is_an_error_not_datagram() {
-    let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
-    let req = GenRequest {
-        default_framing: Some("jsonrcp".to_string()),
-        ..code_req(&schemas)
-    };
+    let req = GenRequest { wire_format: "packed".into(), ..code_req(&schemas) };
     let error = generate_rust(&req).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "unknown default framing `jsonrcp` - expected one of `jsonrpc`, `datagram`, `datagram@2`"
+        "unknown wire format `packed` - expected `packed@1`, `json@1` or `msgpack@1`"
     );
 }
 
+/// `@framing = "datagram"` (`datagram@1`): the lockstep `Client` / `Server`,
+/// which encode with the package's `Format` unless told otherwise.
 #[test]
-fn an_explicit_datagram_annotation_opts_out_of_the_package_default() {
-    // @framing = "datagram" on the protocol, package default is jsonrpc.
+fn datagram1_keeps_the_lockstep_client_and_server() {
     let mut units = one_plain_protocol("Rpc");
     if let FrozenUnit::Protocol { parameters, .. } = &mut units[0] {
         parameters.push(FrozenUnit::Property {
@@ -469,20 +468,21 @@ fn an_explicit_datagram_annotation_opts_out_of_the_package_default() {
         });
     }
     let schemas = vec![("rpc".to_string(), units)];
-    let with_default = GenRequest {
-        default_framing: Some("jsonrpc".to_string()),
-        ..code_req(&schemas)
-    };
-    let src = generate_rust(&with_default).unwrap().remove(0).contents;
+    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
 
-    // the datagram stack — the `@framing = "datagram"` opt-out beats the
-    // `jsonrpc` package default (the `IR_HASH` still moves: the annotation is
-    // part of the frozen IR)
     assert!(!src.contains("JsonRpcFraming"));
     assert!(!src.contains("Framing,")); // trait not imported
+    assert!(src.contains("pub type Format = comline_runtime::format::Packed;"), "{src}");
     assert!(src.contains("pub struct RpcClient<T, W>(pub Client<T, W>);"));
+    assert!(src.contains("        self.serve_with_format(transport, Format::default())\n"), "{src}");
     assert!(src.contains("Server::new(self, format).serve(transport, IR_HASH)"));
+    assert!(src.contains("impl<T: Transport> RpcClient<T, Format> {"), "{src}");
+    assert!(src.contains("        Self::connect_with_format(transport, Format::default())\n"), "{src}");
     assert!(src.contains("Ok(Self(Client::connect(transport, format, IR_HASH)?))"));
+
+    let msgpack = GenRequest { wire_format: "msgpack@1".into(), ..code_req(&schemas) };
+    let src = generate_rust(&msgpack).unwrap().remove(0).contents;
+    assert!(src.contains("pub type Format = comline_runtime::format::MsgPack;"), "{src}");
 }
 
 #[test]
@@ -506,7 +506,7 @@ fn an_all_one_way_protocol_leaves_the_dispatch_reply_param_unbound() {
         }],
         span: (0, 0),
     };
-    let schemas = vec![("bus".to_string(), vec![proto])];
+    let schemas = vec![("bus".to_string(), lockstep(vec![proto]))];
     let src = generate_rust(&code_req(&schemas))
         .unwrap()
         .remove(0)
@@ -1401,7 +1401,7 @@ fn handshake_none_runs_no_handshake_and_documents_what_is_given_up() {
         }
     };
     let generate = |framing| {
-        let schemas = vec![("gate".to_string(), vec![proto(framing)])];
+        let schemas = vec![("gate".to_string(), lockstep(vec![proto(framing)]))];
         generate_rust(&code_req(&schemas)).unwrap().remove(0).contents
     };
 
@@ -1428,13 +1428,9 @@ fn handshake_none_runs_no_handshake_and_documents_what_is_given_up() {
 }
 
 #[test]
-fn datagram2_as_the_package_default_puts_protocols_on_a_connection() {
+fn a_protocol_is_on_a_connection_by_default() {
     let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
-    let req = GenRequest {
-        default_framing: Some("datagram@2".to_string()),
-        ..code_req(&schemas)
-    };
-    let src = generate_rust(&req).unwrap().remove(0).contents;
+    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
     assert!(src.contains("pub struct RpcSender<'p, P: Peer>(pub &'p mut P);"));
     assert!(src.contains("pub const PROTOCOL: ProtocolNumber = 0;"));
     assert!(src.contains("pub const CONNECTION_IR_HASH: u64"));
@@ -1448,11 +1444,7 @@ fn datagram2_as_the_package_default_puts_protocols_on_a_connection() {
 #[test]
 fn async_makes_a_connection_protocol_async() {
     let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
-    let on_connection = GenRequest {
-        default_framing: Some("datagram@2".to_string()),
-        async_api: true,
-        ..code_req(&schemas)
-    };
+    let on_connection = GenRequest { async_api: true, ..code_req(&schemas) };
     let src = generate_rust(&on_connection).unwrap().remove(0).contents;
     assert!(src.starts_with("// This file uses `comline_runtime`'s async driver - enable its feature"), "{src}");
     assert!(src.contains("pub trait Rpc: Send + Sync + 'static {"), "{src}");
@@ -1467,6 +1459,11 @@ fn async_makes_a_connection_protocol_async() {
     }
 
     // A protocol that isn't on a connection has no async form.
+    let mut units = one_plain_protocol("Rpc");
+    if let FrozenUnit::Protocol { parameters, .. } = &mut units[0] {
+        parameters.push(FrozenUnit::Property { name: "framing".into(), value: ConfigValue::Str("datagram".into()) });
+    }
+    let schemas = vec![("rpc".to_string(), units)];
     let lockstep = GenRequest { async_api: true, ..code_req(&schemas) };
     let src = generate_rust(&lockstep).unwrap().remove(0).contents;
     assert!(src.contains("pub struct RpcClient<T, W>"));
@@ -1484,11 +1481,7 @@ fn an_async_protocols_names_are_checked_for_collisions() {
         span: (0, 0),
     });
     let schemas = vec![("rpc".to_string(), units)];
-    let req = GenRequest {
-        default_framing: Some("datagram@2".to_string()),
-        async_api: true,
-        ..code_req(&schemas)
-    };
+    let req = GenRequest { async_api: true, ..code_req(&schemas) };
     let error = generate_rust(&req).unwrap_err().to_string();
     assert!(error.contains("RpcAsyncSender"), "{error}");
     // Without `async`, that name is free.
@@ -1515,7 +1508,9 @@ fn jsonrpc_on_a_connection_gets_the_connection_api() {
     assert!(rpc.contains("pub fn provide_on<"), "{rpc}");
     assert!(!rpc.contains("RpcClient"), "a connection protocol gets a sender, not a client");
     assert!(rpc.contains(
-        "`Connection::accept_with(transport, format, comline_runtime::framing::JsonRpcFraming, &mut ComlineHandshake, CONNECTION_IR_HASH)`"
+        // The client provides it, so it's the dialling side that opens.
+        "`Connection::connect_with(transport, format, comline_runtime::framing::JsonRpcFraming, &mut ComlineHandshake, CONNECTION_IR_HASH)`, \
+         or let the package's `serve` / `connect` do it"
     ), "{rpc}");
     assert!(rpc.contains("\"rpc.Rpc/"), "qualified method names: {rpc}");
 }

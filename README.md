@@ -68,6 +68,9 @@ with the fixtures that prove each claim, is in
 | no handshake <br><sub>`handshake-none`</sub> | ✅ supported |
 | connections <br><sub>`connections`</sub> | ✅ supported |
 | `async` <br><sub>`async`</sub> | ✅ supported |
+| the `packed@1` format <br><sub>`format-packed`</sub> | ✅ supported |
+| the `json@1` format <br><sub>`format-json`</sub> | ✅ supported |
+| the `msgpack@1` format <br><sub>`format-msgpack`</sub> | ✅ supported |
 
 <!-- features:end -->
 

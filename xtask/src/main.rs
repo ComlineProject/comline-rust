@@ -64,7 +64,7 @@ fn main() -> eyre::Result<()> {
         // The one generator this crate registers, so the version it
         // registers under is the one `comline_std`'s own manifest states.
         lang_version: comline_codegen_rust::LANG_VERSION.to_string(),
-        default_framing: None,
+        wire_format: "packed@1".into(),
         // comline_std is generated inline, as an ordinary standalone
         // crate - external_std only matters to a *consumer* referencing
         // std, not to std's own generation.
