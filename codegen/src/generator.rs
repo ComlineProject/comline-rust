@@ -9,7 +9,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
 use comline_core::schema::ir::frozen::schema_ir_hash;
@@ -38,7 +38,7 @@ const ASYNC_DRIVER: &str = "comline_runtime::async_connection::";
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "2f71757d5f941a89a2e4c29cdffe971ee316dc35";
+const RUNTIME_REV: &str = "4d6e1c54303b17c6cdaefb4f5af7faa9ae9ff0d7";
 
 /// `comline_std` — std's own pre-generated bindings, referenced instead of
 /// inlined when `external_std` is on. Same git-pin shape as
@@ -52,23 +52,14 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     // named, before a single file is produced.
     comline_codegen::features::refuse_unsupported("rust", req, crate::SUPPORT)?;
 
-    let default_framing = req.default_framing.as_deref();
-    // A name `framing_for` doesn't know would fall through to datagram below,
-    // and the mismatch would only surface as a refused handshake. `@framing`
-    // is checked by core; the package default arrives unchecked from the
-    // caller, so it's checked here.
-    if let Some(name) = default_framing {
-        if framing_for(name).is_none() {
-            return Err(eyre::eyre!(
-                "unknown default framing `{name}` - expected one of {}",
-                comline_core::schema::idl::annotations::value_spellings("framing")
-                    .iter()
-                    .map(|n| format!("`{n}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-    }
+    // The format arrives from the caller; one this generator has no type
+    // for would only surface as a refused handshake.
+    let format = format_type(&req.wire_format).ok_or_else(|| {
+        eyre::eyre!(
+            "unknown wire format `{}` - expected `packed@1`, `json@1` or `msgpack@1`",
+            req.wire_format
+        )
+    })?;
 
     // Only *emission* is narrowed by `external_std`; `req.schemas` stays
     // the list every reference resolves against. `stdlib::split` carries
@@ -84,11 +75,11 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     // Checked for every schema first, so a collision in the last one does not
     // arrive after the earlier files are already written.
     for (namespace, units) in schemas {
-        collisions::check(namespace, units, derived_names(units, req.schemas, default_framing, req.async_api))?;
+        collisions::check(namespace, units, derived_names(units, req.schemas, req.async_api))?;
     }
     // JSON-RPC protocols sharing a connection whose bare method names one
     // side couldn't tell apart.
-    connections::check(req.schemas, default_framing)?;
+    connections::check(req.schemas)?;
 
     // What each value's validation runs, resolved against every schema in
     // the request - a validator or alias can come from one this crate
@@ -106,7 +97,7 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
             namespace,
             units,
             req.schemas,
-            default_framing,
+            format,
             req.external_std,
             &model,
             req.validate_on_decode,
@@ -164,6 +155,20 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
                 };
                 Ok(GeneratedFile { path: PathBuf::from(format!("{namespace}.rs")), contents })
             })
+            .chain(package_module(req, schemas, format).map(|module| {
+                // Loose files have no crate root to put it in: it gets a
+                // file of its own, which a schema of that name would be.
+                if schemas.iter().any(|(namespace, _)| namespace == PACKAGE_MODULE) {
+                    return Err(eyre::eyre!(
+                        "a schema named `{PACKAGE_MODULE}` would be overwritten by the package's \
+                         `{PACKAGE_MODULE}.rs` (its `Services` and `serve`) - rename the schema"
+                    ));
+                }
+                Ok(GeneratedFile {
+                    path: PathBuf::from(format!("{PACKAGE_MODULE}.rs")),
+                    contents: format!("{header}{module}"),
+                })
+            }))
             .collect(),
 
         Mode::Lib => {
@@ -199,6 +204,15 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
             files.extend(tree.emit("src", &RustLayout, &|namespace, _units| {
                 sources.get(namespace).cloned().unwrap_or_default()
             }));
+            // The package's `Services` and `serve` live at the crate root.
+            if let Some(module) = package_module(req, schemas, format) {
+                let root = files
+                    .iter_mut()
+                    .find(|f| f.path == Path::new("src/lib.rs"))
+                    .ok_or_else(|| eyre::eyre!("no crate root to put the package's `serve` in"))?;
+                root.contents.push('\n');
+                root.contents.push_str(&module);
+            }
             Ok(files)
         }
     }
@@ -314,7 +328,7 @@ fn schema_source(
     namespace: &str,
     units: &[FrozenUnit],
     schemas: &[(String, Vec<FrozenUnit>)],
-    default_framing: Option<&str>,
+    format: &str,
     external_std: bool,
     model: &Validation,
     on_decode: ValidateOnDecode,
@@ -327,7 +341,7 @@ fn schema_source(
     // `Server`, a `Connection`, or both.
     let on_connection = |u: &FrozenUnit| match u {
         FrozenUnit::Protocol { parameters, .. } => {
-            Some(connections::on_connection(schemas, parameters, default_framing))
+            Some(connections::on_connection(schemas, parameters))
         }
         _ => None,
     };
@@ -416,6 +430,15 @@ fn schema_source(
             connections::connection_ir_hash(schemas)
         ));
     }
+    // JSON-RPC carries JSON whatever the package says, so only a file with
+    // another protocol has use for the package's format.
+    if units.iter().any(|u| matches!(u, FrozenUnit::Protocol { parameters, .. } if !is_jsonrpc(parameters))) {
+        output.push_str(&format!(
+            "/// The package's wire format (`wire.format`): what this file's helpers\n\
+             /// encode with, and what the peer has to speak too.\n\
+             pub type Format = {format};\n\n"
+        ));
+    }
 
     for unit in units {
         match unit {
@@ -460,7 +483,6 @@ fn schema_source(
                     functions,
                     parameters,
                     schemas,
-                    default_framing,
                     &errors,
                     &imports,
                     namespace,
@@ -644,12 +666,12 @@ fn data_enum(name: &str, variants: &[FrozenUnit]) -> String {
 fn derived_names(
     units: &[FrozenUnit],
     schemas: &[(String, Vec<FrozenUnit>)],
-    default_framing: Option<&str>,
     async_api: bool,
 ) -> Vec<Derived> {
     let mut derived = Vec::new();
     let mut any_protocol = false;
     let mut any_connection = false;
+    let mut any_formatted = false;
 
     for unit in units {
         let FrozenUnit::Protocol {
@@ -662,8 +684,9 @@ fn derived_names(
             continue;
         };
         any_protocol = true;
-        let connection = connections::on_connection(schemas, parameters, default_framing);
+        let connection = connections::on_connection(schemas, parameters);
         any_connection |= connection;
+        any_formatted |= !is_jsonrpc(parameters);
 
         derived.push(Derived::new(
             format!("{proto}Error"),
@@ -724,7 +747,162 @@ fn derived_names(
     if any_connection {
         derived.push(Derived::new("CONNECTION_IR_HASH", "the package's connection hash constant"));
     }
+    if any_formatted {
+        derived.push(Derived::new("Format", "the package's wire format type"));
+    }
     derived
+}
+
+/// The package module's file in `code` mode, and so the one root name a
+/// schema can't take there. In `lib` mode it's the crate root instead.
+const PACKAGE_MODULE: &str = "connection";
+
+/// The package's one connection, set up in one call: `Services` (what the
+/// accepting side provides), `ClientServices` (what the dialling side does),
+/// and `accept` / `serve` / `connect`, blocking or async. `None` when no
+/// protocol this crate emits is on a connection, or when its protocols don't
+/// share one (`comline generate` says why).
+fn package_module(req: &GenRequest, schemas: &[(String, Vec<FrozenUnit>)], format: &str) -> Option<String> {
+    let package = connections::package_connection(req.schemas).ok()??;
+    // Only what this crate emits: an external `std` provides nothing here.
+    let emitted = |side: &[connections::Provided]| -> Vec<connections::Provided> {
+        side.iter().filter(|p| schemas.iter().any(|(ns, _)| *ns == p.namespace)).cloned().collect()
+    };
+    let (server, client) = (emitted(&package.server), emitted(&package.client));
+    if server.is_empty() && client.is_empty() {
+        return None;
+    }
+    let asynchronous = req.async_api;
+    let jsonrpc = package.framing == FRAMING_JSONRPC;
+    let unverified = package.handshake == HANDSHAKE_NONE;
+    // JSON-RPC carries JSON whatever the package's format is.
+    let fmt = if jsonrpc { JSON_FORMAT } else { "Format" };
+    let jsonrpc_framing = "comline_runtime::framing::JsonRpcFraming";
+    let (conn, transport_bound, dispatcher, bound, (awaited, fn_kw)) = if asynchronous {
+        ("comline_runtime::async_connection::AsyncConnection", "comline_runtime::async_connection::AsyncTransport", "AsyncDispatcher", "", (".await", "async fn"))
+    } else {
+        ("comline_runtime::connection::Connection", "comline_runtime::transport::Transport", "Dispatcher", " + 'static", ("", "fn"))
+    };
+    let conn_ty = if jsonrpc { format!("{conn}<T, {fmt}, {jsonrpc_framing}>") } else { format!("{conn}<T, {fmt}>") };
+    let open = |side: &str| -> String {
+        let value = format!("{fmt}::default()");
+        match (jsonrpc, unverified, asynchronous) {
+            (false, false, _) => format!("{conn}::{side}(transport, {value}, CONNECTION_IR_HASH){awaited}?"),
+            (false, true, _) => format!("{conn}::new_unverified(transport, {value})"),
+            (true, false, false) => format!(
+                "{conn}::{side}_with(transport, {value}, {jsonrpc_framing}, &mut comline_runtime::handshake::ComlineHandshake, CONNECTION_IR_HASH)?"
+            ),
+            (true, false, true) => format!("{conn}::handshake(transport, {value}, {jsonrpc_framing}, CONNECTION_IR_HASH).await?"),
+            (true, true, _) => format!("{conn}::with_framing_unverified(transport, {value}, {jsonrpc_framing})"),
+        }
+    };
+
+    let mut l: Vec<String> = Vec::new();
+    l.push("/// The package's wire format (`wire.format`).".into());
+    l.push(format!("pub type Format = {format};"));
+    l.push(String::new());
+    l.push("/// Digest of every schema in the package — what a connection's handshake".into());
+    l.push("/// checks, so both ends agree on each protocol's number.".into());
+    l.push(format!("pub const CONNECTION_IR_HASH: u64 = {:#018x};", connections::connection_ir_hash(req.schemas)));
+    l.push(String::new());
+
+    // `Services<A, B>`, its generics, their bounds and the struct itself.
+    struct Side {
+        ty: &'static str,
+        generics: String,
+        bounds: String,
+    }
+    let mut side = |ty: &'static str, provided: &[connections::Provided], who: &str| -> Option<Side> {
+        if provided.is_empty() {
+            return None;
+        }
+        let names: Vec<String> = provided.iter().map(|p| pascal(&p.field)).collect();
+        let bounds: Vec<String> = provided
+            .iter()
+            .zip(&names)
+            .map(|(p, g)| format!("{g}: crate::{}::{}{bound}", segments(&p.namespace), ident(&p.name)))
+            .collect();
+        l.push(format!("/// What {who} provides: one field per protocol, so leaving one out"));
+        l.push("/// doesn't compile.".into());
+        l.push(format!("pub struct {ty}<{}> {{", names.join(", ")));
+        for (p, g) in provided.iter().zip(&names) {
+            l.push(format!("    pub {}: {g},", ident(&p.field)));
+        }
+        l.push("}".into());
+        l.push(String::new());
+        l.push(format!("impl<{}> {ty}<{}> {{", bounds.join(", "), names.join(", ")));
+        l.push("    /// Provide every protocol on `conn`: the peer's calls to them come here.".into());
+        l.push(format!("    pub fn provide_on<T: {transport_bound}>(self, conn: &mut {conn_ty}) {{"));
+        for p in provided {
+            l.push(format!(
+                "        crate::{}::{}{dispatcher}(self.{}).provide_on(conn);",
+                segments(&p.namespace),
+                ident(&p.name),
+                ident(&p.field)
+            ));
+        }
+        l.push("    }".into());
+        l.push("}".into());
+        l.push(String::new());
+        Some(Side { ty, generics: names.join(", "), bounds: bounds.join(", ") })
+    };
+    let server_side = side("Services", &server, "the accepting side");
+    let client_side = side("ClientServices", &client, "the dialling side");
+
+    // `<T: Transport, A: crate::x::A, ...>(transport: T, services: Services<A, ...>)`
+    let signature = |name: &str, side: &Option<Side>, ret: &str| -> String {
+        match side {
+            Some(s) => format!(
+                "pub {fn_kw} {name}<T: {transport_bound}, {}>(transport: T, services: {}<{}>) -> Result<{ret}, comline_runtime::contract::RuntimeError> {{",
+                s.bounds, s.ty, s.generics
+            ),
+            None => format!(
+                "pub {fn_kw} {name}<T: {transport_bound}>(transport: T) -> Result<{ret}, comline_runtime::contract::RuntimeError> {{"
+            ),
+        }
+    };
+    let body = |l: &mut Vec<String>, side: &Option<Side>, open: String| {
+        if side.is_some() {
+            l.push(format!("    let mut conn = {open};"));
+            l.push("    services.provide_on(&mut conn);".into());
+        } else {
+            l.push(format!("    let conn = {open};"));
+        }
+        l.push("    Ok(conn)".into());
+        l.push("}".into());
+        l.push(String::new());
+    };
+
+    l.push("/// Accept a connection over `transport`: run the handshake, then provide".into());
+    l.push("/// every protocol in `services` on it. The connection comes back not yet".into());
+    if asynchronous {
+        l.push("/// running, so the caller can take a `handle()` to call the client with".into());
+        l.push("/// before it runs.".into());
+    } else {
+        l.push("/// served, for a server that calls the client first, or serves one call at".into());
+        l.push("/// a time.".into());
+    }
+    l.push(signature("accept", &server_side, &conn_ty));
+    body(&mut l, &server_side, open("accept"));
+
+    l.push("/// [`accept`], then serve every call until the peer leaves.".into());
+    l.push(signature("serve", &server_side, "()"));
+    let pass = if server_side.is_some() { "transport, services" } else { "transport" };
+    if asynchronous {
+        l.push(format!("    accept({pass}).await?.run().await"));
+    } else {
+        l.push(format!("    accept({pass})?.serve()"));
+    }
+    l.push("}".into());
+    l.push(String::new());
+
+    l.push("/// Dial over `transport`: run the handshake, then provide every protocol in".into());
+    l.push("/// `services`, which the server calls. Call the server's protocols through".into());
+    l.push("/// their senders.".into());
+    l.push(signature("connect", &client_side, &conn_ty));
+    body(&mut l, &client_side, open("connect"));
+
+    Some(l.join("\n"))
 }
 
 /// One generated error type: the per-function `<Proto><Fn>Error`, or the
@@ -854,9 +1032,6 @@ fn framing_for(name: &str) -> Option<FramingChoice> {
     }
 }
 
-/// Resolve a protocol's framing, most specific first: its own `@framing`
-/// annotation, then the package `default_framing` (`comline.toml`), then the
-/// datagram default. An unrecognised name at either level falls through.
 /// The runtime's `none` handshake, by path (only a `none` protocol uses it).
 const NO_HANDSHAKE: &str = "comline_runtime::handshake::NoHandshake";
 
@@ -884,10 +1059,38 @@ fn no_handshake_of(parameters: &[FrozenUnit]) -> bool {
     annotation(parameters, "handshake").as_deref() == Some(HANDSHAKE_NONE)
 }
 
-fn framing_choice(parameters: &[FrozenUnit], default_framing: Option<&str>) -> FramingChoice {
-    connections::framing(parameters, default_framing)
-        .and_then(|f| framing_for(f.name))
-        .unwrap_or(DATAGRAM_FRAMING)
+fn framing_choice(parameters: &[FrozenUnit]) -> FramingChoice {
+    framing_for(connections::framing(parameters).name).unwrap_or(DATAGRAM_FRAMING)
+}
+
+/// Whether a protocol runs JSON-RPC, which carries JSON whatever the
+/// package's format is.
+fn is_jsonrpc(parameters: &[FrozenUnit]) -> bool {
+    connections::framing(parameters).name == FRAMING_JSONRPC
+}
+
+/// The runtime's type for a wire format name. `None` for one it has none
+/// for.
+fn format_type(name: &str) -> Option<&'static str> {
+    use comline_core::schema::idl::annotations::{FORMAT_JSON, FORMAT_MSGPACK, FORMAT_PACKED};
+    match name {
+        FORMAT_PACKED => Some("comline_runtime::format::Packed"),
+        FORMAT_JSON => Some(JSON_FORMAT),
+        FORMAT_MSGPACK => Some("comline_runtime::format::MsgPack"),
+        _ => None,
+    }
+}
+
+const JSON_FORMAT: &str = "comline_runtime::format::Json";
+
+/// What a protocol's helpers encode with: JSON for a JSON-RPC protocol, the
+/// package's `Format` otherwise.
+fn format_of(parameters: &[FrozenUnit]) -> &'static str {
+    if is_jsonrpc(parameters) {
+        JSON_FORMAT
+    } else {
+        "Format"
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -896,7 +1099,6 @@ fn protocol(
     functions: &[FrozenUnit],
     parameters: &[FrozenUnit],
     schemas: &[(String, Vec<FrozenUnit>)],
-    default_framing: Option<&str>,
     errors: &HashMap<u16, String>,
     imports: &HashMap<String, String>,
     namespace: &str,
@@ -904,15 +1106,17 @@ fn protocol(
     on_decode: ValidateOnDecode,
     async_api: bool,
 ) -> Result<String> {
-    let framing = framing_choice(parameters, default_framing);
+    let framing = framing_choice(parameters);
     // On a connection: handlers take the peer, the dispatcher is provided
     // on a `Connection`, and a sender calls through any `Peer`.
-    let connection = connections::on_connection(schemas, parameters, default_framing);
+    let connection = connections::on_connection(schemas, parameters);
     // `async`: an async trait, an `AsyncDispatcher` provided on an
     // `AsyncConnection`, and an `AsyncSender` calling through any
     // `AsyncPeer`. Only a connection protocol has an async form.
     let asynchronous = connection && async_api;
-    // How the dispatcher's doc says to open the connection it's provided on.
+    // How the dispatcher's doc says to open the connection it's provided on:
+    // the side that provides it accepts, or for a client-provided protocol,
+    // dials.
     let open = match (framing.explicit, no_handshake_of(parameters), asynchronous) {
         (_, true, false) => "`Connection::accept_with` and `NoHandshake` (`@handshake = \"none\"`)".to_string(),
         (_, true, true) => "`AsyncConnection::new_unverified` (`@handshake = \"none\"`)".to_string(),
@@ -926,11 +1130,18 @@ fn protocol(
             format!("`AsyncConnection::handshake(transport, format, {}, CONNECTION_IR_HASH)`", framing.ty)
         }
     };
+    let open = if connections::Provider::of(parameters) == connections::Provider::Client {
+        open.replace("::accept", "::connect")
+    } else {
+        open
+    };
+    let open = format!("{open}, or let the package's `serve` / `connect` do it");
     // JSON-RPC names a call by its method: bare, or qualified by protocol.
-    let method_names = connections::framing(parameters, default_framing)
-        .filter(|f| f.name == FRAMING_JSONRPC)
-        .map(|f| f.method_names)
-        .unwrap_or_default();
+    let framing_value = connections::framing(parameters);
+    let method_names = match framing_value.name {
+        FRAMING_JSONRPC => framing_value.method_names,
+        _ => Default::default(),
+    };
     let number = if connection {
         connections::protocol_number(schemas, namespace, proto).ok_or_else(|| {
             eyre::eyre!("protocol `{proto}` has no number: more than 65536 protocols in the package")
@@ -1168,8 +1379,15 @@ fn protocol(
             l.push("    /// handshake (`IR_HASH` + `format`'s and the framing's names) against".into());
             l.push("    /// the peer first.".into());
         }
+        let format = format_of(parameters);
+        l.push(format!("    /// Encodes with `{}`.", format.rsplit("::").next().unwrap_or(format)));
+        l.push("    pub fn serve<T: Transport>(self, transport: &mut T) -> Result<(), RuntimeError> {".into());
+        l.push(format!("        self.serve_with_format(transport, {format}::default())"));
+        l.push("    }".into());
+        l.push(String::new());
+        l.push("    /// [`serve`](Self::serve), encoding with `format` instead.".into());
         l.push(
-            "    pub fn serve<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)".into(),
+            "    pub fn serve_with_format<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)".into(),
         );
         l.push("    -> Result<(), RuntimeError> {".into());
         let server = if framing.explicit {
@@ -1229,7 +1447,8 @@ fn protocol(
         } else {
             l.push("    /// Bind + run the connection handshake against the provider.".into());
         }
-        l.push("    pub fn connect(transport: T, format: W) -> Result<Self, RuntimeError> {".into());
+        l.push("    /// [`connect`](Self::connect), encoding with `format`.".into());
+        l.push("    pub fn connect_with_format(transport: T, format: W) -> Result<Self, RuntimeError> {".into());
         if no_handshake {
             let framing_expr = if framing.explicit {
                 l.push(format!("        let framing = {};", framing.ty));
@@ -1319,6 +1538,22 @@ fn protocol(
     }
     l.push("}".into());
     l.push(String::new());
+    if !connection {
+        // The package's format, without naming it at every call.
+        let format = format_of(parameters);
+        l.push(format!("impl<T: Transport> {proto}Client<T, {format}> {{"));
+        if no_handshake {
+            l.push("    /// Bind to the provider. No handshake runs (`@handshake = \"none\"`).".into());
+        } else {
+            l.push("    /// Bind + run the connection handshake against the provider.".into());
+        }
+        l.push(format!("    /// Encodes with `{}`.", format.rsplit("::").next().unwrap_or(format)));
+        l.push("    pub fn connect(transport: T) -> Result<Self, RuntimeError> {".into());
+        l.push(format!("        Self::connect_with_format(transport, {format}::default())"));
+        l.push("    }".into());
+        l.push("}".into());
+        l.push(String::new());
+    }
     l.push(String::new());
     s.push_str(&l.join("\n"));
 

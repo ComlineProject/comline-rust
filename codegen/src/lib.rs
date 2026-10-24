@@ -74,6 +74,9 @@ pub const SUPPORT: SupportTable = &[
     (Feature::HandshakeNone, Support::supported()),
     (Feature::Connections, Support::supported()),
     (Feature::Async, Support::supported()),
+    (Feature::FormatPacked, Support::supported()),
+    (Feature::FormatJson, Support::supported()),
+    (Feature::FormatMsgPack, Support::supported()),
 ];
 
 /// Contribute the Rust generator to a CLI's [`Registry`](comline_codegen::Registry).
