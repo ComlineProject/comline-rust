@@ -770,6 +770,102 @@ fn a_handler_calls_back_and_the_server_calls_on_its_own() {
 }
 "##;
 
+/// The same two protocols over JSON-RPC: `Chat` names only its framing, and
+/// joins the connection because `Events`, which the client provides, is on
+/// one; `Events` qualifies its method names.
+const CONNECTED_JSONRPC: &str = r#"
+@framing = "jsonrpc"
+protocol Chat {
+    function send(text: string) -> u64;
+    function count() -> u64;
+}
+
+@provider = Client
+@framing = { name = "jsonrpc", method_names = qualified }
+protocol Events {
+    function message(text: string) -> bool;
+    function ping();
+}
+"#;
+
+/// [`CONNECTED_BEHAVIOUR`], over JSON-RPC.
+#[test]
+fn generated_jsonrpc_connection_protocols_call_both_ways() {
+    use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
+    use comline_core::schema::ir::compiler::Compile;
+
+    let schemas = vec![("link".to_string(), IncrementalInterpreter::from_source(CONNECTED_JSONRPC))];
+    let req = GenRequest {
+        mode: Mode::Lib,
+        schemas: &schemas,
+        package: PackageMeta {
+            name: "comline-codegen-rust-compiletest".into(),
+            version: "0.0.0".into(),
+        },
+        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        default_framing: None,
+        external_std: false,
+        validate_on_decode: Default::default(),
+        async_api: false,
+    };
+    let files = generate_rust(&req).unwrap();
+    let link = &files.iter().find(|f| f.path.ends_with("link.rs")).unwrap().contents;
+    assert!(link.contains(r#"pub const CHAT_CALLS: &[&str] = &["send", "count"];"#), "{link}");
+    assert!(
+        link.contains(r#"pub const EVENTS_CALLS: &[&str] = &["link.Events/message", "link.Events/ping"];"#),
+        "{link}"
+    );
+    assert!(!link.contains("ChatClient"), "Chat is on the connection too");
+    let behaviour = CONNECTED_BEHAVIOUR
+        .replace(
+            "use comline_runtime::format::Json;",
+            "use comline_runtime::format::Json;\nuse comline_runtime::framing::JsonRpcFraming;\nuse comline_runtime::handshake::ComlineHandshake;",
+        )
+        .replace(
+            "Connection::accept(acceptor, Json, CONNECTION_IR_HASH)",
+            "Connection::accept_with(acceptor, Json, JsonRpcFraming, &mut ComlineHandshake, CONNECTION_IR_HASH)",
+        )
+        .replace(
+            "Connection::connect(dialler, Json, CONNECTION_IR_HASH)",
+            "Connection::connect_with(dialler, Json, JsonRpcFraming, &mut ComlineHandshake, CONNECTION_IR_HASH)",
+        );
+    assert!(behaviour.contains("JsonRpcFraming, &mut ComlineHandshake, CONNECTION_IR_HASH)"));
+    check_generated_crate("jsonrpc-connections", &req, Some(&behaviour));
+}
+
+/// Two JSON-RPC protocols the server provides on one connection, both with
+/// a `send`: bare method names can't tell them apart.
+#[test]
+fn bare_jsonrpc_names_that_would_clash_on_a_connection_are_refused() {
+    use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
+    use comline_core::schema::ir::compiler::Compile;
+
+    let source = |admin_framing: &str| {
+        format!(
+            "@framing = \"jsonrpc\"\nprotocol Chat {{\n    function send(text: string) -> u64;\n}}\n\n\
+             @framing = {admin_framing}\nprotocol Admin {{\n    function send(text: string) -> u64;\n}}\n\n\
+             @provider = Client\n@framing = \"jsonrpc\"\nprotocol Events {{\n    function ping();\n}}\n"
+        )
+    };
+    let generate = |admin_framing: &str| {
+        let schemas = vec![("link".to_string(), IncrementalInterpreter::from_source(&source(admin_framing)))];
+        let req = GenRequest {
+            mode: Mode::Code,
+            schemas: &schemas,
+            package: PackageMeta { name: "x".into(), version: "0.0.0".into() },
+            lang_version: comline_codegen_rust::LANG_VERSION.into(),
+            default_framing: None,
+            external_std: false,
+            validate_on_decode: Default::default(),
+            async_api: false,
+        };
+        generate_rust(&req).map(|_| ())
+    };
+    let err = generate("\"jsonrpc\"").unwrap_err().to_string();
+    assert!(err.contains("`link::Chat` and `link::Admin` both have a function `send`"), "{err}");
+    generate("{ name = \"jsonrpc\", method_names = qualified }").unwrap();
+}
+
 /// The same two protocols with `async`: async handlers on an
 /// `AsyncConnection`, a handler awaiting a call back to its peer, and the
 /// accepting side calling the dialling side from its own task.

@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
 use comline_core::schema::ir::frozen::schema_ir_hash;
-use comline_core::schema::idl::annotations::HANDSHAKE_NONE;
+use comline_core::schema::idl::annotations::{FRAMING_JSONRPC, HANDSHAKE_NONE};
 use comline_core::schema::ir::frozen::unit::{FrozenArgument, FrozenUnit};
 use comline_core::schema::ir::unverified;
 
@@ -38,7 +38,7 @@ const ASYNC_DRIVER: &str = "comline_runtime::async_connection::";
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "795baa81336b690d037a4800ca4c288e295b09f2";
+const RUNTIME_REV: &str = "2f71757d5f941a89a2e4c29cdffe971ee316dc35";
 
 /// `comline_std` — std's own pre-generated bindings, referenced instead of
 /// inlined when `external_std` is on. Same git-pin shape as
@@ -84,8 +84,11 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     // Checked for every schema first, so a collision in the last one does not
     // arrive after the earlier files are already written.
     for (namespace, units) in schemas {
-        collisions::check(namespace, units, derived_names(units, default_framing, req.async_api))?;
+        collisions::check(namespace, units, derived_names(units, req.schemas, default_framing, req.async_api))?;
     }
+    // JSON-RPC protocols sharing a connection whose bare method names one
+    // side couldn't tell apart.
+    connections::check(req.schemas, default_framing)?;
 
     // What each value's validation runs, resolved against every schema in
     // the request - a validator or alias can come from one this crate
@@ -324,7 +327,7 @@ fn schema_source(
     // `Server`, a `Connection`, or both.
     let on_connection = |u: &FrozenUnit| match u {
         FrozenUnit::Protocol { parameters, .. } => {
-            Some(connections::on_connection(parameters, default_framing))
+            Some(connections::on_connection(schemas, parameters, default_framing))
         }
         _ => None,
     };
@@ -638,7 +641,12 @@ fn data_enum(name: &str, variants: &[FrozenUnit]) -> String {
 /// `comline-codegen`: what gets derived is a fact about *Rust* output, not
 /// about the schema. Keep it in step with the emitters below — a name added
 /// there and not here is a collision that still reaches the compiler.
-fn derived_names(units: &[FrozenUnit], default_framing: Option<&str>, async_api: bool) -> Vec<Derived> {
+fn derived_names(
+    units: &[FrozenUnit],
+    schemas: &[(String, Vec<FrozenUnit>)],
+    default_framing: Option<&str>,
+    async_api: bool,
+) -> Vec<Derived> {
     let mut derived = Vec::new();
     let mut any_protocol = false;
     let mut any_connection = false;
@@ -654,7 +662,7 @@ fn derived_names(units: &[FrozenUnit], default_framing: Option<&str>, async_api:
             continue;
         };
         any_protocol = true;
-        let connection = connections::on_connection(parameters, default_framing);
+        let connection = connections::on_connection(schemas, parameters, default_framing);
         any_connection |= connection;
 
         derived.push(Derived::new(
@@ -780,8 +788,10 @@ impl Arg {
 }
 
 struct FnInfo {
-    /// The schema's name: what JSON-RPC calls it, and the call table holds.
-    name: String,
+    /// What a call names it on the wire, and the call table holds: the
+    /// schema's name, or under JSON-RPC's qualified method names
+    /// `ns.Proto/name`.
+    method: String,
     /// The same as a Rust identifier ([`ident`]).
     ident: String,
     params_ty: Option<String>,
@@ -868,10 +878,15 @@ fn unverified_doc(parameters: &[FrozenUnit]) -> Vec<String> {
     doc
 }
 
+/// `@handshake = "none"` (or the package default, which core has already
+/// written here).
+fn no_handshake_of(parameters: &[FrozenUnit]) -> bool {
+    annotation(parameters, "handshake").as_deref() == Some(HANDSHAKE_NONE)
+}
+
 fn framing_choice(parameters: &[FrozenUnit], default_framing: Option<&str>) -> FramingChoice {
-    annotation(parameters, "framing")
-        .and_then(|name| framing_for(&name))
-        .or_else(|| default_framing.and_then(framing_for))
+    connections::framing(parameters, default_framing)
+        .and_then(|f| framing_for(f.name))
         .unwrap_or(DATAGRAM_FRAMING)
 }
 
@@ -892,17 +907,30 @@ fn protocol(
     let framing = framing_choice(parameters, default_framing);
     // On a connection: handlers take the peer, the dispatcher is provided
     // on a `Connection`, and a sender calls through any `Peer`.
-    let connection = connections::on_connection(parameters, default_framing);
+    let connection = connections::on_connection(schemas, parameters, default_framing);
     // `async`: an async trait, an `AsyncDispatcher` provided on an
     // `AsyncConnection`, and an `AsyncSender` calling through any
     // `AsyncPeer`. Only a connection protocol has an async form.
     let asynchronous = connection && async_api;
-    if connection && framing.explicit {
-        return Err(eyre::eyre!(
-            "protocol `{proto}`: JSON-RPC on a connection isn't supported yet - use \
-             `@framing = \"datagram@2\"` (ComlineProject/runtime#19)"
-        ));
-    }
+    // How the dispatcher's doc says to open the connection it's provided on.
+    let open = match (framing.explicit, no_handshake_of(parameters), asynchronous) {
+        (_, true, false) => "`Connection::accept_with` and `NoHandshake` (`@handshake = \"none\"`)".to_string(),
+        (_, true, true) => "`AsyncConnection::new_unverified` (`@handshake = \"none\"`)".to_string(),
+        (false, false, false) => "`Connection::accept(transport, format, CONNECTION_IR_HASH)`".to_string(),
+        (false, false, true) => "`AsyncConnection::accept(transport, format, CONNECTION_IR_HASH)`".to_string(),
+        (true, false, false) => format!(
+            "`Connection::accept_with(transport, format, {}, &mut ComlineHandshake, CONNECTION_IR_HASH)`",
+            framing.ty
+        ),
+        (true, false, true) => {
+            format!("`AsyncConnection::handshake(transport, format, {}, CONNECTION_IR_HASH)`", framing.ty)
+        }
+    };
+    // JSON-RPC names a call by its method: bare, or qualified by protocol.
+    let method_names = connections::framing(parameters, default_framing)
+        .filter(|f| f.name == FRAMING_JSONRPC)
+        .map(|f| f.method_names)
+        .unwrap_or_default();
     let number = if connection {
         connections::protocol_number(schemas, namespace, proto).ok_or_else(|| {
             eyre::eyre!("protocol `{proto}` has no number: more than 65536 protocols in the package")
@@ -920,9 +948,10 @@ fn protocol(
                 _return,
                 throws,
                 ..
-            } => Some(fn_info(
-                proto, name, parameters, arguments, _return, throws, errors, imports,
-            )),
+            } => Some(FnInfo {
+                method: connections::method_name(namespace, proto, name, method_names),
+                ..fn_info(proto, name, parameters, arguments, _return, throws, errors, imports)
+            }),
             _ => None,
         })
         .collect();
@@ -1044,20 +1073,20 @@ fn protocol(
     s.push_str(&format!(
         "pub const {calls_const}: &[&str] = &[{}];\n\n",
         fns.iter()
-            .map(|f| format!("\"{}\"", f.name))
+            .map(|f| format!("\"{}\"", f.method))
             .collect::<Vec<_>>()
             .join(", ")
     ));
 
     // `@handshake = "none"` (or the package default, which core has already
     // written here): connect and serve run the runtime's `NoHandshake`.
-    let no_handshake = annotation(parameters, "handshake").as_deref() == Some(HANDSHAKE_NONE);
+    let no_handshake = no_handshake_of(parameters);
     let unverified_doc = unverified_doc(parameters);
 
     // 4. dispatcher — implements the runtime `Dispatch` trait, or for an
     //    async protocol, `AsyncDispatch`
     if asynchronous {
-        s.push_str(&async_dispatcher(proto, &proto_trait, &fns, &param_members, &calls_const, number, no_handshake, &unverified_doc, on_decode));
+        s.push_str(&async_dispatcher(proto, &proto_trait, &fns, &param_members, &calls_const, number, &open, &unverified_doc, on_decode));
         s.push_str(&async_sender(proto, &fns, number, &unverified_doc));
         return Ok(s);
     }
@@ -1121,12 +1150,7 @@ fn protocol(
         l.push(format!("    pub const PROTOCOL: ProtocolNumber = {number};"));
         l.push(String::new());
         l.push("    /// Provide this protocol on `conn`: the peer's calls to it come here.".into());
-        if no_handshake {
-            l.push("    /// Open `conn` with `Connection::accept_with` and `NoHandshake`".into());
-            l.push("    /// (`@handshake = \"none\"`).".into());
-        } else {
-            l.push("    /// Open `conn` with `Connection::accept(transport, format, CONNECTION_IR_HASH)`.".into());
-        }
+        l.push(format!("    /// Open `conn` with {open}."));
         l.push("    pub fn provide_on<T: Transport, W: WireFormat, F: ConnectionFraming>(".into());
         l.push("        self,".into());
         l.push("        conn: &mut Connection<T, W, F>,".into());
@@ -1243,7 +1267,7 @@ fn protocol(
         };
         // Both addresses — the framing picks (ordinal for datagram, name for
         // a name-oriented framing like JSON-RPC).
-        let addr = format!("Call::new({i}, \"{}\")", f.name);
+        let addr = format!("Call::new({i}, \"{}\")", f.method);
         l.push(String::new());
         if f.one_way {
             // Fire-and-forget: no reply, so no `CallError<E>`.
@@ -1311,7 +1335,7 @@ fn async_dispatcher(
     param_members: &[Vec<Member>],
     calls_const: &str,
     number: u16,
-    no_handshake: bool,
+    open: &str,
     unverified_doc: &[String],
     on_decode: ValidateOnDecode,
 ) -> String {
@@ -1338,11 +1362,7 @@ fn async_dispatcher(
     l.push(format!("    pub const PROTOCOL: ProtocolNumber = {number};"));
     l.push(String::new());
     l.push("    /// Provide this protocol on `conn`: the peer's calls to it come here.".into());
-    if no_handshake {
-        l.push("    /// Open `conn` with `AsyncConnection::new_unverified` (`@handshake = \"none\"`).".into());
-    } else {
-        l.push("    /// Open `conn` with `AsyncConnection::accept(transport, format, CONNECTION_IR_HASH)`.".into());
-    }
+    l.push(format!("    /// Open `conn` with {open}."));
     l.push("    pub fn provide_on<T, W, F>(self, conn: &mut AsyncConnection<T, W, F>)".into());
     l.push("    where".into());
     l.push("        T: AsyncTransport,".into());
@@ -1382,7 +1402,7 @@ fn async_sender(proto: &str, fns: &[FnInfo], number: u16, unverified_doc: &[Stri
             }
             None => "&()".to_string(),
         };
-        let addr = format!("Call::new({i}, \"{}\")", f.name);
+        let addr = format!("Call::new({i}, \"{}\")", f.method);
         l.push(String::new());
         if f.one_way {
             // Sent when called: nothing to await.
@@ -1620,7 +1640,7 @@ fn fn_info(
         })
         .collect();
     FnInfo {
-        name: name.to_string(),
+        method: name.to_string(),
         ident: ident(name),
         params_ty,
         params_borrows,
