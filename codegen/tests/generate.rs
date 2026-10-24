@@ -15,6 +15,7 @@ fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
         default_framing: None,
         external_std: false,
         validate_on_decode: Default::default(),
+        async_api: false,
     }
 }
 
@@ -30,6 +31,7 @@ fn lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
         default_framing: None,
         external_std: false,
         validate_on_decode: Default::default(),
+        async_api: false,
     }
 }
 
@@ -1437,6 +1439,60 @@ fn datagram2_as_the_package_default_puts_protocols_on_a_connection() {
     assert!(src.contains("pub const PROTOCOL: ProtocolNumber = 0;"));
     assert!(src.contains("pub const CONNECTION_IR_HASH: u64"));
     assert!(!src.contains("RpcClient"));
+}
+
+/// `async`: a connection protocol's handlers, dispatcher and sender are
+/// async, and its imports are the async driver's; a lockstep protocol in the
+/// same file keeps its blocking form, and so does everything without
+/// `async`.
+#[test]
+fn async_makes_a_connection_protocol_async() {
+    let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
+    let on_connection = GenRequest {
+        default_framing: Some("datagram@2".to_string()),
+        async_api: true,
+        ..code_req(&schemas)
+    };
+    let src = generate_rust(&on_connection).unwrap().remove(0).contents;
+    assert!(src.starts_with("// This file uses `comline_runtime`'s async driver - enable its feature"), "{src}");
+    assert!(src.contains("pub trait Rpc: Send + Sync + 'static {"), "{src}");
+    assert!(src.contains("-> impl ::core::future::Future<Output = "), "{src}");
+    assert!(src.contains("peer: &impl AsyncPeer"), "{src}");
+    assert!(src.contains("impl<S: Rpc> AsyncDispatch for RpcAsyncDispatcher<S> {"), "{src}");
+    assert!(src.contains("pub struct RpcAsyncSender<'p, P: AsyncPeer>(pub &'p P);"), "{src}");
+    assert!(src.contains("use comline_runtime::async_connection::{Answer, AsyncConnection, AsyncDispatch, AsyncPeer, AsyncTransport};"));
+    // Nothing of the blocking connection API, so no unused imports.
+    for blocking in ["RpcDispatcher<", "RpcSender<", "Reply", "connection::Connection", "Peer, ProtocolNumber", "transport::Transport"] {
+        assert!(!src.contains(blocking), "`{blocking}` in async output:\n{src}");
+    }
+
+    // A protocol that isn't on a connection has no async form.
+    let lockstep = GenRequest { async_api: true, ..code_req(&schemas) };
+    let src = generate_rust(&lockstep).unwrap().remove(0).contents;
+    assert!(src.contains("pub struct RpcClient<T, W>"));
+    assert!(!src.contains("Async"), "{src}");
+}
+
+#[test]
+fn an_async_protocols_names_are_checked_for_collisions() {
+    let mut units = one_plain_protocol("Rpc");
+    units.push(FrozenUnit::Struct {
+        docstring: None,
+        parameters: vec![],
+        name: "RpcAsyncSender".into(),
+        fields: vec![],
+        span: (0, 0),
+    });
+    let schemas = vec![("rpc".to_string(), units)];
+    let req = GenRequest {
+        default_framing: Some("datagram@2".to_string()),
+        async_api: true,
+        ..code_req(&schemas)
+    };
+    let error = generate_rust(&req).unwrap_err().to_string();
+    assert!(error.contains("RpcAsyncSender"), "{error}");
+    // Without `async`, that name is free.
+    assert!(generate_rust(&GenRequest { async_api: false, ..req }).is_ok());
 }
 
 #[test]

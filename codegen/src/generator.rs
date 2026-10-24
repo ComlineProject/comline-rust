@@ -31,10 +31,14 @@ use comline_codegen::symbols::{error_names, Origin, SymbolTable};
 use comline_codegen::validation::{ValidateOnDecode, Validation};
 use comline_codegen::{GenRequest, GeneratedFile, Mode, PackageMeta};
 
+/// The module path of the runtime's async driver, which its `async` feature
+/// gates: a file that uses it needs the feature turned on.
+const ASYNC_DRIVER: &str = "comline_runtime::async_connection::";
+
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "9ef1aa5cd8692bbd797f4fe124a73d89f5227b9f";
+const RUNTIME_REV: &str = "795baa81336b690d037a4800ca4c288e295b09f2";
 
 /// `comline_std` — std's own pre-generated bindings, referenced instead of
 /// inlined when `external_std` is on. Same git-pin shape as
@@ -80,7 +84,7 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     // Checked for every schema first, so a collision in the last one does not
     // arrive after the earlier files are already written.
     for (namespace, units) in schemas {
-        collisions::check(namespace, units, derived_names(units, default_framing))?;
+        collisions::check(namespace, units, derived_names(units, default_framing, req.async_api))?;
     }
 
     // What each value's validation runs, resolved against every schema in
@@ -103,6 +107,7 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
             req.external_std,
             &model,
             req.validate_on_decode,
+            req.async_api,
         )
         .map(|body| format!("{header}{body}"))
     };
@@ -128,6 +133,16 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
                     format!(
                         "// This file uses `serde_big_array` - add it to your Cargo.toml:\n\
                          // {BIG_ARRAY_DEP}\n{contents}"
+                    )
+                } else {
+                    contents
+                };
+                // The async driver is behind a runtime feature, which nothing
+                // in the code itself would tell a reader.
+                let contents = if contents.contains(ASYNC_DRIVER) {
+                    format!(
+                        "// This file uses `comline_runtime`'s async driver - enable its feature in your Cargo.toml:\n\
+                         // comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{RUNTIME_REV}\", features = [\"async\"] }}\n{contents}"
                     )
                 } else {
                     contents
@@ -159,6 +174,8 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
 
             // A protocol links the runtime, and so does any validation.
             let needs_runtime = sources.values().any(|s| s.contains("comline_runtime::"));
+            // The async driver is behind the runtime's `async` feature.
+            let needs_async = sources.values().any(|s| s.contains(ASYNC_DRIVER));
 
             let needs_big_array = schemas.iter().any(|(_, units)| uses_big_array(units));
 
@@ -168,6 +185,7 @@ pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
                     &req.package,
                     &req.lang_version,
                     needs_runtime,
+                    needs_async,
                     std.needs_std_dependency,
                     needs_big_array,
                 ),
@@ -249,6 +267,7 @@ fn cargo_toml(
     pkg: &PackageMeta,
     lang_version: &str,
     needs_runtime: bool,
+    needs_async: bool,
     needs_std_dep: bool,
     needs_big_array: bool,
 ) -> String {
@@ -258,8 +277,9 @@ fn cargo_toml(
         deps.push('\n');
     }
     if needs_runtime {
+        let features = if needs_async { ", features = [\"async\"]" } else { "" };
         deps.push_str(&format!(
-            "comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{RUNTIME_REV}\" }}\n"
+            "comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{RUNTIME_REV}\"{features} }}\n"
         ));
     }
     if needs_std_dep {
@@ -286,6 +306,7 @@ fn cargo_toml(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn schema_source(
     namespace: &str,
     units: &[FrozenUnit],
@@ -294,6 +315,7 @@ fn schema_source(
     external_std: bool,
     model: &Validation,
     on_decode: ValidateOnDecode,
+    async_api: bool,
 ) -> Result<String> {
     let has_protocol = units
         .iter()
@@ -308,6 +330,10 @@ fn schema_source(
     };
     let has_lockstep = units.iter().any(|u| on_connection(u) == Some(false));
     let has_connection = units.iter().any(|u| on_connection(u) == Some(true));
+    // `async`: every protocol on a connection is async, on an
+    // `AsyncConnection`, and none uses the blocking connection API.
+    let has_async = async_api && has_connection;
+    let has_blocking_connection = has_connection && !async_api;
     let errors: HashMap<u16, String> =
         error_names(units).into_iter().map(|(ordinal, name)| (ordinal, ident(&name))).collect();
     let imports = import_paths(units, schemas, external_std);
@@ -334,25 +360,39 @@ fn schema_source(
     if has_lockstep {
         output.push_str("use comline_runtime::client::Client;\n");
     }
-    if has_connection {
+    if has_async {
+        output.push_str(
+            "use comline_runtime::async_connection::{Answer, AsyncConnection, AsyncDispatch, AsyncPeer, AsyncTransport};\n",
+        );
+    }
+    if has_blocking_connection {
         output.push_str("use comline_runtime::connection::Connection;\n");
     }
-    if has_protocol {
+    // A blocking dispatcher records its outcome in a `Reply`; an async one
+    // returns an `Answer`.
+    let blocking = has_lockstep || has_blocking_connection;
+    if blocking {
         output.push_str(
             "use comline_runtime::contract::{\n    \
                  Call, CallError, Dispatch, Envelope, Fault, Kind, Reply, RuntimeError, WireFormat,\n\
              };\n",
         );
+    } else if has_protocol {
+        output.push_str(
+            "use comline_runtime::contract::{Call, CallError, Envelope, Fault, Kind, RuntimeError, WireFormat};\n",
+        );
     }
-    if has_connection {
+    if has_blocking_connection {
         output.push_str(
             "use comline_runtime::contract::{ConnectionFraming, Peer, ProtocolNumber};\n",
         );
+    } else if has_async {
+        output.push_str("use comline_runtime::contract::{ConnectionFraming, ProtocolNumber};\n");
     }
     if has_lockstep {
         output.push_str("use comline_runtime::serve::Server;\n");
     }
-    if has_protocol {
+    if blocking {
         output.push_str("use comline_runtime::transport::Transport;\n");
     }
     output.push('\n');
@@ -423,6 +463,7 @@ fn schema_source(
                     namespace,
                     model,
                     on_decode,
+                    async_api,
                 )?);
             }
             _ => {}
@@ -597,7 +638,7 @@ fn data_enum(name: &str, variants: &[FrozenUnit]) -> String {
 /// `comline-codegen`: what gets derived is a fact about *Rust* output, not
 /// about the schema. Keep it in step with the emitters below — a name added
 /// there and not here is a collision that still reaches the compiler.
-fn derived_names(units: &[FrozenUnit], default_framing: Option<&str>) -> Vec<Derived> {
+fn derived_names(units: &[FrozenUnit], default_framing: Option<&str>, async_api: bool) -> Vec<Derived> {
     let mut derived = Vec::new();
     let mut any_protocol = false;
     let mut any_connection = false;
@@ -620,13 +661,15 @@ fn derived_names(units: &[FrozenUnit], default_framing: Option<&str>) -> Vec<Der
             format!("{proto}Error"),
             format!("protocol `{proto}`'s error union"),
         ));
+        // An async protocol's dispatcher and sender say so in their names.
+        let flavour = if connection && async_api { "Async" } else { "" };
         derived.push(Derived::new(
-            format!("{proto}Dispatcher"),
+            format!("{proto}{flavour}Dispatcher"),
             format!("protocol `{proto}`'s dispatcher"),
         ));
         if connection {
             derived.push(Derived::new(
-                format!("{proto}Sender"),
+                format!("{proto}{flavour}Sender"),
                 format!("protocol `{proto}`'s sender"),
             ));
         } else {
@@ -844,11 +887,16 @@ fn protocol(
     namespace: &str,
     model: &Validation,
     on_decode: ValidateOnDecode,
+    async_api: bool,
 ) -> Result<String> {
     let framing = framing_choice(parameters, default_framing);
     // On a connection: handlers take the peer, the dispatcher is provided
     // on a `Connection`, and a sender calls through any `Peer`.
     let connection = connections::on_connection(parameters, default_framing);
+    // `async`: an async trait, an `AsyncDispatcher` provided on an
+    // `AsyncConnection`, and an `AsyncSender` calling through any
+    // `AsyncPeer`. Only a connection protocol has an async form.
+    let asynchronous = connection && async_api;
     if connection && framing.explicit {
         return Err(eyre::eyre!(
             "protocol `{proto}`: JSON-RPC on a connection isn't supported yet - use \
@@ -950,13 +998,35 @@ fn protocol(
     // The trait is the one place the bare name is an identifier; every
     // other item prefixes it (`{proto}Dispatcher`), which no keyword is.
     let proto_trait = ident(proto);
-    s.push_str(&format!("pub trait {proto_trait} {{\n"));
+    if asynchronous {
+        // Its handlers run inside the connection's future, which any
+        // executor may move between threads.
+        s.push_str(&format!("pub trait {proto_trait}: Send + Sync + 'static {{\n"));
+    } else {
+        s.push_str(&format!("pub trait {proto_trait} {{\n"));
+    }
     // On a connection, every handler is given the peer that called it, to
     // call it back.
-    let peer_arg = if connection { ", peer: &mut impl Peer" } else { "" };
+    let peer_arg = match (connection, asynchronous) {
+        (true, true) => ", peer: &impl AsyncPeer",
+        (true, false) => ", peer: &mut impl Peer",
+        _ => "",
+    };
     for f in &fns {
         let args = format!("{peer_arg}{}", sig_args(&f.args));
-        if f.one_way {
+        if asynchronous {
+            // Written out rather than `async fn` so the future is `Send`;
+            // an implementation can still be an `async fn`.
+            let output = if f.one_way {
+                "()".to_string()
+            } else {
+                format!("Result<{}, Fault<{}>>", f.ret, f.err_ty)
+            };
+            s.push_str(&format!(
+                "    fn {}(&self{args}) -> impl ::core::future::Future<Output = {output}> + Send;\n",
+                f.ident
+            ));
+        } else if f.one_way {
             s.push_str(&format!("    fn {}(&self{args});\n", f.ident));
         } else {
             // `Fault<E>` rather than a bare `E`: an implementation can fail
@@ -984,7 +1054,13 @@ fn protocol(
     let no_handshake = annotation(parameters, "handshake").as_deref() == Some(HANDSHAKE_NONE);
     let unverified_doc = unverified_doc(parameters);
 
-    // 4. dispatcher — implements the runtime `Dispatch` trait
+    // 4. dispatcher — implements the runtime `Dispatch` trait, or for an
+    //    async protocol, `AsyncDispatch`
+    if asynchronous {
+        s.push_str(&async_dispatcher(proto, &proto_trait, &fns, &param_members, &calls_const, number, no_handshake, &unverified_doc, on_decode));
+        s.push_str(&async_sender(proto, &fns, number, &unverified_doc));
+        return Ok(s);
+    }
     let mut l: Vec<String> = Vec::new();
     l.extend(unverified_doc.iter().cloned());
     l.push(format!("pub struct {proto}Dispatcher<S>(pub S);"));
@@ -1025,7 +1101,7 @@ fn protocol(
         l.push(format!("        {reply_param}: &mut Reply,"));
         l.push("        peer: &mut P,".into());
         l.push("    ) -> Result<(), RuntimeError> {".into());
-        l.extend(dispatch_arms(&fns, &param_members, &calls_const, "peer.format()", "peer", on_decode));
+        l.extend(dispatch_arms(&fns, &param_members, &calls_const, "peer.format()", "peer", on_decode, false));
     } else {
         l.push("    fn dispatch<W: WireFormat>(".into());
         l.push("        &self,".into());
@@ -1034,7 +1110,7 @@ fn protocol(
         l.push("        fmt: &W,".into());
         l.push(format!("        {reply_param}: &mut Reply,"));
         l.push("    ) -> Result<(), RuntimeError> {".into());
-        l.extend(dispatch_arms(&fns, &param_members, &calls_const, "fmt", "", on_decode));
+        l.extend(dispatch_arms(&fns, &param_members, &calls_const, "fmt", "", on_decode, false));
     }
     l.push("    }".into());
     l.push("}".into());
@@ -1225,10 +1301,134 @@ fn protocol(
     Ok(s)
 }
 
+/// An async protocol's dispatcher: `<Proto>AsyncDispatcher`, implementing
+/// the runtime's `AsyncDispatch`, provided on an `AsyncConnection`.
+#[allow(clippy::too_many_arguments)]
+fn async_dispatcher(
+    proto: &str,
+    proto_trait: &str,
+    fns: &[FnInfo],
+    param_members: &[Vec<Member>],
+    calls_const: &str,
+    number: u16,
+    no_handshake: bool,
+    unverified_doc: &[String],
+    on_decode: ValidateOnDecode,
+) -> String {
+    let mut l: Vec<String> = unverified_doc.to_vec();
+    l.push(format!("pub struct {proto}AsyncDispatcher<S>(pub S);"));
+    l.push(String::new());
+    l.push(format!("impl<S: {proto_trait}> AsyncDispatch for {proto}AsyncDispatcher<S> {{"));
+    l.push("    fn calls(&self) -> &'static [&'static str] {".into());
+    l.push(format!("        {calls_const}"));
+    l.push("    }".into());
+    l.push(String::new());
+    l.push("    async fn dispatch<'a, P: AsyncPeer>(".into());
+    l.push("        &'a self,".into());
+    l.push("        call: Kind,".into());
+    l.push("        params: &'a [u8],".into());
+    l.push("        peer: &'a P,".into());
+    l.push("    ) -> Result<Answer, RuntimeError> {".into());
+    l.extend(dispatch_arms(fns, param_members, calls_const, "peer.format()", "peer", on_decode, true));
+    l.push("    }".into());
+    l.push("}".into());
+    l.push(String::new());
+    l.push(format!("impl<S: {proto_trait}> {proto}AsyncDispatcher<S> {{"));
+    l.push("    /// This protocol's number on a connection.".into());
+    l.push(format!("    pub const PROTOCOL: ProtocolNumber = {number};"));
+    l.push(String::new());
+    l.push("    /// Provide this protocol on `conn`: the peer's calls to it come here.".into());
+    if no_handshake {
+        l.push("    /// Open `conn` with `AsyncConnection::new_unverified` (`@handshake = \"none\"`).".into());
+    } else {
+        l.push("    /// Open `conn` with `AsyncConnection::accept(transport, format, CONNECTION_IR_HASH)`.".into());
+    }
+    l.push("    pub fn provide_on<T, W, F>(self, conn: &mut AsyncConnection<T, W, F>)".into());
+    l.push("    where".into());
+    l.push("        T: AsyncTransport,".into());
+    l.push("        W: WireFormat + Send + Sync + 'static,".into());
+    l.push("        F: ConnectionFraming + Send + Sync + 'static,".into());
+    l.push("    {".into());
+    l.push("        conn.provide(Self::PROTOCOL, self)".into());
+    l.push("    }".into());
+    l.push("}".into());
+    l.push(String::new());
+    l.push(String::new());
+    l.join("\n")
+}
+
+/// An async protocol's sender: `<Proto>AsyncSender`, calling through any
+/// `AsyncPeer` - an `AsyncConnection`'s handle, or the peer a handler was
+/// given.
+fn async_sender(proto: &str, fns: &[FnInfo], number: u16, unverified_doc: &[String]) -> String {
+    let mut l: Vec<String> = unverified_doc.to_vec();
+    l.push(format!("/// Calls protocol `{proto}` on the other end of a connection: the peer an"));
+    l.push("/// `AsyncConnection`'s handle reaches, or the one a handler was given.".into());
+    l.push(format!("pub struct {proto}AsyncSender<'p, P: AsyncPeer>(pub &'p P);"));
+    l.push(String::new());
+    l.push(format!("impl<'p, P: AsyncPeer> {proto}AsyncSender<'p, P> {{"));
+    l.push("    /// This protocol's number on a connection.".into());
+    l.push(format!("    pub const PROTOCOL: ProtocolNumber = {number};"));
+    l.push(String::new());
+    l.push("    pub fn new(peer: &'p P) -> Self {".into());
+    l.push("        Self(peer)".into());
+    l.push("    }".into());
+    for (i, f) in fns.iter().enumerate() {
+        let args = sig_args(&f.args);
+        let param_expr = match &f.params_ty {
+            Some(ty) => {
+                let init = f.args.iter().map(|a| a.ident.clone()).collect::<Vec<_>>().join(", ");
+                format!("&{ty} {{ {init} }}")
+            }
+            None => "&()".to_string(),
+        };
+        let addr = format!("Call::new({i}, \"{}\")", f.name);
+        l.push(String::new());
+        if f.one_way {
+            // Sent when called: nothing to await.
+            l.push(format!("    pub fn {}(&self{args}) -> Result<(), RuntimeError> {{", f.ident));
+            l.push(format!("        self.0.notify(Self::PROTOCOL, {addr}, {param_expr})"));
+            l.push("    }".into());
+            continue;
+        }
+        l.push(format!(
+            "    pub async fn {}(&self{args}) -> Result<{}, CallError<{}>> {{",
+            f.ident, f.ret, f.err_ty
+        ));
+        let call = match f.timeout_ms {
+            Some(ms) => format!(
+                "self.0.call_with_timeout(Self::PROTOCOL, {addr}, {param_expr}, core::time::Duration::from_millis({ms}))"
+            ),
+            None => format!("self.0.call(Self::PROTOCOL, {addr}, {param_expr})"),
+        };
+        l.push(format!("        let reply = {call}.await?;"));
+        l.push("        let fmt = self.0.format();".into());
+        l.push("        match reply.envelope() {".into());
+        l.push("            Envelope::Ok(payload) => fmt.decode(payload).map_err(CallError::Runtime),".into());
+        for (ord, err) in &f.throws {
+            l.push(format!("            Envelope::Err {{ id: {ord}u16, body }} => {{"));
+            l.push(format!("                let e: {err} = fmt.decode(body)?;"));
+            l.push(format!("                Err(CallError::App({}::{err}(e)))", f.err_ty));
+            l.push("            }".into());
+        }
+        l.push("            Envelope::Err { id, .. } => Err(CallError::Runtime(RuntimeError::Remote { id })),".into());
+        l.push("            Envelope::Fault => Err(CallError::Runtime(RuntimeError::Provider)),".into());
+        l.push("        }".into());
+        l.push("    }".into());
+    }
+    l.push("}".into());
+    l.push(String::new());
+    l.push(String::new());
+    l.join("\n")
+}
+
 /// The body of a dispatcher's `match` on the call: decode the params with
 /// `fmt` (an expression: `fmt`, or `peer.format()` on a connection), run the
 /// handler (given `peer` first when `peer` names it), and record the
 /// outcome. Ends with the `match`'s closing brace.
+///
+/// `asynchronous`: the handler is awaited, and the outcome is the arm's
+/// `Answer` rather than written into `reply`.
 fn dispatch_arms(
     fns: &[FnInfo],
     param_members: &[Vec<Member>],
@@ -1236,6 +1436,7 @@ fn dispatch_arms(
     fmt: &str,
     peer: &str,
     on_decode: ValidateOnDecode,
+    asynchronous: bool,
 ) -> Vec<String> {
     let mut l: Vec<String> = Vec::new();
     l.push(format!(
@@ -1249,15 +1450,16 @@ fn dispatch_arms(
         // and it stops here. Doing this in the dispatcher rather than
         // leaving it to `Server` is what makes the call's arity count: the
         // server cannot see it.
-        let on_undecodable: Vec<String> = if f.one_way {
-            vec!["                    Err(_) => return Ok(()),".into()]
-        } else {
-            vec![
+        let on_undecodable: Vec<String> = match (f.one_way, asynchronous) {
+            (true, false) => vec!["                    Err(_) => return Ok(()),".into()],
+            (true, true) => vec!["                    Err(_) => return Ok(Answer::none()),".into()],
+            (false, false) => vec![
                 "                    Err(_) => {".into(),
                 "                        reply.fault();".into(),
                 "                        return Ok(());".into(),
                 "                    }".into(),
-            ]
+            ],
+            (false, true) => vec!["                    Err(_) => return Ok(Answer::fault()),".into()],
         };
         let call_args = match &f.params_ty {
             Some(ty) => {
@@ -1269,10 +1471,11 @@ fn dispatch_arms(
                 l.push("                };".into());
                 // Params that decode but fail their checks stop the same way.
                 if on_decode != ValidateOnDecode::Off && validate::any_checks(&param_members[i]) {
-                    let stop: &[&str] = if f.one_way {
-                        &["return Ok(());"]
-                    } else {
-                        &["reply.fault();", "return Ok(());"]
+                    let stop: &[&str] = match (f.one_way, asynchronous) {
+                        (true, false) => &["return Ok(());"],
+                        (true, true) => &["return Ok(Answer::none());"],
+                        (false, false) => &["reply.fault();", "return Ok(());"],
+                        (false, true) => &["return Ok(Answer::fault());"],
                     };
                     l.extend(validate::params_check(stop));
                 }
@@ -1295,7 +1498,34 @@ fn dispatch_arms(
             (false, true) => peer.to_string(),
             (false, false) => format!("{peer}, {call_args}"),
         };
-        let call = format!("self.0.{}({call_args})", f.ident);
+        let call = format!("self.0.{}({call_args}){}", f.ident, if asynchronous { ".await" } else { "" });
+        if asynchronous {
+            if f.one_way {
+                l.push(format!("                {call};"));
+                l.push("                Ok(Answer::none())".into());
+            } else {
+                l.push(format!("                match {call} {{"));
+                l.push("                    Ok(value) => {".into());
+                l.push("                        let mut body = Vec::new();".into());
+                l.push(format!("                        {fmt}.encode(&value, &mut body)?;"));
+                l.push("                        Ok(Answer::ok(body))".into());
+                l.push("                    }".into());
+                for (ord, err) in &f.throws {
+                    l.push(format!("                    Err(Fault::App({}::{err}(e))) => {{", f.err_ty));
+                    l.push("                        let mut body = Vec::new();".into());
+                    l.push(format!("                        {fmt}.encode(&e, &mut body)?;"));
+                    l.push(format!("                        Ok(Answer::err({ord}u16, body))"));
+                    l.push("                    }".into());
+                }
+                if f.throws.is_empty() {
+                    l.push("                    Err(Fault::App(never)) => match never {},".into());
+                }
+                l.push("                    Err(Fault::Internal) => Ok(Answer::fault()),".into());
+                l.push("                }".into());
+            }
+            l.push("            }".into());
+            continue;
+        }
         if f.one_way {
             // Run the handler; record nothing — the `Server` sees `Outcome::None`
             // and replies with nothing.
