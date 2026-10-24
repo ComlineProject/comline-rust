@@ -333,6 +333,7 @@ fn build_generated_crate(
         default_framing,
         external_std,
         validate_on_decode: Default::default(),
+        async_api: false,
     };
     check_generated_crate(label, &req, None);
 }
@@ -383,6 +384,10 @@ fn check_generated_crate(label: &str, req: &GenRequest, behaviour: Option<&str>)
         let manifest = dir.join("Cargo.toml");
         let mut contents = fs::read_to_string(&manifest).unwrap();
         contents.push_str("\n[dev-dependencies]\nserde_json = \"1\"\n");
+        // An async behaviour needs an executor to run the connections on.
+        if req.async_api {
+            contents.push_str("tokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\"] }\n");
+        }
         fs::write(&manifest, contents).unwrap();
     }
 
@@ -562,6 +567,7 @@ fn generated_validators_run() {
         default_framing: None,
         external_std: false,
         validate_on_decode: ValidateOnDecode::Collect,
+        async_api: false,
     };
     check_generated_crate("validators", &req, Some(VALIDATED_BEHAVIOUR));
 }
@@ -678,6 +684,7 @@ fn generated_connection_protocols_call_both_ways() {
         default_framing: None,
         external_std: false,
         validate_on_decode: Default::default(),
+        async_api: false,
     };
     let files = generate_rust(&req).unwrap();
     let link = &files.iter().find(|f| f.path.ends_with("link.rs")).unwrap().contents;
@@ -760,6 +767,118 @@ fn a_handler_calls_back_and_the_server_calls_on_its_own() {
     conn.serve().unwrap();
     server.join().unwrap();
     assert_eq!(*seen.borrow(), ["hi", "again", "pushed", "ping"]);
+}
+"##;
+
+/// The same two protocols with `async`: async handlers on an
+/// `AsyncConnection`, a handler awaiting a call back to its peer, and the
+/// accepting side calling the dialling side from its own task.
+#[test]
+fn generated_async_connection_protocols_call_both_ways() {
+    use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
+    use comline_core::schema::ir::compiler::Compile;
+
+    let schemas = vec![("link".to_string(), IncrementalInterpreter::from_source(CONNECTED))];
+    let req = GenRequest {
+        mode: Mode::Lib,
+        schemas: &schemas,
+        package: PackageMeta {
+            name: "comline-codegen-rust-compiletest".into(),
+            version: "0.0.0".into(),
+        },
+        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        default_framing: None,
+        external_std: false,
+        validate_on_decode: Default::default(),
+        async_api: true,
+    };
+    let files = generate_rust(&req).unwrap();
+    let manifest = &files.iter().find(|f| f.path.ends_with("Cargo.toml")).unwrap().contents;
+    assert!(manifest.contains("features = [\"async\"]"), "{manifest}");
+    check_generated_crate("async-connections", &req, Some(ASYNC_CONNECTED_BEHAVIOUR));
+}
+
+const ASYNC_CONNECTED_BEHAVIOUR: &str = r##"
+use std::sync::{Arc, Mutex};
+
+use comline_codegen_rust_compiletest::link::*;
+use comline_runtime::async_connection::{async_duplex, AsyncConnection, AsyncPeer};
+use comline_runtime::contract::Fault;
+use comline_runtime::format::Json;
+
+struct Sent(u64);
+
+struct ChatImpl;
+
+impl Chat for ChatImpl {
+    async fn send(&self, peer: &impl AsyncPeer, text: &str) -> Result<u64, Fault<ChatSendError>> {
+        // A call back to the peer that called, awaited inside the handler.
+        let shown = EventsAsyncSender::new(peer).message(text).await.map_err(|_| Fault::Internal)?;
+        assert!(shown);
+        let mut extensions = peer.extensions();
+        let sent = match extensions.get_mut::<Sent>() {
+            Some(sent) => {
+                sent.0 += 1;
+                sent.0
+            }
+            None => {
+                extensions.insert(Sent(1));
+                1
+            }
+        };
+        Ok(sent)
+    }
+
+    async fn count(&self, peer: &impl AsyncPeer) -> Result<u64, Fault<ChatCountError>> {
+        Ok(peer.extensions().get::<Sent>().map_or(0, |s| s.0))
+    }
+}
+
+struct EventsImpl(Arc<Mutex<Vec<String>>>);
+
+impl Events for EventsImpl {
+    async fn message(&self, _peer: &impl AsyncPeer, text: &str) -> Result<bool, Fault<EventsMessageError>> {
+        self.0.lock().unwrap().push(text.to_string());
+        Ok(true)
+    }
+
+    async fn ping(&self, _peer: &impl AsyncPeer) {
+        self.0.lock().unwrap().push("ping".to_string());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn async_handlers_call_back_and_the_server_calls_on_its_own() {
+    let (dialler, acceptor) = async_duplex();
+    let (client, server) = tokio::join!(
+        AsyncConnection::connect(dialler, Json, CONNECTION_IR_HASH),
+        AsyncConnection::accept(acceptor, Json, CONNECTION_IR_HASH),
+    );
+    let (mut client, mut server) = (client.unwrap(), server.unwrap());
+    ChatAsyncDispatcher(ChatImpl).provide_on(&mut server);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    EventsAsyncDispatcher(EventsImpl(seen.clone())).provide_on(&mut client);
+
+    let (to_server, to_client) = (client.handle(), server.handle());
+    let client = tokio::spawn(client.run());
+    let server = tokio::spawn(server.run());
+
+    let chat = ChatAsyncSender::new(&to_server);
+    assert_eq!(chat.send("hi").await.unwrap(), 1);
+    assert_eq!(chat.send("again").await.unwrap(), 2);
+    assert_eq!(chat.count().await.unwrap(), 2);
+
+    // The accepting side calls the dialling side on its own.
+    let events = EventsAsyncSender::new(&to_client);
+    assert!(events.message("pushed").await.unwrap());
+    events.ping().unwrap();
+    // Handled in order: once this is answered, the one-way `ping` was too.
+    assert!(events.message("last").await.unwrap());
+    assert_eq!(*seen.lock().unwrap(), ["hi", "again", "pushed", "ping", "last"]);
+
+    to_client.close();
+    server.await.unwrap().unwrap();
+    client.await.unwrap().unwrap();
 }
 "##;
 
@@ -862,6 +981,7 @@ fn keyword_names_build_and_keep_their_wire_names() {
         default_framing: None,
         external_std: false,
         validate_on_decode: Default::default(),
+        async_api: false,
     };
     check_generated_crate("keywords", &req, Some(KEYWORDS_BEHAVIOUR));
 }

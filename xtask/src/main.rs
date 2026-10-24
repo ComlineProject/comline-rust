@@ -70,6 +70,7 @@ fn main() -> eyre::Result<()> {
         // std, not to std's own generation.
         external_std: false,
         validate_on_decode: Default::default(),
+        async_api: false,
     };
 
     let files = generate_rust(&req)?;

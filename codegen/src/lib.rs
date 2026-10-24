@@ -77,6 +77,7 @@ pub const SUPPORT: SupportTable = &[
         Support::partial("over `datagram@2`; JSON-RPC on a connection isn't supported yet")
             .tracked("runtime#19"),
     ),
+    (Feature::Async, Support::supported()),
 ];
 
 /// Contribute the Rust generator to a CLI's [`Registry`](comline_codegen::Registry).
