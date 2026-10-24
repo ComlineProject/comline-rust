@@ -1111,7 +1111,8 @@ fn async_services_serve_every_protocol_on_one_connection() {
 }
 
 const ASYNC_SERVICES_BEHAVIOUR: &str = r##"
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use comline_codegen_rust_compiletest::game::*;
 use comline_codegen_rust_compiletest::items::*;
@@ -1142,10 +1143,10 @@ impl Inventory for InventoryImpl {
     }
 }
 
-struct EventsImpl(Arc<Mutex<Vec<u8>>>);
+struct EventsImpl(mpsc::Sender<u8>);
 impl Events for EventsImpl {
     async fn changed(&self, _peer: &impl AsyncPeer, count: u8) {
-        self.0.lock().unwrap().push(count);
+        self.0.send(count).unwrap();
     }
 }
 
@@ -1154,17 +1155,18 @@ async fn one_connection_carries_every_protocol() {
     let (dialler, acceptor) = async_duplex();
     let server = tokio::spawn(serve(acceptor, Services { account: AccountImpl, player: PlayerImpl, inventory: InventoryImpl }));
 
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let client = connect(dialler, ClientServices { events: EventsImpl(seen.clone()) }).await.unwrap();
+    let (seen, changes) = mpsc::channel();
+    let client = connect(dialler, ClientServices { events: EventsImpl(seen) }).await.unwrap();
     let to_server = client.handle();
     let client = tokio::spawn(client.run());
 
     assert_eq!(AccountAsyncSender::new(&to_server).login("ana").await.unwrap(), 3);
     assert_eq!(PlayerAsyncSender::new(&to_server).level(3).await.unwrap(), 30);
     assert_eq!(InventoryAsyncSender::new(&to_server).count(4).await.unwrap(), 5);
-    // The one-way `changed` was sent before `count` answered, on the same
-    // connection, so it's been handled by now.
-    assert_eq!(*seen.lock().unwrap(), [5]);
+    // The one-way `changed` arrived before `count`'s reply, but its handler
+    // runs as a task of its own, so it may not have finished yet.
+    let changed = tokio::task::spawn_blocking(move || changes.recv_timeout(Duration::from_secs(5)));
+    assert_eq!(changed.await.unwrap(), Ok(5));
 
     to_server.close();
     client.await.unwrap().unwrap();
