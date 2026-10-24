@@ -46,7 +46,7 @@ pub const STD_REV: &str = "3c6df80fa2b47760fc8932d6035b22193bbc35f1";
 pub fn generate_rust(req: &GenRequest) -> Result<Vec<GeneratedFile>> {
     // What this generator can't render at all is refused up front, every use
     // named, before a single file is produced.
-    comline_codegen::features::refuse_unsupported("Rust", req, crate::SUPPORT)?;
+    comline_codegen::features::refuse_unsupported("rust", req, crate::SUPPORT)?;
 
     let default_framing = req.default_framing.as_deref();
     // A name `framing_for` doesn't know would fall through to datagram below,
