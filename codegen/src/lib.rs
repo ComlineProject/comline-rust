@@ -72,11 +72,7 @@ pub const SUPPORT: SupportTable = &[
     (Feature::ValidateOnDecode, Support::supported()),
     (Feature::FramingJsonRpc, Support::supported()),
     (Feature::HandshakeNone, Support::supported()),
-    (
-        Feature::Connections,
-        Support::partial("over `datagram@2`; JSON-RPC on a connection isn't supported yet")
-            .tracked("runtime#19"),
-    ),
+    (Feature::Connections, Support::supported()),
     (Feature::Async, Support::supported()),
 ];
 

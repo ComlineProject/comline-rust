@@ -1496,14 +1496,26 @@ fn an_async_protocols_names_are_checked_for_collisions() {
 }
 
 #[test]
-fn jsonrpc_on_a_connection_is_refused_for_now() {
+fn jsonrpc_on_a_connection_gets_the_connection_api() {
     let mut units = one_plain_protocol("Rpc");
     let FrozenUnit::Protocol { parameters, .. } = units.iter_mut().find(|u| matches!(u, FrozenUnit::Protocol { .. })).unwrap() else {
         unreachable!()
     };
     parameters.push(FrozenUnit::Property { name: "provider".into(), value: ConfigValue::Name("Client".into()) });
-    parameters.push(FrozenUnit::Property { name: "framing".into(), value: ConfigValue::Str("jsonrpc".into()) });
+    parameters.push(FrozenUnit::Property {
+        name: "framing".into(),
+        value: ConfigValue::Dict(vec![
+            ("name".into(), ConfigValue::Str("jsonrpc".into())),
+            ("method_names".into(), ConfigValue::Name("qualified".into())),
+        ]),
+    });
     let schemas = vec![("rpc".to_string(), units)];
-    let error = generate_rust(&code_req(&schemas)).unwrap_err().to_string();
-    assert!(error.contains("JSON-RPC on a connection isn't supported yet"), "{error}");
+    let out = generate_rust(&code_req(&schemas)).unwrap();
+    let rpc = &out.iter().find(|f| f.path.ends_with("rpc.rs")).unwrap().contents;
+    assert!(rpc.contains("pub fn provide_on<"), "{rpc}");
+    assert!(!rpc.contains("RpcClient"), "a connection protocol gets a sender, not a client");
+    assert!(rpc.contains(
+        "`Connection::accept_with(transport, format, comline_runtime::framing::JsonRpcFraming, &mut ComlineHandshake, CONNECTION_IR_HASH)`"
+    ), "{rpc}");
+    assert!(rpc.contains("\"rpc.Rpc/"), "qualified method names: {rpc}");
 }
