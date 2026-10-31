@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
 use comline_core::schema::ir::frozen::schema_ir_hash;
-use comline_core::schema::idl::annotations::{FORMAT_JSON, FRAMING_JSONRPC, HANDSHAKE_NONE};
+use comline_core::schema::idl::annotations::{DEFAULT_HANDSHAKE, FORMAT_JSON, FRAMING_JSONRPC, HANDSHAKE_NONE};
 use comline_core::schema::ir::frozen::unit::{FrozenArgument, FrozenUnit};
 use comline_core::schema::ir::unverified;
 
@@ -811,6 +811,11 @@ fn package_module(req: &GenerateRequest, schemas: &[(String, Vec<FrozenUnit>)], 
     let fmt = if jsonrpc { type_of(encodings, FORMAT_JSON) } else { "Format" };
     let jsonrpc_framing = if jsonrpc { type_of(encodings, FRAMING_JSONRPC) } else { "" };
     let comline_handshake = if jsonrpc && !unverified { type_of(encodings, &package.handshake) } else { "" };
+    // A handshake that's neither `comline@1` nor `none` runs through
+    // `accept_with` / `connect_with` whatever the framing is; those two keep
+    // the constructors they always had.
+    let custom = (package.handshake != DEFAULT_HANDSHAKE && !unverified).then(|| type_of(encodings, &package.handshake));
+    let framing_ty = type_of(encodings, &package.framing);
     let (conn, transport_bound, dispatcher, bound, (awaited, fn_kw)) = if asynchronous {
         ("comline_runtime::async_connection::AsyncConnection", "comline_runtime::async_connection::AsyncTransport", "AsyncDispatcher", "", (".await", "async fn"))
     } else {
@@ -820,6 +825,12 @@ fn package_module(req: &GenerateRequest, schemas: &[(String, Vec<FrozenUnit>)], 
     let open = |side: &str| -> String {
         let value = format!("{fmt}::default()");
         match (jsonrpc, unverified, asynchronous) {
+            // An async connection has no custom handshake path: `protocol`
+            // refuses one before this is reached.
+            (false, false, false) if custom.is_some() => format!(
+                "{conn}::{side}_with(transport, {value}, {framing_ty}, &mut {}, CONNECTION_IR_HASH)?",
+                custom.unwrap_or_default()
+            ),
             (false, false, _) => format!("{conn}::{side}(transport, {value}, CONNECTION_IR_HASH){awaited}?"),
             (false, true, _) => format!("{conn}::new_unverified(transport, {value})"),
             (true, false, false) => format!(
@@ -1071,6 +1082,15 @@ fn no_handshake_of(parameters: &[FrozenUnit]) -> bool {
     annotation(parameters, "handshake").as_deref() == Some(HANDSHAKE_NONE)
 }
 
+/// The type of a protocol's handshake when it's neither `comline@1` nor
+/// `none`: a namespaced one, as mapped. Those two keep their own paths (the
+/// runtime's `comline@1` constructors, and `NoHandshake`), so what's
+/// generated for them doesn't change.
+fn custom_handshake<'a>(parameters: &[FrozenUnit], encodings: &'a Encodings) -> Option<&'a str> {
+    let name = connections::handshake_name(parameters);
+    (name != DEFAULT_HANDSHAKE && name != HANDSHAKE_NONE).then(|| type_of(encodings, &name))
+}
+
 fn framing_choice(parameters: &[FrozenUnit], encodings: &Encodings) -> FramingChoice {
     framing_for(&connections::framing_name(parameters), encodings)
 }
@@ -1113,10 +1133,23 @@ fn protocol(
     // `AsyncConnection`, and an `AsyncSender` calling through any
     // `AsyncPeer`. Only a connection protocol has an async form.
     let asynchronous = connection && async_api;
+    let custom = custom_handshake(parameters, encodings);
+    if let (true, Some(_)) = (asynchronous, custom) {
+        eyre::bail!(
+            "protocol `{namespace}::{proto}` runs the `{}` handshake, which an async connection can't run \
+             yet: `AsyncConnection` only runs `comline@1` and `none` - generate it without `async`",
+            connections::handshake_name(parameters)
+        );
+    }
     // How the dispatcher's doc says to open the connection it's provided on:
     // the side that provides it accepts, or for a client-provided protocol,
     // dials.
     let open = match (framing.explicit, no_handshake_of(parameters), asynchronous) {
+        (_, false, false) if custom.is_some() => format!(
+            "`Connection::accept_with(transport, format, {}, &mut {}, CONNECTION_IR_HASH)`",
+            framing.ty,
+            custom.unwrap_or_default()
+        ),
         (_, true, false) => "`Connection::accept_with` and `NoHandshake` (`@handshake = \"none\"`)".to_string(),
         (_, true, true) => "`AsyncConnection::new_unverified` (`@handshake = \"none\"`)".to_string(),
         (false, false, false) => "`Connection::accept(transport, format, CONNECTION_IR_HASH)`".to_string(),
@@ -1373,6 +1406,9 @@ fn protocol(
         if no_handshake {
             l.push("    /// Serve this protocol over `transport`. No handshake runs".into());
             l.push("    /// (`@handshake = \"none\"`): nothing checks the peer's schema or encoding.".into());
+        } else if let Some(handshake) = custom {
+            l.push("    /// Serve this protocol over `transport`, running its handshake".into());
+            l.push(format!("    /// (`{}`) against the peer first.", handshake.rsplit("::").next().unwrap_or(handshake)));
         } else {
             l.push("    /// Serve this protocol over `transport`, running the connection".into());
             l.push("    /// handshake (`IR_HASH` + `format`'s and the framing's names) against".into());
@@ -1395,8 +1431,8 @@ fn protocol(
         } else {
             "Server::new(self, format)"
         };
-        if no_handshake {
-            l.push(format!("        {server}.serve_with(transport, &mut {NO_HANDSHAKE}, IR_HASH)"));
+        if let Some(handshake) = no_handshake.then_some(NO_HANDSHAKE).or(custom) {
+            l.push(format!("        {server}.serve_with(transport, &mut {handshake}, IR_HASH)"));
         } else {
             l.push(format!("        {server}.serve(transport, IR_HASH)"));
         }
@@ -1448,7 +1484,7 @@ fn protocol(
         }
         l.push("    /// [`connect`](Self::connect), encoding with `format`.".into());
         l.push("    pub fn connect_with_format(transport: T, format: W) -> Result<Self, RuntimeError> {".into());
-        if no_handshake {
+        if let Some(handshake) = no_handshake.then_some(NO_HANDSHAKE).or(custom) {
             let framing_expr = if framing.explicit {
                 l.push(format!("        let framing = {};", framing.ty));
                 "framing"
@@ -1456,7 +1492,7 @@ fn protocol(
                 framing.ty.as_str()
             };
             l.push(format!(
-                "        Ok(Self(Client::connect_with(transport, format, {framing_expr}, &mut {NO_HANDSHAKE}, IR_HASH)?))"
+                "        Ok(Self(Client::connect_with(transport, format, {framing_expr}, &mut {handshake}, IR_HASH)?))"
             ));
         } else if framing.explicit {
             l.push(format!("        let framing = {};", framing.ty));

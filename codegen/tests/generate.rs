@@ -500,6 +500,36 @@ fn a_third_party_framing_and_format_use_their_mapped_types() {
     assert_eq!(manifest.matches("acme-encodings = \"0.2\"\n").count(), 1, "{manifest}");
 }
 
+/// A connection protocol that runs `handshake`, a namespaced one.
+fn hello_protocol(handshake: &str) -> Vec<FrozenUnit> {
+    let mut units = one_plain_protocol("Link");
+    if let FrozenUnit::Protocol { parameters, .. } = &mut units[0] {
+        parameters.push(FrozenUnit::Property { name: "handshake".into(), value: ConfigValue::Str(handshake.into()) });
+    }
+    units
+}
+
+#[test]
+fn an_unmapped_handshake_is_an_error_not_a_fallback() {
+    let schemas = vec![("link".to_string(), hello_protocol("com.acme.hello@1"))];
+    let error = generate_rust(&code_req(&schemas)).unwrap_err().to_string();
+    assert!(error.starts_with("encoding `com.acme.hello@1` has no rust mapping in the request"), "{error}");
+}
+
+/// The async driver has no way to run anything but `comline@1` and `none`:
+/// refused, never quietly run as `comline@1`.
+#[test]
+fn a_third_party_handshake_on_an_async_connection_is_refused() {
+    let schemas = vec![("link".to_string(), hello_protocol("com.acme.hello@1"))];
+    let mut req = GenerateRequest { async_api: true, ..lib_req(&schemas) };
+    req.encodings.insert("com.acme.hello@1".into(), acme("acme_encodings::Hello"));
+    let error = generate_rust(&req).unwrap_err().to_string();
+    assert!(
+        error.starts_with("protocol `link::Link` runs the `com.acme.hello@1` handshake, which an async connection"),
+        "{error}"
+    );
+}
+
 #[test]
 fn official_mappings_add_no_dependency_of_their_own() {
     let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
