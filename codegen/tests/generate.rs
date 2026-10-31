@@ -1,37 +1,39 @@
-use comline_codegen::{GenRequest, Mode, PackageMeta};
+use comline_codegen::{GenerateRequest, Mode, PackageMeta, TargetLanguage};
 use comline_codegen_rust::generate_rust;
 use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
 use comline_core::schema::ir::frozen::unit::{ConfigValue, FrozenArgument, FrozenUnit};
 
-fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
-    GenRequest {
+fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenerateRequest {
+    GenerateRequest {
         mode: Mode::Code,
-        schemas,
+        schemas: schemas.to_vec(),
         package: PackageMeta {
             name: "test".into(),
             version: "0.1.0".into(),
         },
-        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
+        encodings: Default::default(),
     }
 }
 
-fn lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
-    GenRequest {
+fn lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenerateRequest {
+    GenerateRequest {
         mode: Mode::Lib,
-        schemas,
+        schemas: schemas.to_vec(),
         package: PackageMeta {
             name: "chat".into(),
             version: "0.3.0".into(),
         },
-        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
+        encodings: Default::default(),
     }
 }
 
@@ -448,7 +450,7 @@ fn one_plain_protocol(name: &str) -> Vec<FrozenUnit> {
 #[test]
 fn an_unknown_wire_format_is_an_error() {
     let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
-    let req = GenRequest { wire_format: "packed".into(), ..code_req(&schemas) };
+    let req = GenerateRequest { wire_format: "packed".into(), ..code_req(&schemas) };
     let error = generate_rust(&req).unwrap_err();
     assert_eq!(
         error.to_string(),
@@ -480,7 +482,7 @@ fn datagram1_keeps_the_lockstep_client_and_server() {
     assert!(src.contains("        Self::connect_with_format(transport, Format::default())\n"), "{src}");
     assert!(src.contains("Ok(Self(Client::connect(transport, format, IR_HASH)?))"));
 
-    let msgpack = GenRequest { wire_format: "msgpack@1".into(), ..code_req(&schemas) };
+    let msgpack = GenerateRequest { wire_format: "msgpack@1".into(), ..code_req(&schemas) };
     let src = generate_rust(&msgpack).unwrap().remove(0).contents;
     assert!(src.contains("pub type Format = comline_runtime::format::MsgPack;"), "{src}");
 }
@@ -627,7 +629,7 @@ fn lib_mode_rejects_a_namespace_thats_both_a_schema_and_a_parent() {
 /// `src/lib.rs` is the crate root this mode writes first; a schema of the
 /// same name was emitted straight over it, taking the whole `pub mod` tree
 /// with it and leaving a crate whose modules had all vanished. Core refuses
-/// the name when a package is compiled, but `GenRequest` is public, so a
+/// the name when a package is compiled, but `GenerateRequest` is public, so a
 /// caller building one by hand gets told rather than silently wrecked.
 #[test]
 fn lib_mode_rejects_a_schema_named_lib() {
@@ -643,7 +645,7 @@ fn lib_mode_rejects_a_schema_named_lib() {
 ///
 /// Core refuses this too - `reserved_in_namespace` checks *every* segment,
 /// so `lib/foo.ids` never reaches a generator from a real project. This is
-/// the same defence-in-depth as the `lib` case above: `GenRequest` is a
+/// the same defence-in-depth as the `lib` case above: `GenerateRequest` is a
 /// public contract, and a caller building one by hand gets told rather than
 /// silently wrecked. Checking a namespace's first segment rather than the
 /// whole of it is what closes it, for both targets at once.
@@ -659,8 +661,8 @@ fn lib_mode_rejects_a_schema_nested_under_lib() {
 #[test]
 fn lib_mode_records_the_declared_toolchain() {
     let schemas = vec![("chat".to_string(), vec![user_struct()])];
-    let req = GenRequest {
-        lang_version: "1.88.0".into(),
+    let req = GenerateRequest {
+        target: TargetLanguage { language: "rust".into(), version: "1.88.0".into() },
         ..lib_req(&schemas)
     };
     let files = generate_rust(&req).unwrap();
@@ -808,15 +810,15 @@ fn std_reference_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
     ]
 }
 
-fn external_std_code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
-    GenRequest {
+fn external_std_code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenerateRequest {
+    GenerateRequest {
         external_std: true,
         ..code_req(schemas)
     }
 }
 
-fn external_std_lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenRequest<'_> {
-    GenRequest {
+fn external_std_lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenerateRequest {
+    GenerateRequest {
         external_std: true,
         ..lib_req(schemas)
     }
@@ -1318,7 +1320,7 @@ fn a_checked_struct_implements_validate_and_decodes_unchanged_by_default() {
 #[test]
 fn validate_on_decode_first_decodes_through_validate_first() {
     let schemas = validated(NON_EMPTY);
-    let req = GenRequest {
+    let req = GenerateRequest {
         validate_on_decode: comline_codegen::validation::ValidateOnDecode::First,
         ..code_req(&schemas)
     };
@@ -1444,7 +1446,7 @@ fn a_protocol_is_on_a_connection_by_default() {
 #[test]
 fn async_makes_a_connection_protocol_async() {
     let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
-    let on_connection = GenRequest { async_api: true, ..code_req(&schemas) };
+    let on_connection = GenerateRequest { async_api: true, ..code_req(&schemas) };
     let src = generate_rust(&on_connection).unwrap().remove(0).contents;
     assert!(src.starts_with("// This file uses `comline_runtime`'s async driver - enable its feature"), "{src}");
     assert!(src.contains("pub trait Rpc: Send + Sync + 'static {"), "{src}");
@@ -1464,7 +1466,7 @@ fn async_makes_a_connection_protocol_async() {
         parameters.push(FrozenUnit::Property { name: "framing".into(), value: ConfigValue::Str("datagram".into()) });
     }
     let schemas = vec![("rpc".to_string(), units)];
-    let lockstep = GenRequest { async_api: true, ..code_req(&schemas) };
+    let lockstep = GenerateRequest { async_api: true, ..code_req(&schemas) };
     let src = generate_rust(&lockstep).unwrap().remove(0).contents;
     assert!(src.contains("pub struct RpcClient<T, W>"));
     assert!(!src.contains("Async"), "{src}");
@@ -1481,11 +1483,11 @@ fn an_async_protocols_names_are_checked_for_collisions() {
         span: (0, 0),
     });
     let schemas = vec![("rpc".to_string(), units)];
-    let req = GenRequest { async_api: true, ..code_req(&schemas) };
+    let req = GenerateRequest { async_api: true, ..code_req(&schemas) };
     let error = generate_rust(&req).unwrap_err().to_string();
     assert!(error.contains("RpcAsyncSender"), "{error}");
     // Without `async`, that name is free.
-    assert!(generate_rust(&GenRequest { async_api: false, ..req }).is_ok());
+    assert!(generate_rust(&GenerateRequest { async_api: false, ..req }).is_ok());
 }
 
 #[test]
