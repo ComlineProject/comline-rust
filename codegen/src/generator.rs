@@ -8,12 +8,12 @@
 //!   tree) + `src/<namespace>.rs`. See design/generation.md.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
 use comline_core::schema::ir::frozen::schema_ir_hash;
-use comline_core::schema::idl::annotations::{FRAMING_JSONRPC, HANDSHAKE_NONE};
+use comline_core::schema::idl::annotations::{FORMAT_JSON, FRAMING_JSONRPC, HANDSHAKE_NONE};
 use comline_core::schema::ir::frozen::unit::{FrozenArgument, FrozenUnit};
 use comline_core::schema::ir::unverified;
 
@@ -29,7 +29,13 @@ use comline_codegen::naming::{pascal, screaming_snake};
 use comline_codegen::stdlib::{self, is_std_namespace};
 use comline_codegen::symbols::{error_names, Origin, SymbolTable};
 use comline_codegen::validation::{ValidateOnDecode, Validation};
+use comline_codegen::encodings::type_of;
+use comline_codegen::protocol::EncodingMapping;
 use comline_codegen::{GenerateRequest, GeneratedFile, Mode, PackageMeta};
+
+/// The request's encodings: the type each encoding maps to in Rust, by
+/// canonical name.
+type Encodings = BTreeMap<String, EncodingMapping>;
 
 /// The module path of the runtime's async driver, which its `async` feature
 /// gates: a file that uses it needs the feature turned on.
@@ -52,14 +58,11 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
     // named, before a single file is produced.
     comline_codegen::features::refuse_unsupported("rust", req, crate::SUPPORT)?;
 
-    // The format arrives from the caller; one this generator has no type
-    // for would only surface as a refused handshake.
-    let format = format_type(&req.wire_format).ok_or_else(|| {
-        eyre::eyre!(
-            "unknown wire format `{}` - expected `packed@1`, `json@1` or `msgpack@1`",
-            req.wire_format
-        )
-    })?;
+    // Every encoding the package uses (its format, each protocol's framing
+    // and handshake) has to be mapped to a type: an unmapped one is refused
+    // here, before a file is produced, never rendered as something else.
+    comline_codegen::encodings::check(req)?;
+    let format = type_of(&req.encodings, &req.wire_format);
 
     // Only *emission* is narrowed by `external_std`; `&req.schemas` stays
     // the list every reference resolves against. `stdlib::split` carries
@@ -102,6 +105,7 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
             &model,
             req.validate_on_decode,
             req.async_api,
+            &req.encodings,
         )
         .map(|body| format!("{header}{body}"))
     };
@@ -187,6 +191,22 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
 
             let needs_big_array = schemas.iter().any(|(_, units)| uses_big_array(units));
 
+            // The package's `Services` and `serve`, at the crate root.
+            let module = package_module(req, schemas, format);
+            // Each mapped encoding's package the crate's code names a type
+            // of, unless it's a dependency already (`comline-runtime`, which
+            // the official encodings come from).
+            let referenced = |ty: &str| sources.values().chain(&module).any(|s| s.contains(ty));
+            let mut mapped: Vec<(&str, Option<&str>)> = Vec::new();
+            for name in comline_codegen::encodings::used(&req.schemas, &req.wire_format) {
+                let mapping = &req.encodings[&name];
+                if let Some(package) = &mapping.package {
+                    if referenced(&mapping.type_path) && !mapped.iter().any(|(p, _)| p == package) {
+                        mapped.push((package, mapping.version.as_deref()));
+                    }
+                }
+            }
+
             let mut files = vec![GeneratedFile {
                 path: PathBuf::from("Cargo.toml"),
                 contents: cargo_toml(
@@ -196,6 +216,7 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
                     needs_async,
                     std.needs_std_dependency,
                     needs_big_array,
+                    &mapped,
                 ),
             }];
             // The render closure takes every schema in the request, not just
@@ -204,8 +225,7 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
             files.extend(tree.emit("src", &RustLayout, &|namespace, _units| {
                 sources.get(namespace).cloned().unwrap_or_default()
             }));
-            // The package's `Services` and `serve` live at the crate root.
-            if let Some(module) = package_module(req, schemas, format) {
+            if let Some(module) = module {
                 let root = files
                     .iter_mut()
                     .find(|f| f.path == Path::new("src/lib.rs"))
@@ -287,6 +307,7 @@ fn cargo_toml(
     needs_async: bool,
     needs_std_dep: bool,
     needs_big_array: bool,
+    mapped: &[(&str, Option<&str>)],
 ) -> String {
     let mut deps = String::from("serde = { version = \"1\", features = [\"derive\"] }\n");
     if needs_big_array {
@@ -303,6 +324,14 @@ fn cargo_toml(
         deps.push_str(&format!(
             "comline_std = {{ git = \"{STD_GIT}\", rev = \"{STD_REV}\" }}\n"
         ));
+    }
+    // An encoding's implementation: a crate the mapping names, with the
+    // version it asks for (any, if it asks for none).
+    for (package, version) in mapped {
+        let already = deps.lines().any(|line| line.split_once(" = ").is_some_and(|(name, _)| name == *package));
+        if !already {
+            deps.push_str(&format!("{package} = \"{}\"\n", version.unwrap_or("*")));
+        }
     }
     format!(
         "# Generated by Comline\n\
@@ -333,6 +362,7 @@ fn schema_source(
     model: &Validation,
     on_decode: ValidateOnDecode,
     async_api: bool,
+    encodings: &Encodings,
 ) -> Result<String> {
     let has_protocol = units
         .iter()
@@ -489,6 +519,7 @@ fn schema_source(
                     model,
                     on_decode,
                     async_api,
+                    encodings,
                 )?);
             }
             _ => {}
@@ -776,8 +807,10 @@ fn package_module(req: &GenerateRequest, schemas: &[(String, Vec<FrozenUnit>)], 
     let jsonrpc = package.framing == FRAMING_JSONRPC;
     let unverified = package.handshake == HANDSHAKE_NONE;
     // JSON-RPC carries JSON whatever the package's format is.
-    let fmt = if jsonrpc { JSON_FORMAT } else { "Format" };
-    let jsonrpc_framing = "comline_runtime::framing::JsonRpcFraming";
+    let encodings = &req.encodings;
+    let fmt = if jsonrpc { type_of(encodings, FORMAT_JSON) } else { "Format" };
+    let jsonrpc_framing = if jsonrpc { type_of(encodings, FRAMING_JSONRPC) } else { "" };
+    let comline_handshake = if jsonrpc && !unverified { type_of(encodings, &package.handshake) } else { "" };
     let (conn, transport_bound, dispatcher, bound, (awaited, fn_kw)) = if asynchronous {
         ("comline_runtime::async_connection::AsyncConnection", "comline_runtime::async_connection::AsyncTransport", "AsyncDispatcher", "", (".await", "async fn"))
     } else {
@@ -790,7 +823,7 @@ fn package_module(req: &GenerateRequest, schemas: &[(String, Vec<FrozenUnit>)], 
             (false, false, _) => format!("{conn}::{side}(transport, {value}, CONNECTION_IR_HASH){awaited}?"),
             (false, true, _) => format!("{conn}::new_unverified(transport, {value})"),
             (true, false, false) => format!(
-                "{conn}::{side}_with(transport, {value}, {jsonrpc_framing}, &mut comline_runtime::handshake::ComlineHandshake, CONNECTION_IR_HASH)?"
+                "{conn}::{side}_with(transport, {value}, {jsonrpc_framing}, &mut {comline_handshake}, CONNECTION_IR_HASH)?"
             ),
             (true, false, true) => format!("{conn}::handshake(transport, {value}, {jsonrpc_framing}, CONNECTION_IR_HASH).await?"),
             (true, true, _) => format!("{conn}::with_framing_unverified(transport, {value}, {jsonrpc_framing})"),
@@ -993,42 +1026,21 @@ struct FnInfo {
 /// The `Framing` a protocol's generated `connect` / `serve` helpers wire up.
 struct FramingChoice {
     /// Path to the framing type, e.g. `comline_runtime::framing::JsonRpcFraming`.
-    ty: &'static str,
+    ty: String,
     /// `true` for anything but the datagram default — those helpers pass the
     /// framing explicitly (`Client::connect_with_framing` / `Server::with_framing`)
     /// and the `Client` alias carries it as its third type parameter.
     explicit: bool,
 }
 
-/// The datagram default — the generated helpers use `Client::connect` /
-/// `Server::new` and the `Client` alias keeps its two type parameters.
-const DATAGRAM_FRAMING: FramingChoice = FramingChoice {
-    ty: "comline_runtime::contract::DatagramFraming",
-    explicit: false,
-};
-
-/// Map one framing name to a choice. `None` for a name core does not
-/// recognise (the caller falls through to the next level).
-///
-/// The accepted spellings and their aliases come from core, not from a
-/// copy kept here - this generator, the TypeScript one and the playground
-/// each used to maintain their own, and they had drifted (the
-/// playground's was missing `json-rpc`, so a protocol this generator emits
-/// as JSON-RPC rendered as datagram there).
-fn framing_for(name: &str) -> Option<FramingChoice> {
-    match comline_core::schema::idl::annotations::canonical_value("framing", name)? {
-        "jsonrpc" => Some(FramingChoice {
-            ty: "comline_runtime::framing::JsonRpcFraming",
-            explicit: true,
-        }),
-        "datagram" => Some(DATAGRAM_FRAMING),
-        // A protocol on it runs on a `Connection`, which names its framing
-        // itself; this only says the name is known.
-        comline_core::schema::idl::annotations::FRAMING_DATAGRAM2 => Some(FramingChoice {
-            ty: "comline_runtime::contract::Datagram2Framing",
-            explicit: false,
-        }),
-        _ => None,
+/// Map one framing, by canonical name, to its choice: the type it maps to
+/// in the request's encodings, which `encodings::check` has vouched for.
+/// Every framing but the datagram ones is passed explicitly.
+fn framing_for(name: &str, encodings: &Encodings) -> FramingChoice {
+    use comline_core::schema::idl::annotations::{FRAMING_DATAGRAM, FRAMING_DATAGRAM2};
+    FramingChoice {
+        ty: type_of(encodings, name).to_string(),
+        explicit: name != FRAMING_DATAGRAM && name != FRAMING_DATAGRAM2,
     }
 }
 
@@ -1059,8 +1071,8 @@ fn no_handshake_of(parameters: &[FrozenUnit]) -> bool {
     annotation(parameters, "handshake").as_deref() == Some(HANDSHAKE_NONE)
 }
 
-fn framing_choice(parameters: &[FrozenUnit]) -> FramingChoice {
-    framing_for(connections::framing(parameters).name).unwrap_or(DATAGRAM_FRAMING)
+fn framing_choice(parameters: &[FrozenUnit], encodings: &Encodings) -> FramingChoice {
+    framing_for(&connections::framing_name(parameters), encodings)
 }
 
 /// Whether a protocol runs JSON-RPC, which carries JSON whatever the
@@ -1069,25 +1081,11 @@ fn is_jsonrpc(parameters: &[FrozenUnit]) -> bool {
     connections::framing(parameters).name == FRAMING_JSONRPC
 }
 
-/// The runtime's type for a wire format name. `None` for one it has none
-/// for.
-fn format_type(name: &str) -> Option<&'static str> {
-    use comline_core::schema::idl::annotations::{FORMAT_JSON, FORMAT_MSGPACK, FORMAT_PACKED};
-    match name {
-        FORMAT_PACKED => Some("comline_runtime::format::Packed"),
-        FORMAT_JSON => Some(JSON_FORMAT),
-        FORMAT_MSGPACK => Some("comline_runtime::format::MsgPack"),
-        _ => None,
-    }
-}
-
-const JSON_FORMAT: &str = "comline_runtime::format::Json";
-
 /// What a protocol's helpers encode with: JSON for a JSON-RPC protocol, the
 /// package's `Format` otherwise.
-fn format_of(parameters: &[FrozenUnit]) -> &'static str {
+fn format_of<'a>(parameters: &[FrozenUnit], encodings: &'a Encodings) -> &'a str {
     if is_jsonrpc(parameters) {
-        JSON_FORMAT
+        type_of(encodings, FORMAT_JSON)
     } else {
         "Format"
     }
@@ -1105,8 +1103,9 @@ fn protocol(
     model: &Validation,
     on_decode: ValidateOnDecode,
     async_api: bool,
+    encodings: &Encodings,
 ) -> Result<String> {
-    let framing = framing_choice(parameters);
+    let framing = framing_choice(parameters, encodings);
     // On a connection: handlers take the peer, the dispatcher is provided
     // on a `Connection`, and a sender calls through any `Peer`.
     let connection = connections::on_connection(schemas, parameters);
@@ -1379,7 +1378,7 @@ fn protocol(
             l.push("    /// handshake (`IR_HASH` + `format`'s and the framing's names) against".into());
             l.push("    /// the peer first.".into());
         }
-        let format = format_of(parameters);
+        let format = format_of(parameters, encodings);
         l.push(format!("    /// Encodes with `{}`.", format.rsplit("::").next().unwrap_or(format)));
         l.push("    pub fn serve<T: Transport>(self, transport: &mut T) -> Result<(), RuntimeError> {".into());
         l.push(format!("        self.serve_with_format(transport, {format}::default())"));
@@ -1454,7 +1453,7 @@ fn protocol(
                 l.push(format!("        let framing = {};", framing.ty));
                 "framing"
             } else {
-                DATAGRAM_FRAMING.ty
+                framing.ty.as_str()
             };
             l.push(format!(
                 "        Ok(Self(Client::connect_with(transport, format, {framing_expr}, &mut {NO_HANDSHAKE}, IR_HASH)?))"
@@ -1540,7 +1539,7 @@ fn protocol(
     l.push(String::new());
     if !connection {
         // The package's format, without naming it at every call.
-        let format = format_of(parameters);
+        let format = format_of(parameters, encodings);
         l.push(format!("impl<T: Transport> {proto}Client<T, {format}> {{"));
         if no_handshake {
             l.push("    /// Bind to the provider. No handshake runs (`@handshake = \"none\"`).".into());

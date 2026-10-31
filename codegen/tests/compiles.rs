@@ -334,9 +334,23 @@ fn build_generated_crate(
         external_std,
         validate_on_decode: Default::default(),
         async_api: false,
-        encodings: Default::default(),
+        encodings: comline_codegen::encodings::official_for("rust"),
     };
     check_generated_crate(label, &req, None);
+}
+
+/// The cargo that builds a generated crate. `COMLINE_RUST_TOOLCHAIN=1.85.0`
+/// builds it with that toolchain (through rustup) instead of the one running
+/// this test: how CI proves the generator's floor.
+fn cargo_command() -> Command {
+    match std::env::var("COMLINE_RUST_TOOLCHAIN").ok().filter(|t| !t.is_empty()) {
+        Some(toolchain) => {
+            let mut rustup = Command::new("rustup");
+            rustup.args(["run", &toolchain, "cargo"]);
+            rustup
+        }
+        None => Command::new(env!("CARGO")),
+    }
 }
 
 /// Generate `req` into a temp dir and `cargo build` it - or, given a test
@@ -393,17 +407,7 @@ fn check_generated_crate(label: &str, req: &GenerateRequest, behaviour: Option<&
     }
 
     // Isolated target dir so it doesn't fight this crate's build lock.
-    // `COMLINE_RUST_TOOLCHAIN=1.85.0` builds it with that toolchain (through
-    // rustup) instead of the one running this test: how CI proves the
-    // generator's floor.
-    let mut cargo = match std::env::var("COMLINE_RUST_TOOLCHAIN").ok().filter(|t| !t.is_empty()) {
-        Some(toolchain) => {
-            let mut rustup = Command::new("rustup");
-            rustup.args(["run", &toolchain, "cargo"]);
-            rustup
-        }
-        None => Command::new(env!("CARGO")),
-    };
+    let mut cargo = cargo_command();
     let status = cargo
         .args([if behaviour.is_some() { "test" } else { "build" }, "--quiet"])
         .current_dir(&dir)
@@ -569,7 +573,7 @@ fn generated_validators_run() {
         external_std: false,
         validate_on_decode: ValidateOnDecode::Collect,
         async_api: false,
-        encodings: Default::default(),
+        encodings: comline_codegen::encodings::official_for("rust"),
     };
     check_generated_crate("validators", &req, Some(VALIDATED_BEHAVIOUR));
 }
@@ -687,7 +691,7 @@ fn generated_connection_protocols_call_both_ways() {
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
-        encodings: Default::default(),
+        encodings: comline_codegen::encodings::official_for("rust"),
     };
     let files = generate_rust(&req).unwrap();
     let link = &files.iter().find(|f| f.path.ends_with("link.rs")).unwrap().contents;
@@ -810,7 +814,7 @@ fn generated_jsonrpc_connection_protocols_call_both_ways() {
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
-        encodings: Default::default(),
+        encodings: comline_codegen::encodings::official_for("rust"),
     };
     let files = generate_rust(&req).unwrap();
     let link = &files.iter().find(|f| f.path.ends_with("link.rs")).unwrap().contents;
@@ -862,7 +866,7 @@ fn bare_jsonrpc_names_that_would_clash_on_a_connection_are_refused() {
             external_std: false,
             validate_on_decode: Default::default(),
             async_api: false,
-            encodings: Default::default(),
+            encodings: comline_codegen::encodings::official_for("rust"),
         };
         generate_rust(&req).map(|_| ())
     };
@@ -892,7 +896,7 @@ fn generated_async_connection_protocols_call_both_ways() {
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: true,
-        encodings: Default::default(),
+        encodings: comline_codegen::encodings::official_for("rust"),
     };
     let files = generate_rust(&req).unwrap();
     let manifest = &files.iter().find(|f| f.path.ends_with("Cargo.toml")).unwrap().contents;
@@ -1017,7 +1021,7 @@ fn game_request(schemas: &[(String, Vec<FrozenUnit>)], async_api: bool) -> Gener
         external_std: false,
         validate_on_decode: Default::default(),
         async_api,
-        encodings: Default::default(),
+        encodings: comline_codegen::encodings::official_for("rust"),
     }
 }
 
@@ -1288,7 +1292,85 @@ fn keyword_names_build_and_keep_their_wire_names() {
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
-        encodings: Default::default(),
+        encodings: comline_codegen::encodings::official_for("rust"),
     };
     check_generated_crate("keywords", &req, Some(KEYWORDS_BEHAVIOUR));
+}
+
+/// A framing and a format no official package declares, mapped onto types
+/// of a third-party crate: the generated `lib` crate depends on that crate
+/// and builds against it. The stub crate (`acme-encodings`) re-exports
+/// runtime types under its own paths, which is all the generator can tell
+/// apart: it names the mapped types and never looks inside them.
+#[test]
+fn a_third_party_framing_and_format_build() {
+    let mut protocol = rpc_schema();
+    if let FrozenUnit::Protocol { parameters, .. } = &mut protocol[0] {
+        *parameters = vec![FrozenUnit::Property {
+            name: "framing".into(),
+            value: ConfigValue::Str("com.acme.lines@1".into()),
+        }];
+    }
+    let mapping = |ty: &str| comline_codegen::protocol::EncodingMapping {
+        type_path: ty.into(),
+        package: Some("acme-encodings".into()),
+        version: Some("0.2".into()),
+    };
+    let mut encodings = comline_codegen::encodings::official_for("rust");
+    encodings.insert("com.acme.lines@1".into(), mapping("acme_encodings::LinesFraming"));
+    encodings.insert("com.acme.cbor@1".into(), mapping("acme_encodings::Cbor"));
+    let req = GenerateRequest {
+        mode: Mode::Lib,
+        schemas: vec![("lines".to_string(), protocol)],
+        package: PackageMeta { name: "comline-codegen-rust-acmetest".into(), version: "0.0.0".into() },
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        wire_format: "com.acme.cbor@1".into(),
+        external_std: false,
+        validate_on_decode: Default::default(),
+        async_api: false,
+        encodings,
+    };
+    let files = generate_rust(&req).expect("generation");
+
+    let dir = std::env::temp_dir().join(format!("comline-rust-compiletest-acme-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    for f in &files {
+        let path = dir.join(&f.path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, &f.contents).unwrap();
+    }
+    let manifest = dir.join("Cargo.toml");
+    let generated = fs::read_to_string(&manifest).unwrap();
+    assert!(generated.contains("acme-encodings = \"0.2\"\n"), "{generated}");
+    // The stub links the same runtime the generated crate does.
+    let runtime = generated.lines().find(|l| l.starts_with("comline-runtime = ")).expect("a runtime dependency");
+    let stub = dir.join("acme");
+    fs::create_dir_all(stub.join("src")).unwrap();
+    fs::write(
+        stub.join("Cargo.toml"),
+        format!("[package]\nname = \"acme-encodings\"\nversion = \"0.2.0\"\nedition = \"2021\"\n\n[dependencies]\n{runtime}\n"),
+    )
+    .unwrap();
+    fs::write(
+        stub.join("src/lib.rs"),
+        "pub use comline_runtime::format::Json as Cbor;\npub use comline_runtime::framing::JsonRpcFraming as LinesFraming;\n",
+    )
+    .unwrap();
+    fs::write(
+        &manifest,
+        format!("{generated}\n[workspace]\n\n[patch.crates-io]\nacme-encodings = {{ path = \"acme\" }}\n"),
+    )
+    .unwrap();
+
+    let status = cargo_command()
+        .args(["build", "--quiet"])
+        .current_dir(&dir)
+        .env("CARGO_TARGET_DIR", dir.join("target"))
+        .status()
+        .expect("run cargo build");
+    let ok = status.success();
+    if ok {
+        let _ = fs::remove_dir_all(&dir);
+    }
+    assert!(ok, "generated crate failed to compile; left at {} for inspection", dir.display());
 }
