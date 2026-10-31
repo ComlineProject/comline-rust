@@ -16,7 +16,7 @@ fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenerateRequest {
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
-        encodings: Default::default(),
+        encodings: comline_codegen::encodings::official_for("rust"),
     }
 }
 
@@ -33,7 +33,7 @@ fn lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenerateRequest {
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
-        encodings: Default::default(),
+        encodings: comline_codegen::encodings::official_for("rust"),
     }
 }
 
@@ -454,8 +454,58 @@ fn an_unknown_wire_format_is_an_error() {
     let error = generate_rust(&req).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "unknown wire format `packed` - expected `packed@1`, `json@1` or `msgpack@1`"
+        "encoding `packed` has no rust mapping in the request: map it in comline.toml, as \
+         `encodings = { \"packed\" = \"<type>\" }`"
     );
+}
+
+/// A protocol over `framing`, a namespaced one nothing in this crate knows.
+fn acme_protocol(framing: &str) -> Vec<FrozenUnit> {
+    let mut units = one_plain_protocol("Lines");
+    if let FrozenUnit::Protocol { parameters, .. } = &mut units[0] {
+        parameters.push(FrozenUnit::Property { name: "framing".into(), value: ConfigValue::Str(framing.into()) });
+    }
+    units
+}
+
+fn acme(ty: &str) -> comline_codegen::protocol::EncodingMapping {
+    comline_codegen::protocol::EncodingMapping {
+        type_path: ty.into(),
+        package: Some("acme-encodings".into()),
+        version: Some("0.2".into()),
+    }
+}
+
+#[test]
+fn an_unmapped_framing_is_an_error_not_a_fallback() {
+    let schemas = vec![("lines".to_string(), acme_protocol("com.acme.lines@1"))];
+    let error = generate_rust(&code_req(&schemas)).unwrap_err().to_string();
+    assert!(error.starts_with("encoding `com.acme.lines@1` has no rust mapping in the request"), "{error}");
+}
+
+#[test]
+fn a_third_party_framing_and_format_use_their_mapped_types() {
+    let schemas = vec![("lines".to_string(), acme_protocol("com.acme.lines@1"))];
+    let mut req = GenerateRequest { wire_format: "com.acme.cbor@1".into(), ..lib_req(&schemas) };
+    req.encodings.insert("com.acme.lines@1".into(), acme("acme_encodings::LinesFraming"));
+    req.encodings.insert("com.acme.cbor@1".into(), acme("acme_encodings::Cbor"));
+    let files = generate_rust(&req).unwrap();
+    let file = |path: &str| &files.iter().find(|f| f.path.to_str() == Some(path)).unwrap().contents;
+    let lib = file("src/lines.rs");
+    assert!(lib.contains("pub type Format = acme_encodings::Cbor;"), "{lib}");
+    assert!(lib.contains("let framing = acme_encodings::LinesFraming;"), "{lib}");
+    assert!(lib.contains("Client<T, W, acme_encodings::LinesFraming>"), "{lib}");
+    // `lib` output depends on the crate the mapping names, once.
+    let manifest = file("Cargo.toml");
+    assert_eq!(manifest.matches("acme-encodings = \"0.2\"\n").count(), 1, "{manifest}");
+}
+
+#[test]
+fn official_mappings_add_no_dependency_of_their_own() {
+    let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
+    let files = generate_rust(&lib_req(&schemas)).unwrap();
+    let manifest = &files.iter().find(|f| f.path.to_str() == Some("Cargo.toml")).unwrap().contents;
+    assert_eq!(manifest.matches("comline-runtime").count(), 1, "{manifest}");
 }
 
 /// `@framing = "datagram"` (`datagram@1`): the lockstep `Client` / `Server`,
