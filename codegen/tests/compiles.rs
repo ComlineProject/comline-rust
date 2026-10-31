@@ -339,6 +339,20 @@ fn build_generated_crate(
     check_generated_crate(label, &req, None);
 }
 
+/// The cargo that builds a generated crate. `COMLINE_RUST_TOOLCHAIN=1.85.0`
+/// builds it with that toolchain (through rustup) instead of the one running
+/// this test: how CI proves the generator's floor.
+fn cargo_command() -> Command {
+    match std::env::var("COMLINE_RUST_TOOLCHAIN").ok().filter(|t| !t.is_empty()) {
+        Some(toolchain) => {
+            let mut rustup = Command::new("rustup");
+            rustup.args(["run", &toolchain, "cargo"]);
+            rustup
+        }
+        None => Command::new(env!("CARGO")),
+    }
+}
+
 /// Generate `req` into a temp dir and `cargo build` it - or, given a test
 /// file, add it as `tests/behaviour.rs` (with `serde_json` to decode with)
 /// and `cargo test` it, so what the generated code *does* is checked too.
@@ -393,17 +407,7 @@ fn check_generated_crate(label: &str, req: &GenerateRequest, behaviour: Option<&
     }
 
     // Isolated target dir so it doesn't fight this crate's build lock.
-    // `COMLINE_RUST_TOOLCHAIN=1.85.0` builds it with that toolchain (through
-    // rustup) instead of the one running this test: how CI proves the
-    // generator's floor.
-    let mut cargo = match std::env::var("COMLINE_RUST_TOOLCHAIN").ok().filter(|t| !t.is_empty()) {
-        Some(toolchain) => {
-            let mut rustup = Command::new("rustup");
-            rustup.args(["run", &toolchain, "cargo"]);
-            rustup
-        }
-        None => Command::new(env!("CARGO")),
-    };
+    let mut cargo = cargo_command();
     let status = cargo
         .args([if behaviour.is_some() { "test" } else { "build" }, "--quiet"])
         .current_dir(&dir)
@@ -1358,7 +1362,7 @@ fn a_third_party_framing_and_format_build() {
     )
     .unwrap();
 
-    let status = Command::new(env!("CARGO"))
+    let status = cargo_command()
         .args(["build", "--quiet"])
         .current_dir(&dir)
         .env("CARGO_TARGET_DIR", dir.join("target"))
