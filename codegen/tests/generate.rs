@@ -516,17 +516,28 @@ fn an_unmapped_handshake_is_an_error_not_a_fallback() {
     assert!(error.starts_with("encoding `com.acme.hello@1` has no rust mapping in the request"), "{error}");
 }
 
-/// The async driver has no way to run anything but `comline@1` and `none`:
-/// refused, never quietly run as `comline@1`.
+/// On an async connection a namespaced handshake runs through
+/// `AsyncConnection::accept_with` / `connect_with`, as on a blocking one:
+/// never quietly as `comline@1`.
 #[test]
-fn a_third_party_handshake_on_an_async_connection_is_refused() {
+fn a_third_party_handshake_on_an_async_connection_runs_through_with() {
     let schemas = vec![("link".to_string(), hello_protocol("com.acme.hello@1"))];
     let mut req = GenerateRequest { async_api: true, ..lib_req(&schemas) };
     req.encodings.insert("com.acme.hello@1".into(), acme("acme_encodings::Hello"));
-    let error = generate_rust(&req).unwrap_err().to_string();
+    let files = generate_rust(&req).unwrap();
+    let file = |end: &str| &files.iter().find(|f| f.path.ends_with(end)).unwrap().contents;
+    let (lib, link) = (file("src/lib.rs"), file("src/link.rs"));
+    for side in ["accept", "connect"] {
+        let open = format!(
+            "comline_runtime::async_connection::AsyncConnection::{side}_with(transport, Format::default(), \
+             comline_runtime::contract::Datagram2Framing, &mut acme_encodings::Hello, CONNECTION_IR_HASH).await?"
+        );
+        assert!(lib.contains(&open), "{lib}");
+    }
+    assert!(!lib.contains("AsyncConnection::accept(") && !lib.contains("AsyncConnection::connect("), "{lib}");
     assert!(
-        error.starts_with("protocol `link::Link` runs the `com.acme.hello@1` handshake, which an async connection"),
-        "{error}"
+        link.contains("`AsyncConnection::accept_with(transport, format, comline_runtime::contract::Datagram2Framing, &mut acme_encodings::Hello, CONNECTION_IR_HASH)`"),
+        "{link}"
     );
 }
 

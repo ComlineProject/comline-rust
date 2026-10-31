@@ -44,7 +44,7 @@ const ASYNC_DRIVER: &str = "comline_runtime::async_connection::";
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "4d6e1c54303b17c6cdaefb4f5af7faa9ae9ff0d7";
+const RUNTIME_REV: &str = "443169fc78bac4e89baa45b43fa36146f87c1166";
 
 /// `comline_std` — std's own pre-generated bindings, referenced instead of
 /// inlined when `external_std` is on. Same git-pin shape as
@@ -825,16 +825,18 @@ fn package_module(req: &GenerateRequest, schemas: &[(String, Vec<FrozenUnit>)], 
     let open = |side: &str| -> String {
         let value = format!("{fmt}::default()");
         match (jsonrpc, unverified, asynchronous) {
-            // An async connection has no custom handshake path: `protocol`
-            // refuses one before this is reached.
-            (false, false, false) if custom.is_some() => format!(
-                "{conn}::{side}_with(transport, {value}, {framing_ty}, &mut {}, CONNECTION_IR_HASH)?",
+            // A custom handshake runs through `_with`, blocking or async.
+            (false, false, _) if custom.is_some() => format!(
+                "{conn}::{side}_with(transport, {value}, {framing_ty}, &mut {}, CONNECTION_IR_HASH){awaited}?",
                 custom.unwrap_or_default()
             ),
             (false, false, _) => format!("{conn}::{side}(transport, {value}, CONNECTION_IR_HASH){awaited}?"),
             (false, true, _) => format!("{conn}::new_unverified(transport, {value})"),
             (true, false, false) => format!(
                 "{conn}::{side}_with(transport, {value}, {jsonrpc_framing}, &mut {comline_handshake}, CONNECTION_IR_HASH)?"
+            ),
+            (true, false, true) if custom.is_some() => format!(
+                "{conn}::{side}_with(transport, {value}, {jsonrpc_framing}, &mut {comline_handshake}, CONNECTION_IR_HASH).await?"
             ),
             (true, false, true) => format!("{conn}::handshake(transport, {value}, {jsonrpc_framing}, CONNECTION_IR_HASH).await?"),
             (true, true, _) => format!("{conn}::with_framing_unverified(transport, {value}, {jsonrpc_framing})"),
@@ -1134,19 +1136,17 @@ fn protocol(
     // `AsyncPeer`. Only a connection protocol has an async form.
     let asynchronous = connection && async_api;
     let custom = custom_handshake(parameters, encodings);
-    if let (true, Some(_)) = (asynchronous, custom) {
-        eyre::bail!(
-            "protocol `{namespace}::{proto}` runs the `{}` handshake, which an async connection can't run \
-             yet: `AsyncConnection` only runs `comline@1` and `none` - generate it without `async`",
-            connections::handshake_name(parameters)
-        );
-    }
     // How the dispatcher's doc says to open the connection it's provided on:
     // the side that provides it accepts, or for a client-provided protocol,
     // dials.
     let open = match (framing.explicit, no_handshake_of(parameters), asynchronous) {
         (_, false, false) if custom.is_some() => format!(
             "`Connection::accept_with(transport, format, {}, &mut {}, CONNECTION_IR_HASH)`",
+            framing.ty,
+            custom.unwrap_or_default()
+        ),
+        (_, false, true) if custom.is_some() => format!(
+            "`AsyncConnection::accept_with(transport, format, {}, &mut {}, CONNECTION_IR_HASH)`",
             framing.ty,
             custom.unwrap_or_default()
         ),

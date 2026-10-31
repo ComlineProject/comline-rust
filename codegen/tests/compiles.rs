@@ -1357,11 +1357,13 @@ fn build_against_acme_stub(label: &str, req: &GenerateRequest, stub: &str, behav
     assert!(generated.contains("acme-encodings = \"0.2\"\n"), "{generated}");
     // The stub links the same runtime the generated crate does.
     let runtime = generated.lines().find(|l| l.starts_with("comline-runtime = ")).expect("a runtime dependency");
+    // An async handshake drives the transport's `Stream` and `Sink`.
+    let futures = if req.async_api { "futures-util = { version = \"0.3\", features = [\"sink\"] }\n" } else { "" };
     let stub_dir = dir.join("acme");
     fs::create_dir_all(stub_dir.join("src")).unwrap();
     fs::write(
         stub_dir.join("Cargo.toml"),
-        format!("[package]\nname = \"acme-encodings\"\nversion = \"0.2.0\"\nedition = \"2021\"\n\n[dependencies]\n{runtime}\n"),
+        format!("[package]\nname = \"acme-encodings\"\nversion = \"0.2.0\"\nedition = \"2021\"\n\n[dependencies]\n{runtime}\n{futures}"),
     )
     .unwrap();
     fs::write(stub_dir.join("src/lib.rs"), stub).unwrap();
@@ -1373,6 +1375,12 @@ fn build_against_acme_stub(label: &str, req: &GenerateRequest, stub: &str, behav
     if let Some(test) = behaviour {
         fs::create_dir_all(dir.join("tests")).unwrap();
         fs::write(dir.join("tests/behaviour.rs"), test).unwrap();
+        // An async behaviour needs an executor to run the connections on.
+        if req.async_api {
+            let mut contents = fs::read_to_string(&manifest).unwrap();
+            contents.push_str("\n[dev-dependencies]\ntokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\"] }\n");
+            fs::write(&manifest, contents).unwrap();
+        }
     }
 
     let status = cargo_command()
@@ -1447,6 +1455,45 @@ fn a_third_party_handshake_runs() {
     build_against_acme_stub("hello", &req, HELLO_STUB, Some(HELLO_BEHAVIOUR));
 }
 
+/// The same handshake on an async connection: the package's async `serve` /
+/// `connect` run `Hello` through `AsyncConnection::accept_with` /
+/// `connect_with`, which the stub counts.
+#[test]
+fn a_third_party_handshake_runs_on_an_async_connection() {
+    let mut encodings = comline_codegen::encodings::official_for("rust");
+    encodings.insert(
+        "com.acme.hello@1".into(),
+        comline_codegen::protocol::EncodingMapping {
+            type_path: "acme_encodings::Hello".into(),
+            package: Some("acme-encodings".into()),
+            version: Some("0.2".into()),
+        },
+    );
+    let link = FrozenUnit::Protocol {
+        docstring: String::new(),
+        parameters: vec![FrozenUnit::Property {
+            name: "handshake".into(),
+            value: ConfigValue::Str("com.acme.hello@1".into()),
+        }],
+        name: "Link".into(),
+        functions: vec![function("now", vec![], Some(TypeRef::Primitive(PrimitiveType::U32)), vec![])],
+        span: (0, 0),
+    };
+    let req = GenerateRequest {
+        mode: Mode::Lib,
+        schemas: vec![("hello".to_string(), vec![link])],
+        package: PackageMeta { name: "comline-codegen-rust-hellotest".into(), version: "0.0.0".into() },
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        wire_format: "packed@1".into(),
+        external_std: false,
+        validate_on_decode: Default::default(),
+        async_api: true,
+        encodings,
+    };
+    let stub = format!("{HELLO_STUB}{HELLO_ASYNC_STUB}");
+    build_against_acme_stub("hello-async", &req, &stub, Some(HELLO_ASYNC_BEHAVIOUR));
+}
+
 /// `com.acme.hello@1`: each end sends `hello` and wants it back. Counts the
 /// times it ran, on either side.
 const HELLO_STUB: &str = r##"
@@ -1480,6 +1527,68 @@ impl Handshake for Hello {
     fn respond<T: Transport>(&mut self, transport: &mut T, _local: &Facts<'_>) -> Result<(), RuntimeError> {
         Self::exchange(transport)
     }
+}
+"##;
+
+/// `Hello` on an async connection: the same exchange over an
+/// `AsyncTransport`, counted the same way.
+const HELLO_ASYNC_STUB: &str = r##"
+use comline_runtime::async_connection::AsyncTransport;
+use comline_runtime::handshake::AsyncHandshake;
+use futures_util::{SinkExt, StreamExt};
+
+impl Hello {
+    async fn exchange_async<T: AsyncTransport>(transport: &mut T) -> Result<(), RuntimeError> {
+        RAN.fetch_add(1, Ordering::SeqCst);
+        transport.send(b"hello".to_vec()).await?;
+        let buf = transport.next().await.ok_or(RuntimeError::Transport)??;
+        if buf == b"hello" { Ok(()) } else { Err(RuntimeError::Handshake) }
+    }
+}
+
+impl AsyncHandshake for Hello {
+    fn name(&self) -> &str {
+        "com.acme.hello@1"
+    }
+    async fn initiate<T: AsyncTransport>(&mut self, transport: &mut T, _local: &Facts<'_>) -> Result<(), RuntimeError> {
+        Self::exchange_async(transport).await
+    }
+    async fn respond<T: AsyncTransport>(&mut self, transport: &mut T, _local: &Facts<'_>) -> Result<(), RuntimeError> {
+        Self::exchange_async(transport).await
+    }
+}
+"##;
+
+const HELLO_ASYNC_BEHAVIOUR: &str = r##"
+use std::sync::atomic::Ordering;
+
+use acme_encodings::RAN;
+use comline_codegen_rust_hellotest::hello::*;
+use comline_codegen_rust_hellotest::{connect, serve, Services};
+use comline_runtime::async_connection::{async_duplex, AsyncPeer};
+use comline_runtime::contract::Fault;
+
+struct LinkImpl;
+impl Link for LinkImpl {
+    async fn now(&self, _peer: &impl AsyncPeer) -> Result<u32, Fault<LinkNowError>> {
+        Ok(7)
+    }
+}
+
+/// Each end of the async connection runs `Hello` once, and a peer that
+/// didn't would fail it (it wants `hello` back); then a call goes through.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_async_connection_runs_the_mapped_handshake() {
+    let (dialler, acceptor) = async_duplex();
+    let server = tokio::spawn(serve(acceptor, Services { link: LinkImpl }));
+    let conn = connect(dialler).await.unwrap();
+    let handle = conn.handle();
+    let client = tokio::spawn(conn.run());
+    assert_eq!(LinkAsyncSender::new(&handle).now().await.unwrap(), 7);
+    assert_eq!(RAN.load(Ordering::SeqCst), 2);
+    handle.close();
+    client.await.unwrap().unwrap();
+    server.await.unwrap().unwrap();
 }
 "##;
 
