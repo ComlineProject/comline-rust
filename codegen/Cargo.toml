@@ -15,3 +15,13 @@ comline-core = { git = "https://github.com/ComlineProject/core", rev = "f6e289aa
 eyre = "0.6.8"
 
 # Gated (G2c — FFI / dylib): abi_stable, cbindgen, toml_edit, glob, heck.
+
+[[bin]]
+name = "comline-gen-rust"
+path = "src/bin/comline-gen-rust.rs"
+
+[dev-dependencies]
+# The conformance corpus: every fixture is a whole package. Same generation
+# rev as `comline-codegen` above, so the corpus and the generator share one
+# `comline-codegen`.
+comline-conformance = { git = "https://github.com/ComlineProject/generation", rev = "043286d544b9db4570a3c9ef13ff9f715cbfc577" }
