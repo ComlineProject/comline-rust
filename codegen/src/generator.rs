@@ -44,7 +44,7 @@ const ASYNC_DRIVER: &str = "comline_runtime::async_connection::";
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "443169fc78bac4e89baa45b43fa36146f87c1166";
+const RUNTIME_REV: &str = "37082def68bc6cafc2bd1ee079cc7412e0c1b932";
 
 /// `comline_std` — std's own pre-generated bindings, referenced instead of
 /// inlined when `external_std` is on. Same git-pin shape as
