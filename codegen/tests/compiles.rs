@@ -1330,9 +1330,22 @@ fn a_third_party_framing_and_format_build() {
         async_api: false,
         encodings,
     };
-    let files = generate_rust(&req).expect("generation");
+    build_against_acme_stub(
+        "acme",
+        &req,
+        "pub use comline_runtime::format::Json as Cbor;\npub use comline_runtime::framing::JsonRpcFraming as LinesFraming;\n",
+        None,
+    );
+}
 
-    let dir = std::env::temp_dir().join(format!("comline-rust-compiletest-acme-{}", std::process::id()));
+/// Generate `req` (a `lib` crate that depends on `acme-encodings`) and build
+/// it against a stub `acme-encodings` whose `src/lib.rs` is `stub`, linking
+/// the same runtime the generated crate does. Given a test file, it's added
+/// as `tests/behaviour.rs` and the crate is tested instead.
+fn build_against_acme_stub(label: &str, req: &GenerateRequest, stub: &str, behaviour: Option<&str>) {
+    let files = generate_rust(req).expect("generation");
+
+    let dir = std::env::temp_dir().join(format!("comline-rust-compiletest-{label}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     for f in &files {
         let path = dir.join(&f.path);
@@ -1344,33 +1357,175 @@ fn a_third_party_framing_and_format_build() {
     assert!(generated.contains("acme-encodings = \"0.2\"\n"), "{generated}");
     // The stub links the same runtime the generated crate does.
     let runtime = generated.lines().find(|l| l.starts_with("comline-runtime = ")).expect("a runtime dependency");
-    let stub = dir.join("acme");
-    fs::create_dir_all(stub.join("src")).unwrap();
+    let stub_dir = dir.join("acme");
+    fs::create_dir_all(stub_dir.join("src")).unwrap();
     fs::write(
-        stub.join("Cargo.toml"),
+        stub_dir.join("Cargo.toml"),
         format!("[package]\nname = \"acme-encodings\"\nversion = \"0.2.0\"\nedition = \"2021\"\n\n[dependencies]\n{runtime}\n"),
     )
     .unwrap();
-    fs::write(
-        stub.join("src/lib.rs"),
-        "pub use comline_runtime::format::Json as Cbor;\npub use comline_runtime::framing::JsonRpcFraming as LinesFraming;\n",
-    )
-    .unwrap();
+    fs::write(stub_dir.join("src/lib.rs"), stub).unwrap();
     fs::write(
         &manifest,
         format!("{generated}\n[workspace]\n\n[patch.crates-io]\nacme-encodings = {{ path = \"acme\" }}\n"),
     )
     .unwrap();
+    if let Some(test) = behaviour {
+        fs::create_dir_all(dir.join("tests")).unwrap();
+        fs::write(dir.join("tests/behaviour.rs"), test).unwrap();
+    }
 
     let status = cargo_command()
-        .args(["build", "--quiet"])
+        .args([if behaviour.is_some() { "test" } else { "build" }, "--quiet"])
         .current_dir(&dir)
         .env("CARGO_TARGET_DIR", dir.join("target"))
         .status()
-        .expect("run cargo build");
+        .expect("run cargo");
     let ok = status.success();
     if ok {
         let _ = fs::remove_dir_all(&dir);
     }
-    assert!(ok, "generated crate failed to compile; left at {} for inspection", dir.display());
+    assert!(ok, "generated crate failed to build or its test failed; left at {} for inspection", dir.display());
 }
+
+/// A namespaced handshake (`com.acme.hello@1`) mapped onto a type of a
+/// third-party crate: a lockstep protocol's `serve` / `connect` and the
+/// package's connection `accept` / `connect` run it in place of `comline@1`,
+/// which the stub counts.
+#[test]
+fn a_third_party_handshake_runs() {
+    // `Clock` is lockstep (`datagram`), `Link` on a connection (the default).
+    // `Clock` is lockstep (`datagram`), `Link` on a connection (the default).
+    let protocol = |name: &str, framing: Option<&str>| {
+        let mut parameters = vec![FrozenUnit::Property {
+            name: "handshake".into(),
+            value: ConfigValue::Str("com.acme.hello@1".into()),
+        }];
+        if let Some(framing) = framing {
+            parameters.push(FrozenUnit::Property { name: "framing".into(), value: ConfigValue::Str(framing.into()) });
+        }
+        FrozenUnit::Protocol {
+            docstring: String::new(),
+            parameters,
+            name: name.into(),
+            functions: vec![function("now", vec![], Some(TypeRef::Primitive(PrimitiveType::U32)), vec![])],
+            span: (0, 0),
+        }
+    };
+    let mut encodings = comline_codegen::encodings::official_for("rust");
+    encodings.insert(
+        "com.acme.hello@1".into(),
+        comline_codegen::protocol::EncodingMapping {
+            type_path: "acme_encodings::Hello".into(),
+            package: Some("acme-encodings".into()),
+            version: Some("0.2".into()),
+        },
+    );
+    let req = GenerateRequest {
+        mode: Mode::Lib,
+        schemas: vec![("hello".to_string(), vec![protocol("Clock", Some("datagram")), protocol("Link", None)])],
+        package: PackageMeta { name: "comline-codegen-rust-hellotest".into(), version: "0.0.0".into() },
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        wire_format: "packed@1".into(),
+        external_std: false,
+        validate_on_decode: Default::default(),
+        async_api: false,
+        encodings,
+    };
+    let files = generate_rust(&req).unwrap();
+    let file = |end: &str| &files.iter().find(|f| f.path.ends_with(end)).unwrap().contents;
+    let (hello, lib) = (file("src/hello.rs"), file("src/lib.rs"));
+    assert!(hello.contains(".serve_with(transport, &mut acme_encodings::Hello, IR_HASH)"), "{hello}");
+    assert!(hello.contains("&mut acme_encodings::Hello, IR_HASH)?))"), "{hello}");
+    assert!(
+        lib.contains(
+            "comline_runtime::connection::Connection::accept_with(transport, Format::default(), \
+             comline_runtime::contract::Datagram2Framing, &mut acme_encodings::Hello, CONNECTION_IR_HASH)?"
+        ),
+        "{lib}"
+    );
+    build_against_acme_stub("hello", &req, HELLO_STUB, Some(HELLO_BEHAVIOUR));
+}
+
+/// `com.acme.hello@1`: each end sends `hello` and wants it back. Counts the
+/// times it ran, on either side.
+const HELLO_STUB: &str = r##"
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use comline_runtime::contract::RuntimeError;
+use comline_runtime::handshake::{Facts, Handshake};
+use comline_runtime::transport::Transport;
+
+pub static RAN: AtomicUsize = AtomicUsize::new(0);
+
+pub struct Hello;
+
+impl Hello {
+    fn exchange<T: Transport>(transport: &mut T) -> Result<(), RuntimeError> {
+        RAN.fetch_add(1, Ordering::SeqCst);
+        transport.send(b"hello")?;
+        let mut buf = Vec::new();
+        transport.recv(&mut buf)?;
+        if buf == b"hello" { Ok(()) } else { Err(RuntimeError::Handshake) }
+    }
+}
+
+impl Handshake for Hello {
+    fn name(&self) -> &str {
+        "com.acme.hello@1"
+    }
+    fn initiate<T: Transport>(&mut self, transport: &mut T, _local: &Facts<'_>) -> Result<(), RuntimeError> {
+        Self::exchange(transport)
+    }
+    fn respond<T: Transport>(&mut self, transport: &mut T, _local: &Facts<'_>) -> Result<(), RuntimeError> {
+        Self::exchange(transport)
+    }
+}
+"##;
+
+const HELLO_BEHAVIOUR: &str = r##"
+use std::sync::atomic::Ordering;
+
+use acme_encodings::RAN;
+use comline_codegen_rust_hellotest::hello::*;
+use comline_codegen_rust_hellotest::{connect, serve, Services};
+use comline_runtime::contract::{Fault, Peer};
+use comline_runtime::transport::duplex;
+
+struct LinkImpl;
+impl Link for LinkImpl {
+    fn now(&self, _peer: &mut impl Peer) -> Result<u32, Fault<LinkNowError>> {
+        Ok(7)
+    }
+}
+
+struct ClockImpl;
+impl Clock for ClockImpl {
+    fn now(&self) -> Result<u32, Fault<ClockNowError>> {
+        Ok(9)
+    }
+}
+
+/// Lockstep, then on a connection: each opening runs `Hello` on both ends,
+/// and a peer that didn't would fail it (it wants `hello` back).
+#[test]
+fn both_paths_run_the_mapped_handshake() {
+    let (mut acceptor, dialler) = duplex();
+    let server = std::thread::spawn(move || {
+        let _ = ClockDispatcher(ClockImpl).serve(&mut acceptor);
+    });
+    let mut clock = ClockClient::connect(dialler).unwrap();
+    assert_eq!(clock.now().unwrap(), 9);
+    drop(clock);
+    server.join().unwrap();
+    assert_eq!(RAN.load(Ordering::SeqCst), 2);
+
+    let (dialler, acceptor) = duplex();
+    let server = std::thread::spawn(move || serve(acceptor, Services { link: LinkImpl }).unwrap());
+    let mut conn = connect(dialler).unwrap();
+    assert_eq!(LinkSender::new(&mut conn).now().unwrap(), 7);
+    drop(conn);
+    server.join().unwrap();
+    assert_eq!(RAN.load(Ordering::SeqCst), 4);
+}
+"##;
