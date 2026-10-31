@@ -10,7 +10,7 @@ use std::fs;
 use std::process::Command;
 
 use comline_codegen::validation::ValidateOnDecode;
-use comline_codegen::{GenRequest, Mode, PackageMeta};
+use comline_codegen::{GenerateRequest, Mode, PackageMeta, TargetLanguage};
 use comline_codegen_rust::generate_rust;
 use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
 use comline_core::schema::ir::frozen::unit::{ConfigValue, FrozenArgument, FrozenUnit, Guarantee};
@@ -322,18 +322,19 @@ fn build_generated_crate(
     schemas: &[(String, Vec<FrozenUnit>)],
     external_std: bool,
 ) {
-    let req = GenRequest {
+    let req = GenerateRequest {
         mode: Mode::Lib,
-        schemas,
+        schemas: schemas.to_vec(),
         package: PackageMeta {
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
-        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
         wire_format: "packed@1".into(),
         external_std,
         validate_on_decode: Default::default(),
         async_api: false,
+        encodings: Default::default(),
     };
     check_generated_crate(label, &req, None);
 }
@@ -341,7 +342,7 @@ fn build_generated_crate(
 /// Generate `req` into a temp dir and `cargo build` it - or, given a test
 /// file, add it as `tests/behaviour.rs` (with `serde_json` to decode with)
 /// and `cargo test` it, so what the generated code *does* is checked too.
-fn check_generated_crate(label: &str, req: &GenRequest, behaviour: Option<&str>) {
+fn check_generated_crate(label: &str, req: &GenerateRequest, behaviour: Option<&str>) {
     let files = generate_rust(req).expect("generation");
 
     let dir = std::env::temp_dir().join(format!(
@@ -556,18 +557,19 @@ fn validated_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
 #[test]
 fn generated_validators_run() {
     let schemas = validated_schemas();
-    let req = GenRequest {
+    let req = GenerateRequest {
         mode: Mode::Lib,
-        schemas: &schemas,
+        schemas: schemas.to_vec(),
         package: PackageMeta {
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
-        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: ValidateOnDecode::Collect,
         async_api: false,
+        encodings: Default::default(),
     };
     check_generated_crate("validators", &req, Some(VALIDATED_BEHAVIOUR));
 }
@@ -673,18 +675,19 @@ fn generated_connection_protocols_call_both_ways() {
     use comline_core::schema::ir::compiler::Compile;
 
     let schemas = vec![("link".to_string(), IncrementalInterpreter::from_source(CONNECTED))];
-    let req = GenRequest {
+    let req = GenerateRequest {
         mode: Mode::Lib,
-        schemas: &schemas,
+        schemas: schemas.to_vec(),
         package: PackageMeta {
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
-        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
+        encodings: Default::default(),
     };
     let files = generate_rust(&req).unwrap();
     let link = &files.iter().find(|f| f.path.ends_with("link.rs")).unwrap().contents;
@@ -795,18 +798,19 @@ fn generated_jsonrpc_connection_protocols_call_both_ways() {
     use comline_core::schema::ir::compiler::Compile;
 
     let schemas = vec![("link".to_string(), IncrementalInterpreter::from_source(CONNECTED_JSONRPC))];
-    let req = GenRequest {
+    let req = GenerateRequest {
         mode: Mode::Lib,
-        schemas: &schemas,
+        schemas: schemas.to_vec(),
         package: PackageMeta {
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
-        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
+        encodings: Default::default(),
     };
     let files = generate_rust(&req).unwrap();
     let link = &files.iter().find(|f| f.path.ends_with("link.rs")).unwrap().contents;
@@ -849,15 +853,16 @@ fn bare_jsonrpc_names_that_would_clash_on_a_connection_are_refused() {
     };
     let generate = |admin_framing: &str| {
         let schemas = vec![("link".to_string(), IncrementalInterpreter::from_source(&source(admin_framing)))];
-        let req = GenRequest {
+        let req = GenerateRequest {
             mode: Mode::Code,
-            schemas: &schemas,
+            schemas: schemas.to_vec(),
             package: PackageMeta { name: "x".into(), version: "0.0.0".into() },
-            lang_version: comline_codegen_rust::LANG_VERSION.into(),
+            target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
             wire_format: "packed@1".into(),
             external_std: false,
             validate_on_decode: Default::default(),
             async_api: false,
+            encodings: Default::default(),
         };
         generate_rust(&req).map(|_| ())
     };
@@ -875,18 +880,19 @@ fn generated_async_connection_protocols_call_both_ways() {
     use comline_core::schema::ir::compiler::Compile;
 
     let schemas = vec![("link".to_string(), IncrementalInterpreter::from_source(CONNECTED))];
-    let req = GenRequest {
+    let req = GenerateRequest {
         mode: Mode::Lib,
-        schemas: &schemas,
+        schemas: schemas.to_vec(),
         package: PackageMeta {
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
-        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: true,
+        encodings: Default::default(),
     };
     let files = generate_rust(&req).unwrap();
     let manifest = &files.iter().find(|f| f.path.ends_with("Cargo.toml")).unwrap().contents;
@@ -1001,16 +1007,17 @@ protocol Events {
 }
 "#;
 
-fn game_request(schemas: &[(String, Vec<FrozenUnit>)], async_api: bool) -> GenRequest<'_> {
-    GenRequest {
+fn game_request(schemas: &[(String, Vec<FrozenUnit>)], async_api: bool) -> GenerateRequest {
+    GenerateRequest {
         mode: Mode::Lib,
-        schemas,
+        schemas: schemas.to_vec(),
         package: PackageMeta { name: "comline-codegen-rust-compiletest".into(), version: "0.0.0".into() },
-        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
         async_api,
+        encodings: Default::default(),
     }
 }
 
@@ -1269,18 +1276,19 @@ fn keyword_names_build_and_keep_their_wire_names() {
         ("match".to_string(), IncrementalInterpreter::from_source(KEYWORDS)),
         ("api".to_string(), IncrementalInterpreter::from_source(KEYWORDS_USE)),
     ];
-    let req = GenRequest {
+    let req = GenerateRequest {
         mode: Mode::Lib,
-        schemas: &schemas,
+        schemas: schemas.to_vec(),
         package: PackageMeta {
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
-        lang_version: comline_codegen_rust::LANG_VERSION.into(),
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
+        encodings: Default::default(),
     };
     check_generated_crate("keywords", &req, Some(KEYWORDS_BEHAVIOUR));
 }

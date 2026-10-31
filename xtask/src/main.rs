@@ -9,7 +9,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use comline_codegen::{GenRequest, Mode, PackageMeta};
+use comline_codegen::{GenerateRequest, Mode, PackageMeta, TargetLanguage};
 use comline_codegen_rust::{generate_rust, STD_REV};
 use comline_core::package::build::PackageSources;
 use comline_core::package::stdlib;
@@ -54,16 +54,16 @@ fn main() -> eyre::Result<()> {
         })
         .collect();
 
-    let req = GenRequest {
+    let req = GenerateRequest {
         mode: Mode::Lib,
-        schemas: &schemas,
+        schemas: schemas.to_vec(),
         package: PackageMeta {
             name: "comline_std".to_string(),
             version: "0.1.0".to_string(),
         },
         // The one generator this crate registers, so the version it
         // registers under is the one `comline_std`'s own manifest states.
-        lang_version: comline_codegen_rust::LANG_VERSION.to_string(),
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.to_string() },
         wire_format: "packed@1".into(),
         // comline_std is generated inline, as an ordinary standalone
         // crate - external_std only matters to a *consumer* referencing
@@ -71,6 +71,7 @@ fn main() -> eyre::Result<()> {
         external_std: false,
         validate_on_decode: Default::default(),
         async_api: false,
+        encodings: Default::default(),
     };
 
     let files = generate_rust(&req)?;
