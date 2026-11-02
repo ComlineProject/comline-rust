@@ -59,6 +59,22 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
     // named, before a single file is produced.
     comline_codegen::features::refuse_unsupported("rust", req, crate::SUPPORT)?;
 
+    // Bounds aren't checked yet (core#98, rollout step 8): every maximum is
+    // dropped, so a bounded string is a `String` and a bounded list a `Vec`,
+    // exactly what the schema generates without them.
+    let unbounded;
+    let req = match comline_codegen::features::strip(
+        comline_codegen::features::Feature::Bounds,
+        &req.schemas,
+        &comline_codegen::features::Options::default(),
+    ) {
+        Some((schemas, _)) => {
+            unbounded = GenerateRequest { schemas, ..req.clone() };
+            &unbounded
+        }
+        None => req,
+    };
+
     // Every encoding the package uses (its format, each protocol's framing
     // and handshake) has to be mapped to a type: an unmapped one is refused
     // here, before a file is produced, never rendered as something else.
@@ -2099,8 +2115,8 @@ fn rust_type(ty: &TypeRef, imports: &HashMap<String, String>) -> String {
         // aliased import resolve to the name the other schema really
         // exports rather than to this schema's name for it.
         TypeRef::Named(name) => imports.get(name).cloned().unwrap_or_else(|| ident(name)),
-        TypeRef::Array { element, length: None } => format!("$Vec<{}>", rust_type(element, imports)),
-        TypeRef::Array { element, length: Some(n) } => {
+        TypeRef::Array { element, length: None, .. } => format!("$Vec<{}>", rust_type(element, imports)),
+        TypeRef::Array { element, length: Some(n), .. } => {
             format!("[{}; {n}]", rust_type(element, imports))
         }
         TypeRef::Unit => "()".to_string(),
@@ -2127,6 +2143,8 @@ fn primitive_type(p: PrimitiveType) -> &'static str {
         PrimitiveType::F64 => "f64",
         PrimitiveType::Bool => "bool",
         PrimitiveType::String => "$String",
+        // Refused by `refuse_unsupported`: no format carries one yet.
+        PrimitiveType::Char => "char",
     }
 }
 

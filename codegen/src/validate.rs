@@ -363,7 +363,12 @@ fn message_expr(template: &str, check: &Check, base: &TypeRef) -> String {
         },
         _ => {
             let name = placeholder.strip_prefix("params.")?;
-            check.param(name).map(value_text)
+            // An integer typed `i128`, the width every bound fits: a bare
+            // literal argument is an `i32`, and `u32::MAX` doesn't fit one.
+            check.param(name).map(|value| match value {
+                Value::Integer(i) => format!("{i}i128"),
+                other => value_text(other),
+            })
         }
     });
     if rendered.args.is_empty() {
@@ -373,7 +378,7 @@ fn message_expr(template: &str, check: &Check, base: &TypeRef) -> String {
     }
 }
 
-/// A bound property as a Rust literal: also how it prints in a message.
+/// A bound property as a Rust literal.
 fn value_text(value: &Value) -> String {
     match value {
         Value::Integer(i) => i.to_string(),
