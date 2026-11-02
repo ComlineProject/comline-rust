@@ -12,6 +12,7 @@
 mod generator;
 mod ident;
 mod message;
+mod names;
 mod validate;
 
 use comline_codegen::features::{Feature, Support, SupportTable};
