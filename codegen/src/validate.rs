@@ -92,14 +92,14 @@ pub fn validate_impl(ty: &str, lifetime: &str, members: &[Member]) -> Result<Str
     out.line(
         1,
         &format!(
-            "fn validate_into(&self, path: &str, out: &mut Vec<{RT}::ValidationError>, first: bool) {{"
+            "fn validate_into(&self, path: &str, out: &mut $Vec<{RT}::ValidationError>, first: bool) {{"
         ),
     );
     for member in members.iter().filter(|m| !m.plan.is_empty()) {
         out.line(2, "{");
         out.line(3, &format!("let path = {RT}::field_path(path, {:?});", member.name));
         if member.optional {
-            out.line(3, &format!("if let Some(value) = &self.{} {{", crate::ident::ident(&member.name)));
+            out.line(3, &format!("if let $Some(value) = &self.{} {{", crate::ident::ident(&member.name)));
             plan(&mut out, 4, &member.plan)?;
             out.line(3, "}");
         } else {
@@ -147,14 +147,14 @@ pub fn decode_shadow(
         "/// [`{ty}`] as decoded, before its checks run.\n\
          #[doc(hidden)]\n\
          #[allow(non_camel_case_types)]\n\
-         #[derive(Deserialize)]\n\
+         #[derive($Deserialize)]\n\
          pub struct {shadow} {{\n{field_lines}}}\n\n\
          impl TryFrom<{shadow}> for {ty} {{\n    \
              type Error = {RT}::{error};\n\n    \
-             fn try_from(raw: {shadow}) -> Result<Self, Self::Error> {{\n        \
+             fn try_from(raw: {shadow}) -> $Result<Self, Self::Error> {{\n        \
                  let value = Self {{\n{moves}        }};\n        \
                  {RT}::Validate::{verb}(&value)?;\n        \
-                 Ok(value)\n    \
+                 $Ok(value)\n    \
              }}\n\
          }}\n\n"
     )

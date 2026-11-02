@@ -1638,3 +1638,50 @@ fn both_paths_run_the_mapped_handshake() {
     assert_eq!(RAN.load(Ordering::SeqCst), 4);
 }
 "##;
+
+/// Schema names a generated module also uses: the prelude's, serde's
+/// derives, and `comline_runtime`'s imports, beside functions named like the
+/// sender's and the client's own members (comline-rust#96). Every protocol
+/// form is built: lockstep, a blocking connection and an async one.
+fn colliding_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
+    use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
+    use comline_core::schema::ir::compiler::Compile;
+    let structs = [
+        "Option", "Vec", "Result", "Box", "Serialize", "Deserialize", "Client", "Answer", "AsyncConnection",
+        "AsyncDispatch", "AsyncPeer", "AsyncTransport", "Connection", "Call", "CallError", "ConnectionFraming",
+        "Dispatch", "Envelope", "Fault", "Kind", "Peer", "ProtocolNumber", "Reply", "RuntimeError", "WireFormat",
+        "Server", "Transport",
+    ];
+    let mut source: String = structs.iter().map(|name| format!("struct {name} {{\n    a: u8\n}}\n\n")).collect();
+    source.push_str(
+        "struct Holder {\n    optional o: Option\n    v: Vec[]\n    s: string\n    n: u8[]\n}\n\n\
+         const None: u8 = 1\n\n\
+         error Oops {\n    message = \"oops\"\n}\n\n\
+         protocol Wire {\n    function new(c: Call) -> Result ! Oops;\n    function connect(p: Peer) -> Option;\n    \
+         function PROTOCOL(h: Holder) -> Vec[];\n    function ping(s: string);\n}\n\n\
+         @framing = \"datagram\"\nprotocol Lock {\n    function new(k: Kind) -> Client ! Oops;\n    \
+         function connect_with_format(t: Transport) -> Server;\n    function connect(r: Reply) -> Envelope;\n}\n",
+    );
+    vec![("shapes".to_string(), IncrementalInterpreter::from_source(&source))]
+}
+
+#[test]
+fn schema_names_the_generated_code_also_uses_build() {
+    build_generated_crate("collisions", &colliding_schemas(), false);
+}
+
+#[test]
+fn schema_names_the_generated_code_also_uses_build_async() {
+    let req = GenerateRequest {
+        mode: Mode::Lib,
+        schemas: colliding_schemas(),
+        package: PackageMeta { name: "comline-codegen-rust-compiletest".into(), version: "0.0.0".into() },
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        wire_format: "packed@1".into(),
+        external_std: false,
+        validate_on_decode: Default::default(),
+        async_api: true,
+        encodings: comline_codegen::encodings::official_for("rust"),
+    };
+    check_generated_crate("collisions-async", &req, None);
+}

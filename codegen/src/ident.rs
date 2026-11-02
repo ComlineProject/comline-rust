@@ -42,6 +42,19 @@ pub fn ident(name: &str) -> String {
     }
 }
 
+/// A function's name as the method generated for it: on the provider trait,
+/// and on the sender or client that calls it. Those already have `new`,
+/// `connect`, `connect_with_format` and `PROTOCOL` of their own, so a
+/// function of one of those names takes a trailing underscore (`new_`);
+/// the name a call sends doesn't change (comline-rust#96).
+pub fn method_ident(name: &str) -> String {
+    if ["new", "connect", "connect_with_format", "PROTOCOL"].contains(&name) {
+        format!("{name}_")
+    } else {
+        ident(name)
+    }
+}
+
 /// `#[serde(rename = "…")]` for a field or variant whose identifier
 /// ([`ident`]) isn't its wire name to serde, indented by `indent`; empty
 /// otherwise.
