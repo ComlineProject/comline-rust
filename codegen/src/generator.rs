@@ -542,12 +542,19 @@ fn schema_source(
 /// line of its own inside the braces, as rustfmt does past 100 columns.
 fn use_line(path: &str, names: &[&str], taken: &HashSet<String>, wrap: bool) -> String {
     let kept: Vec<&str> = names.iter().copied().filter(|name| !taken.contains(*name)).collect();
-    match kept.as_slice() {
+    let mut s = match kept.as_slice() {
         [] => String::new(),
         [name] => format!("use {path}::{name};\n"),
         _ if wrap => format!("use {path}::{{\n    {},\n}};\n", kept.join(", ")),
         _ => format!("use {path}::{{{}}};\n", kept.join(", ")),
+    };
+    // A trait the module declares a name like is still imported, as `_`: its
+    // methods (`fmt.decode(..)`) are only callable with it in scope. Not
+    // every module calls one, and a warning there is one a consumer can't fix.
+    for name in names.iter().filter(|name| taken.contains(**name) && names::is_trait(name)) {
+        s.push_str(&format!("#[allow(unused_imports)]\nuse {path}::{name} as _;\n"));
     }
+    s
 }
 
 /// Every type and value name a module declares: the schema's own, as Rust

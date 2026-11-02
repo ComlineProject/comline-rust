@@ -50,6 +50,16 @@ const PATHS: &[(&str, &str)] = &[
     ("Transport", "::comline_runtime::transport::Transport"),
 ];
 
+/// Whether `name` is a trait the generated code calls methods of, which
+/// has to be in scope even where the module declares a name like it.
+pub fn is_trait(name: &str) -> bool {
+    [
+        "Serialize", "Deserialize", "AsyncDispatch", "AsyncPeer", "AsyncTransport", "ConnectionFraming", "Dispatch",
+        "Peer", "WireFormat", "Transport",
+    ]
+    .contains(&name)
+}
+
 /// `text` with every `$Name` mark written out: as the bare name, unless
 /// `taken` (the names the module declares) holds it, then as its full path.
 pub fn resolve(text: &str, taken: &HashSet<String>) -> String {
