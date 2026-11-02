@@ -1047,6 +1047,46 @@ fn constants_are_emitted_with_the_type_they_declared() {
     assert!(out.contains("pub const OFFSET: i16 = -3;"), "got: {out}");
 }
 
+/// A constant can name another constant or an integer type's bound
+/// (core#168); it's emitted with the value that comes to, not dropped.
+#[test]
+fn a_constant_naming_another_is_emitted_with_its_value() {
+    let constant = |name: &str, ty: PrimitiveType, value: Literal| FrozenUnit::Constant {
+        docstring: None,
+        name: name.to_string(),
+        ty: TypeRef::Primitive(ty),
+        value: Some(value),
+        span: (0, 0),
+    };
+    let reference = |r: &str| Literal::Reference(r.to_string());
+    let schemas = vec![
+        ("base".to_string(), vec![constant("BASE", PrimitiveType::U32, Literal::Integer(9))]),
+        (
+            "limits".to_string(),
+            vec![
+                FrozenUnit::Import("base::BASE".to_string(), None, (0, 0)),
+                constant("A", PrimitiveType::U32, reference("BASE")),
+                constant("B", PrimitiveType::U8, reference("A")),
+                constant("RATIO", PrimitiveType::F64, reference("A")),
+                constant("TOP", PrimitiveType::U64, reference("u64::MAX")),
+                constant("NAME", PrimitiveType::String, Literal::String("n".to_string())),
+                constant("LABEL", PrimitiveType::String, reference("NAME")),
+            ],
+        ),
+    ];
+    let files = generate_rust(&code_req(&schemas)).unwrap();
+    let out = &files.iter().find(|f| f.path.to_str().unwrap().contains("limits")).unwrap().contents;
+    for line in [
+        "pub const A: u32 = 9;",
+        "pub const B: u8 = 9;",
+        "pub const RATIO: f64 = 9.0;",
+        "pub const TOP: u64 = 18446744073709551615;",
+        "pub const LABEL: &str = \"n\";",
+    ] {
+        assert!(out.contains(line), "missing `{line}` in: {out}");
+    }
+}
+
 /// Nothing in this file derives anything, so the serde import was pure
 /// noise - and a warning in generated code is one a consumer cannot fix.
 /// `std/validators` is the real case: it declares only validators, so its

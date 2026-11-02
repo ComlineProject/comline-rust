@@ -28,7 +28,7 @@ use comline_codegen::modules::{NamespaceTree, TreeLayout};
 use comline_codegen::naming::{pascal, screaming_snake};
 use comline_codegen::stdlib::{self, is_std_namespace};
 use comline_codegen::symbols::{error_names, Origin, SymbolTable};
-use comline_codegen::validation::{ValidateOnDecode, Validation};
+use comline_codegen::validation::{ValidateOnDecode, Validation, Value};
 use comline_codegen::encodings::type_of;
 use comline_codegen::protocol::EncodingMapping;
 use comline_codegen::{GenerateRequest, GeneratedFile, Mode, PackageMeta};
@@ -500,7 +500,7 @@ fn schema_source(
                 value,
                 ..
             } => {
-                output.push_str(&constant(docstring.as_deref(), name, ty, value.as_ref()));
+                output.push_str(&constant(docstring.as_deref(), name, ty, value.as_ref(), namespace, model));
             }
             FrozenUnit::Protocol {
                 name,
@@ -604,25 +604,27 @@ fn constant(
     name: &str,
     ty: &TypeRef,
     value: Option<&Literal>,
+    namespace: &str,
+    model: &Validation,
 ) -> String {
-    // Validation refuses a constant that isn't a primitive with a literal
-    // value, so neither early return is reachable from a real build.
+    // Validation refuses a constant that isn't a primitive with a value of
+    // its type, so neither early return is reachable from a real build.
     // Emitting nothing rather than guessing keeps it that way.
     let Some(primitive) = ty.as_primitive() else {
         return String::new();
     };
+    // A constant can name another, or an integer type's bound (core#168):
+    // it's emitted with the value that comes to, as a literal is.
+    let Some(Ok(value)) = value.map(|literal| model.value(namespace, literal)) else {
+        return String::new();
+    };
     let (ty, value) = match (primitive, value) {
-        (PrimitiveType::String, Some(Literal::String(text))) => {
-            ("&str".to_string(), format!("{text:?}"))
-        }
+        (PrimitiveType::String, Value::String(text)) => ("&str".to_string(), format!("{text:?}")),
         // A float constant written as an integer (`= 2`) needs a decimal
         // point to be a float in Rust.
-        (p, Some(Literal::Integer(i))) if p.is_float() => {
-            (primitive_type(p).to_string(), format!("{i}.0"))
-        }
-        (p, Some(literal @ (Literal::Integer(_) | Literal::Bool(_)))) => {
-            (primitive_type(p).to_string(), literal.to_string())
-        }
+        (p, Value::Integer(i)) if p.is_float() => (primitive_type(p).to_string(), format!("{i}.0")),
+        (p, Value::Integer(i)) if p.is_integer() => (primitive_type(p).to_string(), i.to_string()),
+        (PrimitiveType::Bool, Value::Bool(b)) => ("bool".to_string(), b.to_string()),
         _ => return String::new(),
     };
 
