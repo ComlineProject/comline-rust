@@ -23,6 +23,7 @@ fn type_of(written: &str) -> TypeRef {
         return TypeRef::Array {
             element: Box::new(type_of(element)),
             length: (!length.is_empty()).then(|| length.parse().expect("an array length")),
+            max: None,
         };
     }
     match PrimitiveType::from_name(written) {
@@ -116,13 +117,13 @@ fn chat_schema() -> Vec<FrozenUnit> {
                         arg("query", TypeRef::Primitive(PrimitiveType::String)),
                         arg("limit", TypeRef::Primitive(PrimitiveType::U32)),
                     ],
-                    Some(TypeRef::Array { element: Box::new(TypeRef::Named("Message".to_string())), length: None }),
+                    Some(TypeRef::Array { element: Box::new(TypeRef::Named("Message".to_string())), length: None, max: None }),
                     vec![],
                 ),
                 function(
                     "history",
                     vec![arg("limit", TypeRef::Primitive(PrimitiveType::U32))],
-                    Some(TypeRef::Array { element: Box::new(TypeRef::Named("Message".to_string())), length: None }),
+                    Some(TypeRef::Array { element: Box::new(TypeRef::Named("Message".to_string())), length: None, max: None }),
                     vec![],
                 ),
                 function("wipe", vec![], Some(TypeRef::Unit), vec![]),

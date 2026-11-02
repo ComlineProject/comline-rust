@@ -78,6 +78,14 @@ pub const SUPPORT: SupportTable = &[
     (Feature::FormatPacked, Support::supported()),
     (Feature::FormatJson, Support::supported()),
     (Feature::FormatMsgPack, Support::supported()),
+    (
+        Feature::Bounds,
+        Support::ignored(
+            "a bounded string is a `String` and a bounded list a `Vec`; nothing checks the maximum yet",
+        )
+        .tracked("core#98"),
+    ),
+    (Feature::Chars, Support::unsupported("no wire format carries a single `char` yet").tracked("core#98")),
 ];
 
 /// Contribute the Rust generator to a CLI's [`Registry`](comline_codegen::Registry).

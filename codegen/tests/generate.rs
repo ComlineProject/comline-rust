@@ -80,7 +80,7 @@ fn user_struct() -> FrozenUnit {
                 parameters: vec![],
                 optional: false,
                 name: "tags".to_string(),
-                ty: TypeRef::Array { element: Box::new(TypeRef::Primitive(PrimitiveType::String)), length: None }, default: None,
+                ty: TypeRef::Array { element: Box::new(TypeRef::Primitive(PrimitiveType::String)), length: None, max: None }, default: None,
                 span: (0, 0),
             },
         ],
@@ -1361,10 +1361,10 @@ fn a_union_is_refused_with_a_clear_error() {
 /// nested in a list, or optional, is refused up front.
 #[test]
 fn a_big_fixed_array_out_of_reach_of_the_attribute_is_refused() {
-    let big = TypeRef::Array { element: Box::new(TypeRef::Primitive(PrimitiveType::U8)), length: Some(64) };
+    let big = TypeRef::Array { element: Box::new(TypeRef::Primitive(PrimitiveType::U8)), length: Some(64), max: None };
     for (optional, ty) in [
         (true, big.clone()),
-        (false, TypeRef::Array { element: Box::new(big.clone()), length: None }),
+        (false, TypeRef::Array { element: Box::new(big.clone()), length: None, max: None }),
     ] {
         let schemas = vec![(
             "api".to_string(),
@@ -1405,7 +1405,7 @@ fn a_big_fixed_array_field_uses_serde_big_array() {
                 parameters: vec![],
                 optional: false,
                 name: "digest".to_string(),
-                ty: TypeRef::Array { element: Box::new(TypeRef::Primitive(PrimitiveType::U8)), length: Some(64) },
+                ty: TypeRef::Array { element: Box::new(TypeRef::Primitive(PrimitiveType::U8)), length: Some(64), max: None },
                 default: None,
                 span: (0, 0),
             }],
