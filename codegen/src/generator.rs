@@ -8,6 +8,7 @@
 //!   tree) + `src/<namespace>.rs`. See design/generation.md.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -19,6 +20,7 @@ use comline_core::schema::ir::unverified;
 
 use eyre::Result;
 
+use crate::bounds::{self, Helpers};
 use crate::ident::{ident, serde_rename};
 use crate::names;
 use crate::validate::{self, Member};
@@ -38,6 +40,23 @@ use comline_codegen::{GenerateRequest, GeneratedFile, Mode, PackageMeta};
 /// canonical name.
 type Encodings = BTreeMap<String, EncodingMapping>;
 
+/// A file's bounded positions (core#98): each one's serde attribute, and the
+/// helper module they share, rendered at the end of the file.
+struct FileBounds<'m, 'a> {
+    model: &'m Validation<'a>,
+    namespace: &'m str,
+    helpers: RefCell<Helpers>,
+}
+
+impl FileBounds<'_, '_> {
+    /// The serde attribute that checks a value of `ty` (as this file's
+    /// schema writes it, bounded aliases included); empty for no bound.
+    fn attribute(&self, ty: &TypeRef, optional: bool, indent: &str) -> Result<String> {
+        let expanded = self.model.expand_bounds(self.namespace, ty);
+        self.helpers.borrow_mut().attribute(&expanded, optional, indent)
+    }
+}
+
 /// The module path of the runtime's async driver, which its `async` feature
 /// gates: a file that uses it needs the feature turned on.
 const ASYNC_DRIVER: &str = "comline_runtime::async_connection::";
@@ -45,7 +64,7 @@ const ASYNC_DRIVER: &str = "comline_runtime::async_connection::";
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "37082def68bc6cafc2bd1ee079cc7412e0c1b932";
+const RUNTIME_REV: &str = "17c3b70e3a350bd2473316d1727006d43d0d8fad";
 
 /// `comline_std` — std's own pre-generated bindings, referenced instead of
 /// inlined when `external_std` is on. Same git-pin shape as
@@ -58,22 +77,6 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
     // What this generator can't render at all is refused up front, every use
     // named, before a single file is produced.
     comline_codegen::features::refuse_unsupported("rust", req, crate::SUPPORT)?;
-
-    // Bounds aren't checked yet (core#98, rollout step 8): every maximum is
-    // dropped, so a bounded string is a `String` and a bounded list a `Vec`,
-    // exactly what the schema generates without them.
-    let unbounded;
-    let req = match comline_codegen::features::strip(
-        comline_codegen::features::Feature::Bounds,
-        &req.schemas,
-        &comline_codegen::features::Options::default(),
-    ) {
-        Some((schemas, _)) => {
-            unbounded = GenerateRequest { schemas, ..req.clone() };
-            &unbounded
-        }
-        None => req,
-    };
 
     // Every encoding the package uses (its format, each protocol's framing
     // and handshake) has to be mapped to a type: an unmapped one is refused
@@ -164,7 +167,8 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
                 };
                 // A protocol already needs the runtime, and says so by using
                 // it throughout; validation alone is easy to miss.
-                let contents = if contents.contains("comline_runtime::validation::")
+                let contents = if (contents.contains("comline_runtime::validation::")
+                    || contents.contains("comline_runtime::bounds::"))
                     && !contents.contains("use comline_runtime::")
                 {
                     format!(
@@ -401,6 +405,7 @@ fn schema_source(
     let errors: HashMap<u16, String> =
         error_names(units).into_iter().map(|(ordinal, name)| (ordinal, ident(&name))).collect();
     let imports = import_paths(units, schemas, external_std);
+    let file_bounds = FileBounds { model, namespace, helpers: RefCell::new(Helpers::default()) };
 
     // Only a `derive`d type needs serde, and a schema can legitimately
     // declare none - `std/validators` declares only validators, so its
@@ -495,9 +500,10 @@ fn schema_source(
 
     for unit in units {
         match unit {
-            FrozenUnit::Struct { name, fields, .. } => {
+            FrozenUnit::Struct { name, fields, parameters, .. } => {
                 let members = validate::field_members(model, namespace, name, fields)?;
-                output.push_str(&data_struct(name, fields, &imports, &members, on_decode)?);
+                let depth = comline_codegen::bounds::max_depth(parameters);
+                output.push_str(&data_struct(name, fields, &imports, &members, on_decode, depth, &file_bounds)?);
             }
             FrozenUnit::Enum { name, variants, .. } => {
                 output.push_str(&data_enum(name, variants));
@@ -510,7 +516,7 @@ fn schema_source(
             } => {
                 let members = validate::field_members(model, namespace, name, fields)?;
                 output.push_str(&error_struct(
-                    name, message, fields, &imports, &members, on_decode,
+                    name, message, fields, &imports, &members, on_decode, &file_bounds,
                 )?);
             }
             FrozenUnit::TypeAlias { name, target, .. } => {
@@ -543,11 +549,13 @@ fn schema_source(
                     on_decode,
                     async_api,
                     encodings,
+                    &file_bounds,
                 )?);
             }
             _ => {}
         }
     }
+    output.push_str(&file_bounds.helpers.borrow().render());
 
     Ok(names::resolve(&output, &taken))
 }
@@ -590,7 +598,7 @@ fn declared_names(units: &[FrozenUnit], schemas: &[(String, Vec<FrozenUnit>)], a
 
 // ── data types ─────────────────────────────────────────────────────────────
 
-fn field_lines(fields: &[FrozenUnit], imports: &HashMap<String, String>) -> String {
+fn field_lines(fields: &[FrozenUnit], imports: &HashMap<String, String>, file_bounds: &FileBounds) -> Result<String> {
     let mut s = String::new();
     for field in fields {
         if let FrozenUnit::Field {
@@ -612,11 +620,12 @@ fn field_lines(fields: &[FrozenUnit], imports: &HashMap<String, String>) -> Stri
             } else {
                 rust
             };
+            s.push_str(&file_bounds.attribute(ty, *optional, "    ")?);
             s.push_str(&serde_rename(name, "    "));
             s.push_str(&format!("    pub {}: {rust},\n", ident(name)));
         }
     }
-    s
+    Ok(s)
 }
 
 fn data_struct(
@@ -625,8 +634,26 @@ fn data_struct(
     imports: &HashMap<String, String>,
     members: &[Member],
     on_decode: ValidateOnDecode,
+    depth: Option<u64>,
+    file_bounds: &FileBounds,
 ) -> Result<String> {
-    let lines = field_lines(fields, imports);
+    let lines = field_lines(fields, imports, file_bounds)?;
+    // A depth limit (`@max_depth`): serde derives on a `remote` definition,
+    // and the struct's own impls count the nesting around it. Decoding runs
+    // the validators itself then, with no shadow type.
+    if let Some(max) = depth {
+        let name = ident(name);
+        let validate = (on_decode != ValidateOnDecode::Off && validate::any_checks(members)).then(|| {
+            let verb = if on_decode == ValidateOnDecode::First { "validate_first" } else { "validate" };
+            format!("comline_runtime::validation::Validate::{verb}(&value)")
+        });
+        return Ok(format!(
+            "#[derive(Debug, Clone)]\npub struct {name} {{\n{}}}\n\n{}{}",
+            bounds::without_serde_attributes(&lines),
+            bounds::depth_impls(&name, max, &lines, validate.as_deref()),
+            validate::validate_impl(&name, "", members)?,
+        ));
+    }
     Ok(format!(
         "#[derive(Debug, Clone, $Serialize, $Deserialize)]\n{}pub struct {} {{\n{lines}}}\n\n{}{}",
         validate::try_from_attribute(&ident(name), on_decode, members),
@@ -708,6 +735,7 @@ fn error_struct(
     imports: &HashMap<String, String>,
     members: &[Member],
     on_decode: ValidateOnDecode,
+    file_bounds: &FileBounds,
 ) -> Result<String> {
     let field_names: Vec<String> = fields
         .iter()
@@ -716,7 +744,7 @@ fn error_struct(
             _ => None,
         })
         .collect();
-    let lines = field_lines(fields, imports);
+    let lines = field_lines(fields, imports, file_bounds)?;
     let name = &ident(name);
     Ok(format!(
         "#[derive(Debug, Clone, PartialEq, $Serialize, $Deserialize)]\n{}pub struct {name} {{\n{lines}}}\n\n\
@@ -1065,6 +1093,8 @@ struct Arg {
     /// The type in the params struct — `&'a str` where `sig_ty` is `&str`,
     /// otherwise identical. The params struct decodes borrowed from the wire.
     field_ty: String,
+    /// The params struct field's serde attribute checking its bounds, if any.
+    bounds: String,
 }
 
 impl Arg {
@@ -1085,6 +1115,9 @@ struct FnInfo {
     params_borrows: bool,
     args: Vec<Arg>,
     ret: String,
+    /// For a return with bounds: its wrapper type, and the attribute on the
+    /// wrapper's field.
+    ret_bounds: Option<(String, String)>,
     err_ty: String,
     /// `(ordinal, error struct type)` for each `!` on this function.
     throws: Vec<(u16, String)>,
@@ -1096,6 +1129,26 @@ struct FnInfo {
     /// `@timeout_ms = N` on the function — the client method calls
     /// `Client::call_with_timeout` with `Duration::from_millis(N)`.
     timeout_ms: Option<u64>,
+}
+
+impl FnInfo {
+    /// The value the dispatcher encodes for a returned `value`: through the
+    /// bounds wrapper, if the return has bounds.
+    fn returned(&self, value: &str) -> String {
+        match &self.ret_bounds {
+            Some((wrapper, _)) => format!("{wrapper}({value})"),
+            None => value.to_string(),
+        }
+    }
+
+    /// What follows a client's `fmt.decode(payload)` to unwrap the bounds
+    /// wrapper, if the return has one.
+    fn unwrap_return(&self) -> String {
+        match &self.ret_bounds {
+            Some((wrapper, _)) => format!(".map(|r: {wrapper}| r.0)"),
+            None => String::new(),
+        }
+    }
 }
 
 /// The `Framing` a protocol's generated `connect` / `serve` helpers wire up.
@@ -1190,6 +1243,7 @@ fn protocol(
     on_decode: ValidateOnDecode,
     async_api: bool,
     encodings: &Encodings,
+    file_bounds: &FileBounds,
 ) -> Result<String> {
     let framing = framing_choice(parameters, encodings);
     // On a connection: handlers take the peer, the dispatcher is provided
@@ -1255,13 +1309,12 @@ fn protocol(
                 _return,
                 throws,
                 ..
-            } => Some(FnInfo {
-                method: connections::method_name(namespace, proto, name, method_names),
-                ..fn_info(proto, name, parameters, arguments, _return, throws, errors, imports)
-            }),
+            } => Some(fn_info(proto, name, parameters, arguments, _return, throws, errors, imports, file_bounds).map(
+                |info| FnInfo { method: connections::method_name(namespace, proto, name, method_names), ..info },
+            )),
             _ => None,
         })
-        .collect();
+        .collect::<Result<_>>()?;
     // What each function's arguments check, in `fns` order. An argument
     // carries checks only through a `type` alias.
     let param_members: Vec<Vec<Member>> = functions
@@ -1290,11 +1343,26 @@ fn protocol(
                 if arg.borrows() {
                     s.push_str("    #[serde(borrow)]\n");
                 }
+                s.push_str(&arg.bounds);
                 s.push_str(&serde_rename(&arg.name, "    "));
                 s.push_str(&format!("    pub {}: {},\n", arg.ident, arg.field_ty));
             }
             s.push_str("}\n\n");
             s.push_str(&validate::validate_impl(ty, lt, members)?);
+        }
+    }
+
+    // 1b. a bounded return goes through a transparent wrapper that checks it
+    for f in &fns {
+        if let Some((wrapper, attr)) = &f.ret_bounds {
+            s.push_str(&format!(
+                "/// What [`{proto}`]'s `{}` returns, checked against its bounds on the wire.\n\
+                 #[doc(hidden)]\n\
+                 #[derive(Debug, $Serialize, $Deserialize)]\n\
+                 #[serde(transparent)]\n\
+                 pub struct {wrapper}(\n{attr}    pub {},\n);\n\n",
+                f.method, f.ret
+            ));
         }
     }
 
@@ -1610,8 +1678,7 @@ fn protocol(
         l.push(format!("        let (reply, fmt) = {call}?;"));
         l.push("        match reply {".into());
         l.push(
-            "            $Envelope::Ok(payload) => fmt.decode(payload).map_err($CallError::Runtime),"
-                .into(),
+            format!("            $Envelope::Ok(payload) => fmt.decode(payload){}.map_err($CallError::Runtime),", f.unwrap_return()),
         );
         for (ord, err) in &f.throws {
             l.push(format!(
@@ -1758,7 +1825,7 @@ fn async_sender(proto: &str, fns: &[FnInfo], number: u16, unverified_doc: &[Stri
         l.push(format!("        let reply = {call}.await?;"));
         l.push("        let fmt = self.0.format();".into());
         l.push("        match reply.envelope() {".into());
-        l.push("            $Envelope::Ok(payload) => fmt.decode(payload).map_err($CallError::Runtime),".into());
+        l.push(format!("            $Envelope::Ok(payload) => fmt.decode(payload){}.map_err($CallError::Runtime),", f.unwrap_return()));
         for (ord, err) in &f.throws {
             l.push(format!("            $Envelope::Err {{ id: {ord}u16, body }} => {{"));
             l.push(format!("                let e: {err} = fmt.decode(body)?;"));
@@ -1861,7 +1928,7 @@ fn dispatch_arms(
                 l.push(format!("                match {call} {{"));
                 l.push("                    $Ok(value) => {".into());
                 l.push("                        let mut body = $Vec::new();".into());
-                l.push(format!("                        {fmt}.encode(&value, &mut body)?;"));
+                l.push(format!("                        {fmt}.encode(&{}, &mut body)?;", f.returned("value")));
                 l.push("                        $Ok($Answer::ok(body))".into());
                 l.push("                    }".into());
                 for (ord, err) in &f.throws {
@@ -1888,7 +1955,7 @@ fn dispatch_arms(
             l.push(format!("                match {call} {{"));
             l.push("                    $Ok(value) => {".into());
             l.push("                        let mut body = $Vec::new();".into());
-            l.push(format!("                        {fmt}.encode(&value, &mut body)?;"));
+            l.push(format!("                        {fmt}.encode(&{}, &mut body)?;", f.returned("value")));
             l.push("                        reply.ok(&body);".into());
             l.push("                    }".into());
             for (ord, err) in &f.throws {
@@ -1933,21 +2000,23 @@ fn fn_info(
     throws: &[u16],
     errors: &HashMap<u16, String>,
     imports: &HashMap<String, String>,
-) -> FnInfo {
+    file_bounds: &FileBounds,
+) -> Result<FnInfo> {
     let pascal_fn = pascal(name);
     let timeout_ms = annotation(parameters, "timeout_ms").and_then(|v| v.parse::<u64>().ok());
     let args: Vec<Arg> = arguments
         .iter()
         .map(|a| {
             let (sig_ty, field_ty) = arg_types(&a.ty, imports);
-            Arg {
+            Ok(Arg {
                 name: a.name.clone(),
                 ident: ident(&a.name),
                 sig_ty,
                 field_ty,
-            }
+                bounds: file_bounds.attribute(&a.ty, false, "    ")?,
+            })
         })
-        .collect();
+        .collect::<Result<_>>()?;
     let params_borrows = args.iter().any(Arg::borrows);
     let params_ty = if args.is_empty() {
         None
@@ -1955,6 +2024,13 @@ fn fn_info(
         Some(format!("{proto}{pascal_fn}Params"))
     };
     let one_way = ret.is_none();
+    let ret_bounds = match ret {
+        Some(ty) => {
+            let attr = file_bounds.attribute(ty, false, "    ")?;
+            (!attr.is_empty()).then(|| (format!("__{proto}{pascal_fn}Return"), attr))
+        }
+        None => None,
+    };
     let ret = match ret {
         None | Some(TypeRef::Unit) => "()".to_string(),
         Some(ty) => rust_type(ty, imports),
@@ -1973,7 +2049,7 @@ fn fn_info(
             )
         })
         .collect();
-    FnInfo {
+    Ok(FnInfo {
         method: name.to_string(),
         ident: crate::ident::method_ident(name),
         params_ty,
@@ -1984,7 +2060,8 @@ fn fn_info(
         throws,
         one_way,
         timeout_ms,
-    }
+        ret_bounds,
+    })
 }
 
 /// The text of a scalar `@key = value` annotation (frozen as
@@ -2115,6 +2192,8 @@ fn rust_type(ty: &TypeRef, imports: &HashMap<String, String>) -> String {
         // aliased import resolve to the name the other schema really
         // exports rather than to this schema's name for it.
         TypeRef::Named(name) => imports.get(name).cloned().unwrap_or_else(|| ident(name)),
+        // An array of `char` is a string, whatever its bound.
+        TypeRef::Array { element, .. } if **element == TypeRef::Primitive(PrimitiveType::Char) => "$String".to_string(),
         TypeRef::Array { element, length: None, .. } => format!("$Vec<{}>", rust_type(element, imports)),
         TypeRef::Array { element, length: Some(n), .. } => {
             format!("[{}; {n}]", rust_type(element, imports))
@@ -2143,7 +2222,7 @@ fn primitive_type(p: PrimitiveType) -> &'static str {
         PrimitiveType::F64 => "f64",
         PrimitiveType::Bool => "bool",
         PrimitiveType::String => "$String",
-        // Refused by `refuse_unsupported`: no format carries one yet.
+        // One Unicode scalar value, as Rust's own `char` is.
         PrimitiveType::Char => "char",
     }
 }
