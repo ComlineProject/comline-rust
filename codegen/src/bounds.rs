@@ -186,7 +186,7 @@ impl Shape {
                      serde::de::DeserializeSeed::deserialize({seed}, d)\n        \
                  }}\n\n        \
                  pub fn serialize<S: serde::Serializer{generics_ser}>(value: &{rust}, s: S) -> $Result<S::Ok, S::Error> {{\n\
-                 {checks}        \
+                 {checks}            \
                      serde::Serialize::serialize(value, s)\n        \
                  }}\n    \
              }}\n",
