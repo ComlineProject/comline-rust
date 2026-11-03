@@ -178,7 +178,7 @@ impl Shape {
         };
         let rust = self.rust();
         let mut checks = String::new();
-        self.checks("value", 8, &mut checks);
+        self.checks("value", 12, &mut checks);
         format!(
             "    pub mod {key} {{\n        \
                  use super::*;\n\n        \
@@ -301,9 +301,8 @@ impl Helpers {
                  }\n\n",
             );
         }
-        for module in self.modules.values() {
-            s.push_str(module);
-        }
+        let modules: Vec<&str> = self.modules.values().map(String::as_str).collect();
+        s.push_str(&modules.join("\n"));
         s.push_str("}\n\n");
         s
     }
