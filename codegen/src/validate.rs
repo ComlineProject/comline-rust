@@ -39,7 +39,13 @@ pub fn field_members<'a>(
     fields
         .iter()
         .filter_map(|field| match field {
-            FrozenUnit::Field { name, ty, optional, parameters, .. } => Some((name, ty, optional, parameters)),
+            FrozenUnit::Field {
+                name,
+                ty,
+                optional,
+                parameters,
+                ..
+            } => Some((name, ty, optional, parameters)),
             _ => None,
         })
         .map(|(name, ty, optional, parameters)| {
@@ -85,7 +91,10 @@ pub fn validate_impl(ty: &str, lifetime: &str, members: &[Member]) -> Result<Str
         return Ok(String::new());
     }
     let mut out = Lines::default();
-    out.line(0, &format!("impl{lifetime} {RT}::Validate for {ty}{lifetime} {{"));
+    out.line(
+        0,
+        &format!("impl{lifetime} {RT}::Validate for {ty}{lifetime} {{"),
+    );
     // A check need not mention `value` (or a member only recurse), and with
     // nothing to check `out` and `first` go unused.
     out.line(1, "#[allow(unused_variables)]");
@@ -97,13 +106,25 @@ pub fn validate_impl(ty: &str, lifetime: &str, members: &[Member]) -> Result<Str
     );
     for member in members.iter().filter(|m| !m.plan.is_empty()) {
         out.line(2, "{");
-        out.line(3, &format!("let path = {RT}::field_path(path, {:?});", member.name));
+        out.line(
+            3,
+            &format!("let path = {RT}::field_path(path, {:?});", member.name),
+        );
         if member.optional {
-            out.line(3, &format!("if let $Some(value) = &self.{} {{", crate::ident::ident(&member.name)));
+            out.line(
+                3,
+                &format!(
+                    "if let $Some(value) = &self.{} {{",
+                    crate::ident::ident(&member.name)
+                ),
+            );
             plan(&mut out, 4, &member.plan)?;
             out.line(3, "}");
         } else {
-            out.line(3, &format!("let value = &self.{};", crate::ident::ident(&member.name)));
+            out.line(
+                3,
+                &format!("let value = &self.{};", crate::ident::ident(&member.name)),
+            );
             plan(&mut out, 3, &member.plan)?;
         }
         out.line(2, "}");
@@ -163,7 +184,9 @@ pub fn decode_shadow(
 /// After a params struct `p` decodes: stop the call the way an undecodable
 /// one stops when the checks fail.
 pub fn params_check(stop: &[&str]) -> Vec<String> {
-    let mut lines = vec![format!("                if {RT}::Validate::validate_first(&p).is_err() {{")];
+    let mut lines = vec![format!(
+        "                if {RT}::Validate::validate_first(&p).is_err() {{"
+    )];
     lines.extend(stop.iter().map(|l| format!("                    {l}")));
     lines.push("                }".to_string());
     lines
@@ -189,6 +212,10 @@ impl Lines {
 /// The checks on `value` (a reference) at `path` (a `String`), then on its
 /// elements, then its own validation.
 fn plan(out: &mut Lines, indent: usize, plan: &Plan) -> Result<()> {
+    // What a check sees ignores bounds, as its `for` does: a bounded string
+    // (`char[max 32]`, or `string` given a default maximum) is still text,
+    // its length counted in characters (core#98).
+    let base = plan.base.without_bounds();
     for check in &plan.checks {
         let args = check
             .params
@@ -204,12 +231,15 @@ fn plan(out: &mut Lines, indent: usize, plan: &Plan) -> Result<()> {
             out.line(indent, "if first && !out.is_empty() {");
             out.line(indent + 1, "return;");
             out.line(indent, "}");
-            out.line(indent, &format!("if !({}) {{", condition(expr, check, &plan.base)?));
+            out.line(
+                indent,
+                &format!("if !({}) {{", condition(expr, check, &base)?),
+            );
             out.line(indent + 1, &format!("out.push({RT}::ValidationError {{"));
             out.line(indent + 2, "field: path.clone(),");
             out.line(
                 indent + 2,
-                &format!("message: {},", message_expr(message, check, &plan.base)),
+                &format!("message: {},", message_expr(message, check, &base)),
             );
             out.line(indent + 1, "});");
             out.line(indent, "}");
@@ -217,12 +247,18 @@ fn plan(out: &mut Lines, indent: usize, plan: &Plan) -> Result<()> {
     }
     if let Some(elements) = &plan.elements {
         out.line(indent, "for (i, value) in value.iter().enumerate() {");
-        out.line(indent + 1, &format!("let path = {RT}::index_path(&path, i);"));
+        out.line(
+            indent + 1,
+            &format!("let path = {RT}::index_path(&path, i);"),
+        );
         self::plan(out, indent + 1, elements)?;
         out.line(indent, "}");
     }
     if plan.nested {
-        out.line(indent, &format!("{RT}::Validate::validate_into(value, &path, out, first);"));
+        out.line(
+            indent,
+            &format!("{RT}::Validate::validate_into(value, &path, out, first);"),
+        );
     }
     Ok(())
 }
@@ -310,7 +346,10 @@ fn operand(operand: &Operand, check: &Check, base: &TypeRef) -> Result<(String, 
 fn path_operand(segments: &[&str], check: &Check, base: &TypeRef) -> Result<(String, Kind)> {
     match segments {
         ["value"] => value_operand(base).ok_or_else(|| {
-            eyre!("validator '{}': `value` of type `{base}` can't be compared", check.validator)
+            eyre!(
+                "validator '{}': `value` of type `{base}` can't be compared",
+                check.validator
+            )
         }),
         ["value", "length"] => Ok((length_expr(base, check)?, Kind::Integer)),
         ["value", "name"] => Ok(("path.as_str()".to_string(), Kind::Text)),
@@ -318,7 +357,10 @@ fn path_operand(segments: &[&str], check: &Check, base: &TypeRef) -> Result<(Str
             Some(Value::Integer(i)) => Ok((i.to_string(), Kind::Integer)),
             Some(Value::Bool(b)) => Ok((b.to_string(), Kind::Bool)),
             Some(Value::String(s)) => Ok((format!("{s:?}"), Kind::Text)),
-            None => Err(eyre!("validator '{}' has no property '{name}'", check.validator)),
+            None => Err(eyre!(
+                "validator '{}' has no property '{name}'",
+                check.validator
+            )),
         },
         _ => Err(eyre!(
             "validator '{}': `{}` isn't something a check can read",
@@ -345,9 +387,14 @@ fn value_operand(base: &TypeRef) -> Option<(String, Kind)> {
 /// array (core fixes the meaning, so every target counts the same).
 fn length_expr(base: &TypeRef, check: &Check) -> Result<String> {
     match base {
-        TypeRef::Primitive(PrimitiveType::String) => Ok("(value.chars().count() as i128)".to_string()),
+        TypeRef::Primitive(PrimitiveType::String) => {
+            Ok("(value.chars().count() as i128)".to_string())
+        }
         TypeRef::Array { .. } => Ok("(value.len() as i128)".to_string()),
-        _ => Err(eyre!("validator '{}': `value.length` isn't defined for `{base}`", check.validator)),
+        _ => Err(eyre!(
+            "validator '{}': `value.length` isn't defined for `{base}`",
+            check.validator
+        )),
     }
 }
 
@@ -374,7 +421,11 @@ fn message_expr(template: &str, check: &Check, base: &TypeRef) -> String {
     if rendered.args.is_empty() {
         format!("{:?}.into()", rendered.literal())
     } else {
-        format!("format!({:?}, {})", rendered.format, rendered.args.join(", "))
+        format!(
+            "format!({:?}, {})",
+            rendered.format,
+            rendered.args.join(", ")
+        )
     }
 }
 

@@ -59,7 +59,9 @@ impl Rendered {
 /// Render `template` against the names of the error's own fields.
 pub fn render(template: &str, fields: &[String]) -> Rendered {
     render_with(template, |path| match path.strip_prefix("self.") {
-        Some(field) if fields.iter().any(|f| f == field) => Some(format!("self.{}", crate::ident::ident(field))),
+        Some(field) if fields.iter().any(|f| f == field) => {
+            Some(format!("self.{}", crate::ident::ident(field)))
+        }
         _ => None,
     })
 }

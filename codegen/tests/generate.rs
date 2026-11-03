@@ -11,7 +11,10 @@ fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenerateRequest {
             name: "test".into(),
             version: "0.1.0".into(),
         },
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
@@ -28,7 +31,10 @@ fn lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenerateRequest {
             name: "chat".into(),
             version: "0.3.0".into(),
         },
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
@@ -42,7 +48,10 @@ fn lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenerateRequest {
 fn lockstep(mut units: Vec<FrozenUnit>) -> Vec<FrozenUnit> {
     for unit in &mut units {
         if let FrozenUnit::Protocol { parameters, .. } = unit {
-            if !parameters.iter().any(|p| matches!(p, FrozenUnit::Property { name, .. } if name == "framing")) {
+            if !parameters
+                .iter()
+                .any(|p| matches!(p, FrozenUnit::Property { name, .. } if name == "framing"))
+            {
                 parameters.push(FrozenUnit::Property {
                     name: "framing".into(),
                     value: ConfigValue::Str("datagram".into()),
@@ -64,7 +73,8 @@ fn user_struct() -> FrozenUnit {
                 parameters: vec![],
                 optional: false,
                 name: "id".to_string(),
-                ty: TypeRef::Primitive(PrimitiveType::S32), default: None,
+                ty: TypeRef::Primitive(PrimitiveType::S32),
+                default: None,
                 span: (0, 0),
             },
             FrozenUnit::Field {
@@ -72,7 +82,8 @@ fn user_struct() -> FrozenUnit {
                 parameters: vec![],
                 optional: false,
                 name: "username".to_string(),
-                ty: TypeRef::Primitive(PrimitiveType::String), default: None,
+                ty: TypeRef::Primitive(PrimitiveType::String),
+                default: None,
                 span: (0, 0),
             },
             FrozenUnit::Field {
@@ -80,7 +91,12 @@ fn user_struct() -> FrozenUnit {
                 parameters: vec![],
                 optional: false,
                 name: "tags".to_string(),
-                ty: TypeRef::Array { element: Box::new(TypeRef::Primitive(PrimitiveType::String)), length: None, max: None }, default: None,
+                ty: TypeRef::Array {
+                    element: Box::new(TypeRef::Primitive(PrimitiveType::String)),
+                    length: None,
+                    max: None,
+                },
+                default: None,
                 span: (0, 0),
             },
         ],
@@ -159,12 +175,17 @@ fn code_mode_generates_enum_and_protocol() {
     ));
     // handshake: an IR fingerprint + connect / serve helpers
     assert!(src.contains("pub const IR_HASH: u64 = 0x"));
-    assert!(src.contains("pub fn connect_with_format(transport: T, format: W) -> Result<Self, RuntimeError>"));
+    assert!(src.contains(
+        "pub fn connect_with_format(transport: T, format: W) -> Result<Self, RuntimeError>"
+    ));
     assert!(src.contains("Ok(Self(Client::connect(transport, format, IR_HASH)?))"));
     assert!(src.contains("impl<S: UserService> UserServiceDispatcher<S> {"));
-    assert!(src.contains("pub fn serve<T: Transport>(self, transport: &mut T) -> Result<(), RuntimeError> {"));
-    assert!(src
-        .contains("pub fn serve_with_format<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)"));
+    assert!(src.contains(
+        "pub fn serve<T: Transport>(self, transport: &mut T) -> Result<(), RuntimeError> {"
+    ));
+    assert!(src.contains(
+        "pub fn serve_with_format<T: Transport, W: WireFormat>(self, transport: &mut T, format: W)"
+    ));
     assert!(src.contains("Server::new(self, format).serve(transport, IR_HASH)"));
 }
 
@@ -186,7 +207,8 @@ fn code_mode_emits_a_type_alias_and_fields_reference_it_by_name() {
             parameters: vec![],
             optional: false,
             name: "sender".to_string(),
-            ty: TypeRef::Named("UserId".to_string()), default: None,
+            ty: TypeRef::Named("UserId".to_string()),
+            default: None,
             span: (0, 0),
         }],
         span: (0, 0),
@@ -228,7 +250,8 @@ fn protocol_errors_map_to_ordinals_and_a_union() {
             parameters: vec![],
             optional: false,
             name: "why".to_string(),
-            ty: TypeRef::Primitive(PrimitiveType::String), default: None,
+            ty: TypeRef::Primitive(PrimitiveType::String),
+            default: None,
             span: (0, 0),
         }],
         span: Some((0, 0)),
@@ -418,9 +441,8 @@ fn framing_annotation_selects_jsonrpc_for_the_connect_and_serve_helpers() {
     ));
     // connect / serve pass the framing explicitly
     assert!(src.contains("let framing = comline_runtime::framing::JsonRpcFraming;"));
-    assert!(src.contains(
-        "Ok(Self(Client::connect_with_framing(transport, format, framing, IR_HASH)?))"
-    ));
+    assert!(src
+        .contains("Ok(Self(Client::connect_with_framing(transport, format, framing, IR_HASH)?))"));
     assert!(src.contains("Server::with_framing(self, format, framing).serve(transport, IR_HASH)"));
     // the datagram default never appears for an all-JSON-RPC schema
     assert!(!src.contains("DatagramFraming"));
@@ -450,7 +472,10 @@ fn one_plain_protocol(name: &str) -> Vec<FrozenUnit> {
 #[test]
 fn an_unknown_wire_format_is_an_error() {
     let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
-    let req = GenerateRequest { wire_format: "packed".into(), ..code_req(&schemas) };
+    let req = GenerateRequest {
+        wire_format: "packed".into(),
+        ..code_req(&schemas)
+    };
     let error = generate_rust(&req).unwrap_err();
     assert_eq!(
         error.to_string(),
@@ -463,7 +488,10 @@ fn an_unknown_wire_format_is_an_error() {
 fn acme_protocol(framing: &str) -> Vec<FrozenUnit> {
     let mut units = one_plain_protocol("Lines");
     if let FrozenUnit::Protocol { parameters, .. } = &mut units[0] {
-        parameters.push(FrozenUnit::Property { name: "framing".into(), value: ConfigValue::Str(framing.into()) });
+        parameters.push(FrozenUnit::Property {
+            name: "framing".into(),
+            value: ConfigValue::Str(framing.into()),
+        });
     }
     units
 }
@@ -480,31 +508,63 @@ fn acme(ty: &str) -> comline_codegen::protocol::EncodingMapping {
 fn an_unmapped_framing_is_an_error_not_a_fallback() {
     let schemas = vec![("lines".to_string(), acme_protocol("com.acme.lines@1"))];
     let error = generate_rust(&code_req(&schemas)).unwrap_err().to_string();
-    assert!(error.starts_with("encoding `com.acme.lines@1` has no rust mapping in the request"), "{error}");
+    assert!(
+        error.starts_with("encoding `com.acme.lines@1` has no rust mapping in the request"),
+        "{error}"
+    );
 }
 
 #[test]
 fn a_third_party_framing_and_format_use_their_mapped_types() {
     let schemas = vec![("lines".to_string(), acme_protocol("com.acme.lines@1"))];
-    let mut req = GenerateRequest { wire_format: "com.acme.cbor@1".into(), ..lib_req(&schemas) };
-    req.encodings.insert("com.acme.lines@1".into(), acme("acme_encodings::LinesFraming"));
-    req.encodings.insert("com.acme.cbor@1".into(), acme("acme_encodings::Cbor"));
+    let mut req = GenerateRequest {
+        wire_format: "com.acme.cbor@1".into(),
+        ..lib_req(&schemas)
+    };
+    req.encodings.insert(
+        "com.acme.lines@1".into(),
+        acme("acme_encodings::LinesFraming"),
+    );
+    req.encodings
+        .insert("com.acme.cbor@1".into(), acme("acme_encodings::Cbor"));
     let files = generate_rust(&req).unwrap();
-    let file = |path: &str| &files.iter().find(|f| f.path.to_str() == Some(path)).unwrap().contents;
+    let file = |path: &str| {
+        &files
+            .iter()
+            .find(|f| f.path.to_str() == Some(path))
+            .unwrap()
+            .contents
+    };
     let lib = file("src/lines.rs");
-    assert!(lib.contains("pub type Format = acme_encodings::Cbor;"), "{lib}");
-    assert!(lib.contains("let framing = acme_encodings::LinesFraming;"), "{lib}");
-    assert!(lib.contains("Client<T, W, acme_encodings::LinesFraming>"), "{lib}");
+    assert!(
+        lib.contains("pub type Format = acme_encodings::Cbor;"),
+        "{lib}"
+    );
+    assert!(
+        lib.contains("let framing = acme_encodings::LinesFraming;"),
+        "{lib}"
+    );
+    assert!(
+        lib.contains("Client<T, W, acme_encodings::LinesFraming>"),
+        "{lib}"
+    );
     // `lib` output depends on the crate the mapping names, once.
     let manifest = file("Cargo.toml");
-    assert_eq!(manifest.matches("acme-encodings = \"0.2\"\n").count(), 1, "{manifest}");
+    assert_eq!(
+        manifest.matches("acme-encodings = \"0.2\"\n").count(),
+        1,
+        "{manifest}"
+    );
 }
 
 /// A connection protocol that runs `handshake`, a namespaced one.
 fn hello_protocol(handshake: &str) -> Vec<FrozenUnit> {
     let mut units = one_plain_protocol("Link");
     if let FrozenUnit::Protocol { parameters, .. } = &mut units[0] {
-        parameters.push(FrozenUnit::Property { name: "handshake".into(), value: ConfigValue::Str(handshake.into()) });
+        parameters.push(FrozenUnit::Property {
+            name: "handshake".into(),
+            value: ConfigValue::Str(handshake.into()),
+        });
     }
     units
 }
@@ -513,7 +573,10 @@ fn hello_protocol(handshake: &str) -> Vec<FrozenUnit> {
 fn an_unmapped_handshake_is_an_error_not_a_fallback() {
     let schemas = vec![("link".to_string(), hello_protocol("com.acme.hello@1"))];
     let error = generate_rust(&code_req(&schemas)).unwrap_err().to_string();
-    assert!(error.starts_with("encoding `com.acme.hello@1` has no rust mapping in the request"), "{error}");
+    assert!(
+        error.starts_with("encoding `com.acme.hello@1` has no rust mapping in the request"),
+        "{error}"
+    );
 }
 
 /// On an async connection a namespaced handshake runs through
@@ -522,10 +585,20 @@ fn an_unmapped_handshake_is_an_error_not_a_fallback() {
 #[test]
 fn a_third_party_handshake_on_an_async_connection_runs_through_with() {
     let schemas = vec![("link".to_string(), hello_protocol("com.acme.hello@1"))];
-    let mut req = GenerateRequest { async_api: true, ..lib_req(&schemas) };
-    req.encodings.insert("com.acme.hello@1".into(), acme("acme_encodings::Hello"));
+    let mut req = GenerateRequest {
+        async_api: true,
+        ..lib_req(&schemas)
+    };
+    req.encodings
+        .insert("com.acme.hello@1".into(), acme("acme_encodings::Hello"));
     let files = generate_rust(&req).unwrap();
-    let file = |end: &str| &files.iter().find(|f| f.path.ends_with(end)).unwrap().contents;
+    let file = |end: &str| {
+        &files
+            .iter()
+            .find(|f| f.path.ends_with(end))
+            .unwrap()
+            .contents
+    };
     let (lib, link) = (file("src/lib.rs"), file("src/link.rs"));
     for side in ["accept", "connect"] {
         let open = format!(
@@ -534,7 +607,10 @@ fn a_third_party_handshake_on_an_async_connection_runs_through_with() {
         );
         assert!(lib.contains(&open), "{lib}");
     }
-    assert!(!lib.contains("AsyncConnection::accept(") && !lib.contains("AsyncConnection::connect("), "{lib}");
+    assert!(
+        !lib.contains("AsyncConnection::accept(") && !lib.contains("AsyncConnection::connect("),
+        "{lib}"
+    );
     assert!(
         link.contains("`AsyncConnection::accept_with(transport, format, comline_runtime::contract::Datagram2Framing, &mut acme_encodings::Hello, CONNECTION_IR_HASH)`"),
         "{link}"
@@ -545,7 +621,11 @@ fn a_third_party_handshake_on_an_async_connection_runs_through_with() {
 fn official_mappings_add_no_dependency_of_their_own() {
     let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
     let files = generate_rust(&lib_req(&schemas)).unwrap();
-    let manifest = &files.iter().find(|f| f.path.to_str() == Some("Cargo.toml")).unwrap().contents;
+    let manifest = &files
+        .iter()
+        .find(|f| f.path.to_str() == Some("Cargo.toml"))
+        .unwrap()
+        .contents;
     assert_eq!(manifest.matches("comline-runtime").count(), 1, "{manifest}");
 }
 
@@ -561,21 +641,42 @@ fn datagram1_keeps_the_lockstep_client_and_server() {
         });
     }
     let schemas = vec![("rpc".to_string(), units)];
-    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    let src = generate_rust(&code_req(&schemas))
+        .unwrap()
+        .remove(0)
+        .contents;
 
     assert!(!src.contains("JsonRpcFraming"));
     assert!(!src.contains("Framing,")); // trait not imported
-    assert!(src.contains("pub type Format = comline_runtime::format::Packed;"), "{src}");
+    assert!(
+        src.contains("pub type Format = comline_runtime::format::Packed;"),
+        "{src}"
+    );
     assert!(src.contains("pub struct RpcClient<T, W>(pub Client<T, W>);"));
-    assert!(src.contains("        self.serve_with_format(transport, Format::default())\n"), "{src}");
+    assert!(
+        src.contains("        self.serve_with_format(transport, Format::default())\n"),
+        "{src}"
+    );
     assert!(src.contains("Server::new(self, format).serve(transport, IR_HASH)"));
-    assert!(src.contains("impl<T: Transport> RpcClient<T, Format> {"), "{src}");
-    assert!(src.contains("        Self::connect_with_format(transport, Format::default())\n"), "{src}");
+    assert!(
+        src.contains("impl<T: Transport> RpcClient<T, Format> {"),
+        "{src}"
+    );
+    assert!(
+        src.contains("        Self::connect_with_format(transport, Format::default())\n"),
+        "{src}"
+    );
     assert!(src.contains("Ok(Self(Client::connect(transport, format, IR_HASH)?))"));
 
-    let msgpack = GenerateRequest { wire_format: "msgpack@1".into(), ..code_req(&schemas) };
+    let msgpack = GenerateRequest {
+        wire_format: "msgpack@1".into(),
+        ..code_req(&schemas)
+    };
     let src = generate_rust(&msgpack).unwrap().remove(0).contents;
-    assert!(src.contains("pub type Format = comline_runtime::format::MsgPack;"), "{src}");
+    assert!(
+        src.contains("pub type Format = comline_runtime::format::MsgPack;"),
+        "{src}"
+    );
 }
 
 #[test]
@@ -753,7 +854,10 @@ fn lib_mode_rejects_a_schema_nested_under_lib() {
 fn lib_mode_records_the_declared_toolchain() {
     let schemas = vec![("chat".to_string(), vec![user_struct()])];
     let req = GenerateRequest {
-        target: TargetLanguage { language: "rust".into(), version: "1.88.0".into() },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: "1.88.0".into(),
+        },
         ..lib_req(&schemas)
     };
     let files = generate_rust(&req).unwrap();
@@ -769,7 +873,12 @@ fn lib_mode_records_the_declared_toolchain() {
         .find(|f| f.path.to_str() == Some("src/chat.rs"))
         .expect("the schema's module")
         .contents;
-    assert!(chat.starts_with("// Generated by Comline\n// For Rust 1.88.0 or later; verified up to 1.99.\n"), "{chat}");
+    assert!(
+        chat.starts_with(
+            "// Generated by Comline\n// For Rust 1.88.0 or later; verified up to 1.99.\n"
+        ),
+        "{chat}"
+    );
 }
 
 /// `main` imports and uses `Shared`, declared over in the `shared` schema -
@@ -787,7 +896,8 @@ fn cross_namespace_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
                 parameters: vec![],
                 optional: false,
                 name: "value".to_string(),
-                ty: TypeRef::Named("Shared".to_string()), default: None,
+                ty: TypeRef::Named("Shared".to_string()),
+                default: None,
                 span: (0, 0),
             }],
             span: (0, 0),
@@ -802,7 +912,8 @@ fn cross_namespace_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
             parameters: vec![],
             optional: false,
             name: "n".to_string(),
-            ty: TypeRef::Primitive(PrimitiveType::U32), default: None,
+            ty: TypeRef::Primitive(PrimitiveType::U32),
+            default: None,
             span: (0, 0),
         }],
         span: (0, 0),
@@ -875,7 +986,8 @@ fn std_reference_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
                 parameters: vec![],
                 optional: false,
                 name: "request".to_string(),
-                ty: TypeRef::Named("Request".to_string()), default: None,
+                ty: TypeRef::Named("Request".to_string()),
+                default: None,
                 span: (0, 0),
             }],
             span: (0, 0),
@@ -890,7 +1002,8 @@ fn std_reference_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
             parameters: vec![],
             optional: false,
             name: "uri".to_string(),
-            ty: TypeRef::Primitive(PrimitiveType::String), default: None,
+            ty: TypeRef::Primitive(PrimitiveType::String),
+            default: None,
             span: (0, 0),
         }],
         span: (0, 0),
@@ -1003,25 +1116,29 @@ fn constants_are_emitted_with_the_type_they_declared() {
             FrozenUnit::Constant {
                 docstring: Some("How many times a client retries.".to_string()),
                 name: "MAX_RETRIES".to_string(),
-                ty: TypeRef::Primitive(PrimitiveType::U8), value: Some(Literal::Integer(5)),
+                ty: TypeRef::Primitive(PrimitiveType::U8),
+                value: Some(Literal::Integer(5)),
                 span: (0, 0),
             },
             FrozenUnit::Constant {
                 docstring: None,
                 name: "SERVICE_NAME".to_string(),
-                ty: TypeRef::Primitive(PrimitiveType::String), value: Some(Literal::String("store".to_string())),
+                ty: TypeRef::Primitive(PrimitiveType::String),
+                value: Some(Literal::String("store".to_string())),
                 span: (0, 0),
             },
             FrozenUnit::Constant {
                 docstring: None,
                 name: "DEBUG".to_string(),
-                ty: TypeRef::Primitive(PrimitiveType::Bool), value: Some(Literal::Bool(true)),
+                ty: TypeRef::Primitive(PrimitiveType::Bool),
+                value: Some(Literal::Bool(true)),
                 span: (0, 0),
             },
             FrozenUnit::Constant {
                 docstring: None,
                 name: "OFFSET".to_string(),
-                ty: TypeRef::Primitive(PrimitiveType::S16), value: Some(Literal::Integer(-3)),
+                ty: TypeRef::Primitive(PrimitiveType::S16),
+                value: Some(Literal::Integer(-3)),
                 span: (0, 0),
             },
         ],
@@ -1060,7 +1177,10 @@ fn a_constant_naming_another_is_emitted_with_its_value() {
     };
     let reference = |r: &str| Literal::Reference(r.to_string());
     let schemas = vec![
-        ("base".to_string(), vec![constant("BASE", PrimitiveType::U32, Literal::Integer(9))]),
+        (
+            "base".to_string(),
+            vec![constant("BASE", PrimitiveType::U32, Literal::Integer(9))],
+        ),
         (
             "limits".to_string(),
             vec![
@@ -1069,13 +1189,21 @@ fn a_constant_naming_another_is_emitted_with_its_value() {
                 constant("B", PrimitiveType::U8, reference("A")),
                 constant("RATIO", PrimitiveType::F64, reference("A")),
                 constant("TOP", PrimitiveType::U64, reference("u64::MAX")),
-                constant("NAME", PrimitiveType::String, Literal::String("n".to_string())),
+                constant(
+                    "NAME",
+                    PrimitiveType::String,
+                    Literal::String("n".to_string()),
+                ),
                 constant("LABEL", PrimitiveType::String, reference("NAME")),
             ],
         ),
     ];
     let files = generate_rust(&code_req(&schemas)).unwrap();
-    let out = &files.iter().find(|f| f.path.to_str().unwrap().contains("limits")).unwrap().contents;
+    let out = &files
+        .iter()
+        .find(|f| f.path.to_str().unwrap().contains("limits"))
+        .unwrap()
+        .contents;
     for line in [
         "pub const A: u32 = 9;",
         "pub const B: u8 = 9;",
@@ -1098,7 +1226,8 @@ fn a_file_with_nothing_to_derive_imports_no_serde() {
         vec![FrozenUnit::Constant {
             docstring: None,
             name: "MAX".to_string(),
-            ty: TypeRef::Primitive(PrimitiveType::U8), value: Some(Literal::Integer(1)),
+            ty: TypeRef::Primitive(PrimitiveType::U8),
+            value: Some(Literal::Integer(1)),
             span: (0, 0),
         }],
     )];
@@ -1361,10 +1490,21 @@ fn a_union_is_refused_with_a_clear_error() {
 /// nested in a list, or optional, is refused up front.
 #[test]
 fn a_big_fixed_array_out_of_reach_of_the_attribute_is_refused() {
-    let big = TypeRef::Array { element: Box::new(TypeRef::Primitive(PrimitiveType::U8)), length: Some(64), max: None };
+    let big = TypeRef::Array {
+        element: Box::new(TypeRef::Primitive(PrimitiveType::U8)),
+        length: Some(64),
+        max: None,
+    };
     for (optional, ty) in [
         (true, big.clone()),
-        (false, TypeRef::Array { element: Box::new(big.clone()), length: None, max: None }),
+        (
+            false,
+            TypeRef::Array {
+                element: Box::new(big.clone()),
+                length: None,
+                max: None,
+            },
+        ),
     ] {
         let schemas = vec![(
             "api".to_string(),
@@ -1385,7 +1525,10 @@ fn a_big_fixed_array_out_of_reach_of_the_attribute_is_refused() {
             }],
         )];
         let err = generate_rust(&code_req(&schemas)).unwrap_err().to_string();
-        assert!(err.contains("doesn't support fixed arrays over 32 elements, nested"), "{err}");
+        assert!(
+            err.contains("doesn't support fixed arrays over 32 elements, nested"),
+            "{err}"
+        );
         assert!(err.contains("schema 'api', struct 'S', field 'd'"), "{err}");
     }
 }
@@ -1405,16 +1548,28 @@ fn a_big_fixed_array_field_uses_serde_big_array() {
                 parameters: vec![],
                 optional: false,
                 name: "digest".to_string(),
-                ty: TypeRef::Array { element: Box::new(TypeRef::Primitive(PrimitiveType::U8)), length: Some(64), max: None },
+                ty: TypeRef::Array {
+                    element: Box::new(TypeRef::Primitive(PrimitiveType::U8)),
+                    length: Some(64),
+                    max: None,
+                },
                 default: None,
                 span: (0, 0),
             }],
             span: (0, 0),
         }],
     )];
-    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    let src = generate_rust(&code_req(&schemas))
+        .unwrap()
+        .remove(0)
+        .contents;
     assert!(src.starts_with("// This file uses `serde_big_array` - add it to your Cargo.toml:\n// serde-big-array = \"0.5\"\n"), "{src}");
-    assert!(src.contains("    #[serde(with = \"serde_big_array::BigArray\")]\n    pub digest: [u8; 64],\n"), "{src}");
+    assert!(
+        src.contains(
+            "    #[serde(with = \"serde_big_array::BigArray\")]\n    pub digest: [u8; 64],\n"
+        ),
+        "{src}"
+    );
 }
 
 // ── validators ─────────────────────────────────────────────────────────────
@@ -1422,7 +1577,10 @@ fn a_big_fixed_array_field_uses_serde_big_array() {
 fn validated(source: &str) -> Vec<(String, Vec<FrozenUnit>)> {
     use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
     use comline_core::schema::ir::compiler::Compile;
-    vec![("app".to_string(), IncrementalInterpreter::from_source(source))]
+    vec![(
+        "app".to_string(),
+        IncrementalInterpreter::from_source(source),
+    )]
 }
 
 const NON_EMPTY: &str = "validator NonEmpty for string {\n    validate {\n        \
@@ -1438,14 +1596,62 @@ fn app_file(files: &[comline_codegen::GeneratedFile]) -> &str {
 }
 
 #[test]
-fn a_checked_struct_implements_validate_and_decodes_unchanged_by_default() {
+fn a_checked_struct_implements_validate_and_checks_on_decode_by_default() {
     let schemas = validated(NON_EMPTY);
     let files = generate_rust(&code_req(&schemas)).unwrap();
     let app = app_file(&files);
-    assert!(app.contains("impl comline_runtime::validation::Validate for Note {"), "{app}");
-    assert!(app.contains("if !((value.chars().count() as i128) > 0) {"), "{app}");
-    assert!(app.contains("message: format!(\"{} is empty\", path),"), "{app}");
-    assert!(!app.contains("try_from"), "off leaves decoding alone:\n{app}");
+    assert!(
+        app.contains("impl comline_runtime::validation::Validate for Note {"),
+        "{app}"
+    );
+    assert!(
+        app.contains("if !((value.chars().count() as i128) > 0) {"),
+        "{app}"
+    );
+    assert!(
+        app.contains("message: format!(\"{} is empty\", path),"),
+        "{app}"
+    );
+    // `collect` is the default: decoding runs every check.
+    assert!(
+        app.contains("#[serde(try_from = \"__NoteUnchecked\")]\npub struct Note {"),
+        "{app}"
+    );
+    assert!(
+        app.contains("comline_runtime::validation::Validate::validate(&value)"),
+        "{app}"
+    );
+}
+
+#[test]
+fn off_leaves_decoding_alone() {
+    let schemas = validated(NON_EMPTY);
+    let req = GenerateRequest {
+        validate_on_decode: comline_codegen::validation::ValidateOnDecode::Off,
+        ..code_req(&schemas)
+    };
+    let app = app_file(&generate_rust(&req).unwrap()).to_string();
+    assert!(
+        app.contains("impl comline_runtime::validation::Validate for Note {"),
+        "{app}"
+    );
+    assert!(
+        !app.contains("try_from"),
+        "off leaves decoding alone:\n{app}"
+    );
+}
+
+/// A bounded string is still text to a validator: its length is counted in
+/// characters, and a literal compared with it stays a plain number (core#98).
+#[test]
+fn a_validator_on_a_bounded_string_counts_characters() {
+    let schemas = validated(&NON_EMPTY.replace("text: string", "text: char[max 32]"));
+    let app = app_file(&generate_rust(&code_req(&schemas)).unwrap()).to_string();
+    assert!(
+        app.contains("if !((value.chars().count() as i128) > 0) {"),
+        "{app}"
+    );
+    assert!(!app.contains("value.len()"), "{app}");
 }
 
 #[test]
@@ -1456,15 +1662,27 @@ fn validate_on_decode_first_decodes_through_validate_first() {
         ..code_req(&schemas)
     };
     let app = generate_rust(&req).unwrap().remove(0).contents;
-    assert!(app.contains("#[serde(try_from = \"__NoteUnchecked\")]\npub struct Note {"), "{app}");
-    assert!(app.contains("type Error = comline_runtime::validation::ValidationError;"), "{app}");
-    assert!(app.contains("comline_runtime::validation::Validate::validate_first(&value)?;"), "{app}");
+    assert!(
+        app.contains("#[serde(try_from = \"__NoteUnchecked\")]\npub struct Note {"),
+        "{app}"
+    );
+    assert!(
+        app.contains("type Error = comline_runtime::validation::ValidationError;"),
+        "{app}"
+    );
+    assert!(
+        app.contains("comline_runtime::validation::Validate::validate_first(&value)?;"),
+        "{app}"
+    );
 }
 
 #[test]
 fn code_mode_names_the_runtime_dependency_validation_needs() {
     let schemas = validated(NON_EMPTY);
-    let app = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    let app = generate_rust(&code_req(&schemas))
+        .unwrap()
+        .remove(0)
+        .contents;
     assert!(
         app.starts_with("// This file uses `comline_runtime` - add it to your Cargo.toml:\n"),
         "{app}"
@@ -1475,8 +1693,15 @@ fn code_mode_names_the_runtime_dependency_validation_needs() {
 fn lib_mode_depends_on_the_runtime_for_validation_alone() {
     let schemas = validated(NON_EMPTY);
     let files = generate_rust(&lib_req(&schemas)).unwrap();
-    let manifest = &files.iter().find(|f| f.path.ends_with("Cargo.toml")).unwrap().contents;
-    assert!(manifest.contains("comline-runtime = { git = "), "{manifest}");
+    let manifest = &files
+        .iter()
+        .find(|f| f.path.ends_with("Cargo.toml"))
+        .unwrap()
+        .contents;
+    assert!(
+        manifest.contains("comline-runtime = { git = "),
+        "{manifest}"
+    );
 }
 
 #[test]
@@ -1484,7 +1709,11 @@ fn a_struct_without_checks_gets_no_validate_impl() {
     let schemas = validated("struct Plain {\n    n: u32\n}\n");
     let files = generate_rust(&lib_req(&schemas)).unwrap();
     assert!(!app_file(&files).contains("Validate"));
-    let manifest = &files.iter().find(|f| f.path.ends_with("Cargo.toml")).unwrap().contents;
+    let manifest = &files
+        .iter()
+        .find(|f| f.path.ends_with("Cargo.toml"))
+        .unwrap()
+        .contents;
     assert!(!manifest.contains("comline-runtime"), "{manifest}");
 }
 
@@ -1504,12 +1733,18 @@ fn handshake_none_runs_no_handshake_and_documents_what_is_given_up() {
     // @handshake = "none" @unverified = "..." protocol Gate { function ping() -> u32; }
     let proto = |framing: Option<&str>| {
         let mut parameters = vec![
-            FrozenUnit::Property { name: "handshake".into(), value: ConfigValue::Str("none".into()) },
+            FrozenUnit::Property {
+                name: "handshake".into(),
+                value: ConfigValue::Str("none".into()),
+            },
             FrozenUnit::Property {
                 name: "unverified".into(),
                 value: ConfigValue::Str("the 2009 gateway".into()),
             },
-            FrozenUnit::Unverified(vec![Guarantee::SchemaAgreement, Guarantee::EncodingAgreement]),
+            FrozenUnit::Unverified(vec![
+                Guarantee::SchemaAgreement,
+                Guarantee::EncodingAgreement,
+            ]),
         ];
         if let Some(framing) = framing {
             parameters.push(FrozenUnit::Property {
@@ -1535,7 +1770,10 @@ fn handshake_none_runs_no_handshake_and_documents_what_is_given_up() {
     };
     let generate = |framing| {
         let schemas = vec![("gate".to_string(), lockstep(vec![proto(framing)]))];
-        generate_rust(&code_req(&schemas)).unwrap().remove(0).contents
+        generate_rust(&code_req(&schemas))
+            .unwrap()
+            .remove(0)
+            .contents
     };
 
     let src = generate(None);
@@ -1563,7 +1801,10 @@ fn handshake_none_runs_no_handshake_and_documents_what_is_given_up() {
 #[test]
 fn a_protocol_is_on_a_connection_by_default() {
     let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
-    let src = generate_rust(&code_req(&schemas)).unwrap().remove(0).contents;
+    let src = generate_rust(&code_req(&schemas))
+        .unwrap()
+        .remove(0)
+        .contents;
     assert!(src.contains("pub struct RpcSender<'p, P: Peer>(pub &'p mut P);"));
     assert!(src.contains("pub const PROTOCOL: ProtocolNumber = 0;"));
     assert!(src.contains("pub const CONNECTION_IR_HASH: u64"));
@@ -1577,27 +1818,61 @@ fn a_protocol_is_on_a_connection_by_default() {
 #[test]
 fn async_makes_a_connection_protocol_async() {
     let schemas = vec![("rpc".to_string(), one_plain_protocol("Rpc"))];
-    let on_connection = GenerateRequest { async_api: true, ..code_req(&schemas) };
+    let on_connection = GenerateRequest {
+        async_api: true,
+        ..code_req(&schemas)
+    };
     let src = generate_rust(&on_connection).unwrap().remove(0).contents;
-    assert!(src.starts_with("// This file uses `comline_runtime`'s async driver - enable its feature"), "{src}");
-    assert!(src.contains("pub trait Rpc: Send + Sync + 'static {"), "{src}");
-    assert!(src.contains("-> impl ::core::future::Future<Output = "), "{src}");
+    assert!(
+        src.starts_with("// This file uses `comline_runtime`'s async driver - enable its feature"),
+        "{src}"
+    );
+    assert!(
+        src.contains("pub trait Rpc: Send + Sync + 'static {"),
+        "{src}"
+    );
+    assert!(
+        src.contains("-> impl ::core::future::Future<Output = "),
+        "{src}"
+    );
     assert!(src.contains("peer: &impl AsyncPeer"), "{src}");
-    assert!(src.contains("impl<S: Rpc> AsyncDispatch for RpcAsyncDispatcher<S> {"), "{src}");
-    assert!(src.contains("pub struct RpcAsyncSender<'p, P: AsyncPeer>(pub &'p P);"), "{src}");
+    assert!(
+        src.contains("impl<S: Rpc> AsyncDispatch for RpcAsyncDispatcher<S> {"),
+        "{src}"
+    );
+    assert!(
+        src.contains("pub struct RpcAsyncSender<'p, P: AsyncPeer>(pub &'p P);"),
+        "{src}"
+    );
     assert!(src.contains("use comline_runtime::async_connection::{Answer, AsyncConnection, AsyncDispatch, AsyncPeer, AsyncTransport};"));
     // Nothing of the blocking connection API, so no unused imports.
-    for blocking in ["RpcDispatcher<", "RpcSender<", "Reply", "connection::Connection", "Peer, ProtocolNumber", "transport::Transport"] {
-        assert!(!src.contains(blocking), "`{blocking}` in async output:\n{src}");
+    for blocking in [
+        "RpcDispatcher<",
+        "RpcSender<",
+        "Reply",
+        "connection::Connection",
+        "Peer, ProtocolNumber",
+        "transport::Transport",
+    ] {
+        assert!(
+            !src.contains(blocking),
+            "`{blocking}` in async output:\n{src}"
+        );
     }
 
     // A protocol that isn't on a connection has no async form.
     let mut units = one_plain_protocol("Rpc");
     if let FrozenUnit::Protocol { parameters, .. } = &mut units[0] {
-        parameters.push(FrozenUnit::Property { name: "framing".into(), value: ConfigValue::Str("datagram".into()) });
+        parameters.push(FrozenUnit::Property {
+            name: "framing".into(),
+            value: ConfigValue::Str("datagram".into()),
+        });
     }
     let schemas = vec![("rpc".to_string(), units)];
-    let lockstep = GenerateRequest { async_api: true, ..code_req(&schemas) };
+    let lockstep = GenerateRequest {
+        async_api: true,
+        ..code_req(&schemas)
+    };
     let src = generate_rust(&lockstep).unwrap().remove(0).contents;
     assert!(src.contains("pub struct RpcClient<T, W>"));
     assert!(!src.contains("Async"), "{src}");
@@ -1614,20 +1889,34 @@ fn an_async_protocols_names_are_checked_for_collisions() {
         span: (0, 0),
     });
     let schemas = vec![("rpc".to_string(), units)];
-    let req = GenerateRequest { async_api: true, ..code_req(&schemas) };
+    let req = GenerateRequest {
+        async_api: true,
+        ..code_req(&schemas)
+    };
     let error = generate_rust(&req).unwrap_err().to_string();
     assert!(error.contains("RpcAsyncSender"), "{error}");
     // Without `async`, that name is free.
-    assert!(generate_rust(&GenerateRequest { async_api: false, ..req }).is_ok());
+    assert!(generate_rust(&GenerateRequest {
+        async_api: false,
+        ..req
+    })
+    .is_ok());
 }
 
 #[test]
 fn jsonrpc_on_a_connection_gets_the_connection_api() {
     let mut units = one_plain_protocol("Rpc");
-    let FrozenUnit::Protocol { parameters, .. } = units.iter_mut().find(|u| matches!(u, FrozenUnit::Protocol { .. })).unwrap() else {
+    let FrozenUnit::Protocol { parameters, .. } = units
+        .iter_mut()
+        .find(|u| matches!(u, FrozenUnit::Protocol { .. }))
+        .unwrap()
+    else {
         unreachable!()
     };
-    parameters.push(FrozenUnit::Property { name: "provider".into(), value: ConfigValue::Name("Client".into()) });
+    parameters.push(FrozenUnit::Property {
+        name: "provider".into(),
+        value: ConfigValue::Name("Client".into()),
+    });
     parameters.push(FrozenUnit::Property {
         name: "framing".into(),
         value: ConfigValue::Dict(vec![
@@ -1637,9 +1926,16 @@ fn jsonrpc_on_a_connection_gets_the_connection_api() {
     });
     let schemas = vec![("rpc".to_string(), units)];
     let out = generate_rust(&code_req(&schemas)).unwrap();
-    let rpc = &out.iter().find(|f| f.path.ends_with("rpc.rs")).unwrap().contents;
+    let rpc = &out
+        .iter()
+        .find(|f| f.path.ends_with("rpc.rs"))
+        .unwrap()
+        .contents;
     assert!(rpc.contains("pub fn provide_on<"), "{rpc}");
-    assert!(!rpc.contains("RpcClient"), "a connection protocol gets a sender, not a client");
+    assert!(
+        !rpc.contains("RpcClient"),
+        "a connection protocol gets a sender, not a client"
+    );
     assert!(rpc.contains(
         // The client provides it, so it's the dialling side that opens.
         "`Connection::connect_with(transport, format, comline_runtime::framing::JsonRpcFraming, &mut ComlineHandshake, CONNECTION_IR_HASH)`, \
