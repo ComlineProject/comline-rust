@@ -1596,7 +1596,7 @@ fn app_file(files: &[comline_codegen::GeneratedFile]) -> &str {
 }
 
 #[test]
-fn a_checked_struct_implements_validate_and_decodes_unchanged_by_default() {
+fn a_checked_struct_implements_validate_and_checks_on_decode_by_default() {
     let schemas = validated(NON_EMPTY);
     let files = generate_rust(&code_req(&schemas)).unwrap();
     let app = app_file(&files);
@@ -1610,6 +1610,29 @@ fn a_checked_struct_implements_validate_and_decodes_unchanged_by_default() {
     );
     assert!(
         app.contains("message: format!(\"{} is empty\", path),"),
+        "{app}"
+    );
+    // `collect` is the default: decoding runs every check.
+    assert!(
+        app.contains("#[serde(try_from = \"__NoteUnchecked\")]\npub struct Note {"),
+        "{app}"
+    );
+    assert!(
+        app.contains("comline_runtime::validation::Validate::validate(&value)"),
+        "{app}"
+    );
+}
+
+#[test]
+fn off_leaves_decoding_alone() {
+    let schemas = validated(NON_EMPTY);
+    let req = GenerateRequest {
+        validate_on_decode: comline_codegen::validation::ValidateOnDecode::Off,
+        ..code_req(&schemas)
+    };
+    let app = app_file(&generate_rust(&req).unwrap()).to_string();
+    assert!(
+        app.contains("impl comline_runtime::validation::Validate for Note {"),
         "{app}"
     );
     assert!(
