@@ -13,6 +13,10 @@ pub enum HttpMethod {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub method: HttpMethod,
+    #[serde(
+        deserialize_with = "comline_runtime::bounds::decode::string::<_, 8192>",
+        serialize_with = "comline_runtime::bounds::encode::string::<_, 8192>"
+    )]
     pub uri: String,
 }
 

@@ -1686,3 +1686,192 @@ fn schema_names_the_generated_code_also_uses_build_async() {
     };
     check_generated_crate("collisions-async", &req, None);
 }
+
+/// Bounds (core#98): maximums and exact lengths on strings and lists, nested,
+/// through an alias, optional, on arguments and returns; a single `char`; and
+/// a depth limit on a type that contains itself.
+const BOUNDED: &str = r#"
+type Name = char[max 8]
+
+struct Customer {
+    name: Name
+    country: char[2]
+    optional email: char[max 6]
+    tags: char[max 4][max 3]
+    scores: u32[max 3]
+    grade: char
+}
+
+@max_depth = 3
+struct Node {
+    label: char[max 8]
+    children: Node[max 4]
+}
+
+protocol Shop {
+    function rename(to: Name, tags: char[max 4][max 3]) -> char[max 8];
+}
+"#;
+
+/// The generated bounds checks, run against every official format: a value
+/// at its bounds round-trips, and one over is refused on decode (before it's
+/// built) and on encode (before anything is written), with
+/// `RuntimeError::BoundExceeded`. `validate_on_decode` stays off: bounds
+/// don't depend on it.
+#[test]
+fn generated_bounds_are_checked_while_decoding_and_encoding() {
+    use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
+    use comline_core::schema::ir::compiler::Compile;
+
+    let schemas = vec![("shop".to_string(), IncrementalInterpreter::from_source(BOUNDED))];
+    let req = GenerateRequest {
+        mode: Mode::Lib,
+        schemas: schemas.to_vec(),
+        package: PackageMeta {
+            name: "comline-codegen-rust-compiletest".into(),
+            version: "0.0.0".into(),
+        },
+        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        wire_format: "packed@1".into(),
+        external_std: false,
+        validate_on_decode: ValidateOnDecode::Off,
+        async_api: false,
+        encodings: comline_codegen::encodings::official_for("rust"),
+    };
+    check_generated_crate("bounds", &req, Some(BOUNDED_BEHAVIOUR));
+}
+
+const BOUNDED_BEHAVIOUR: &str = r##"
+use comline_codegen_rust_compiletest::shop::*;
+use comline_runtime::bounds::Measure;
+use comline_runtime::contract::{RuntimeError, WireFormat};
+use comline_runtime::format::{Json, MsgPack, Packed};
+
+fn customer() -> Customer {
+    Customer {
+        name: "éééééééé".into(),
+        country: "NZ".into(),
+        email: Some("a@b.cd".into()),
+        tags: vec!["abcd".into(), "ü".into(), "".into()],
+        scores: vec![1, 2, 3],
+        grade: 'é',
+    }
+}
+
+fn node(depth: u32) -> Node {
+    let children = if depth > 1 { vec![node(depth - 1)] } else { vec![] };
+    Node { label: "n".into(), children }
+}
+
+fn round_trip<F: WireFormat, T: serde::Serialize + serde::de::DeserializeOwned>(f: &F, v: &T) -> Result<T, RuntimeError> {
+    let mut body = Vec::new();
+    f.encode(v, &mut body)?;
+    f.decode(&body)
+}
+
+/// `v` encoded without its checks, as a hostile peer would send it.
+fn unchecked<F: WireFormat, T: serde::Serialize>(f: &F, v: &T) -> Vec<u8> {
+    let mut body = Vec::new();
+    f.encode(v, &mut body).unwrap();
+    body
+}
+
+#[derive(serde::Serialize)]
+struct RawCustomer {
+    name: String,
+    country: String,
+    email: Option<String>,
+    tags: Vec<String>,
+    scores: Vec<u32>,
+    grade: char,
+}
+
+fn raw() -> RawCustomer {
+    let c = customer();
+    RawCustomer { name: c.name, country: c.country, email: c.email, tags: c.tags, scores: c.scores, grade: c.grade }
+}
+
+fn each_format(test: impl Fn(&dyn Fn(&RawCustomer) -> Result<Customer, RuntimeError>, &dyn Fn(&Customer) -> Result<Vec<u8>, RuntimeError>)) {
+    fn enc<F: WireFormat>(f: F) -> impl Fn(&Customer) -> Result<Vec<u8>, RuntimeError> {
+        move |c| { let mut b = Vec::new(); f.encode(c, &mut b)?; Ok(b) }
+    }
+    fn dec<F: WireFormat + Copy>(f: F) -> impl Fn(&RawCustomer) -> Result<Customer, RuntimeError> {
+        move |r| { let b = unchecked(&f, r); f.decode(&b) }
+    }
+    test(&dec(Packed), &enc(Packed));
+    test(&dec(MsgPack), &enc(MsgPack));
+    test(&dec(Json), &enc(Json));
+}
+
+fn chars() -> RuntimeError { RuntimeError::BoundExceeded { measure: Measure::Chars } }
+fn items() -> RuntimeError { RuntimeError::BoundExceeded { measure: Measure::Items } }
+
+#[test]
+fn values_at_their_bounds_round_trip() {
+    for c in [round_trip(&Packed, &customer()), round_trip(&MsgPack, &customer()), round_trip(&Json, &customer())] {
+        let c = c.unwrap();
+        assert_eq!(c.name, "éééééééé");
+        assert_eq!(c.grade, 'é');
+        assert_eq!(c.tags.len(), 3);
+    }
+    let none = Customer { email: None, ..customer() };
+    assert!(round_trip(&Json, &none).unwrap().email.is_none());
+    assert!(round_trip(&Packed, &none).unwrap().email.is_none());
+}
+
+#[test]
+fn over_long_values_are_refused_on_decode() {
+    each_format(|decode, _| {
+        assert_eq!(decode(&RawCustomer { name: "ééééééééé".into(), ..raw() }).unwrap_err(), chars());
+        assert_eq!(decode(&RawCustomer { email: Some("a@b.cde".into()), ..raw() }).unwrap_err(), chars());
+        assert_eq!(decode(&RawCustomer { tags: vec!["abcde".into()], ..raw() }).unwrap_err(), chars());
+        assert_eq!(decode(&RawCustomer { tags: vec![String::new(); 4], ..raw() }).unwrap_err(), items());
+        assert_eq!(decode(&RawCustomer { scores: vec![0; 4], ..raw() }).unwrap_err(), items());
+        // An exact length: more is over its bound, fewer is malformed.
+        assert_eq!(decode(&RawCustomer { country: "NZL".into(), ..raw() }).unwrap_err(), chars());
+        assert!(decode(&RawCustomer { country: "N".into(), ..raw() }).is_err());
+    });
+}
+
+#[test]
+fn over_long_values_are_refused_on_encode() {
+    each_format(|_, encode| {
+        assert_eq!(encode(&Customer { name: "ééééééééé".into(), ..customer() }).unwrap_err(), chars());
+        assert_eq!(encode(&Customer { email: Some("a@b.cde".into()), ..customer() }).unwrap_err(), chars());
+        assert_eq!(encode(&Customer { tags: vec!["abcde".into()], ..customer() }).unwrap_err(), chars());
+        assert_eq!(encode(&Customer { tags: vec![String::new(); 4], ..customer() }).unwrap_err(), items());
+        assert_eq!(encode(&Customer { scores: vec![0; 4], ..customer() }).unwrap_err(), items());
+        assert!(encode(&Customer { country: "N".into(), ..customer() }).is_err());
+    });
+}
+
+#[test]
+fn a_type_that_contains_itself_nests_at_most_its_depth() {
+    assert_eq!(round_trip(&Packed, &node(3)).unwrap().children.len(), 1);
+    assert_eq!(round_trip(&Json, &node(3)).unwrap().children.len(), 1);
+    let depth = RuntimeError::BoundExceeded { measure: Measure::Depth };
+    let mut body = Vec::new();
+    assert_eq!(Packed.encode(&node(4), &mut body).unwrap_err(), depth);
+    // Four levels, as a peer without the limit sends them.
+    let json = br#"{"label":"a","children":[{"label":"b","children":[{"label":"c","children":[{"label":"d","children":[]}]}]}]}"#;
+    assert_eq!(Json.decode::<Node>(json).unwrap_err(), depth);
+    // The count is back at zero after a refusal.
+    assert!(round_trip(&Json, &node(3)).is_ok());
+}
+
+#[test]
+fn arguments_and_returns_are_checked() {
+    let params = ShopRenameParams { to: "abc".into(), tags: vec!["a".into()] };
+    assert_eq!(round_trip(&Packed, &params).unwrap().to, "abc");
+    let mut body = Vec::new();
+    let over = ShopRenameParams { to: "123456789".into(), tags: vec![] };
+    assert_eq!(Packed.encode(&over, &mut body).unwrap_err(), chars());
+    let hostile = unchecked(&Json, &serde_json::json!({ "to": "a", "tags": ["a", "b", "c", "d"] }));
+    assert_eq!(Json.decode::<ShopRenameParams>(&hostile).unwrap_err(), items());
+
+    assert_eq!(round_trip(&Packed, &__ShopRenameReturn("abc".into())).unwrap().0, "abc");
+    assert_eq!(Packed.encode(&__ShopRenameReturn("123456789".into()), &mut body).unwrap_err(), chars());
+    let hostile = unchecked(&Packed, &"123456789");
+    assert_eq!(Packed.decode::<__ShopRenameReturn>(&hostile).unwrap_err(), chars());
+}
+"##;
