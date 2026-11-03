@@ -12,9 +12,11 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
+use comline_core::schema::idl::annotations::{
+    DEFAULT_HANDSHAKE, FORMAT_JSON, FRAMING_JSONRPC, HANDSHAKE_NONE,
+};
 use comline_core::schema::ir::frozen::schema_ir_hash;
-use comline_core::schema::idl::annotations::{DEFAULT_HANDSHAKE, FORMAT_JSON, FRAMING_JSONRPC, HANDSHAKE_NONE};
+use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
 use comline_core::schema::ir::frozen::unit::{FrozenArgument, FrozenUnit};
 use comline_core::schema::ir::unverified;
 
@@ -27,13 +29,13 @@ use crate::validate::{self, Member};
 
 use comline_codegen::collisions::{self, Derived};
 use comline_codegen::connections;
+use comline_codegen::encodings::type_of;
 use comline_codegen::modules::{NamespaceTree, TreeLayout};
 use comline_codegen::naming::{pascal, screaming_snake};
+use comline_codegen::protocol::EncodingMapping;
 use comline_codegen::stdlib::{self, is_std_namespace};
 use comline_codegen::symbols::{error_names, Origin, SymbolTable};
 use comline_codegen::validation::{ValidateOnDecode, Validation, Value};
-use comline_codegen::encodings::type_of;
-use comline_codegen::protocol::EncodingMapping;
 use comline_codegen::{GenerateRequest, GeneratedFile, Mode, PackageMeta};
 
 /// The request's encodings: the type each encoding maps to in Rust, by
@@ -53,7 +55,9 @@ impl FileBounds<'_, '_> {
     /// schema writes it, bounded aliases included); empty for no bound.
     fn attribute(&self, ty: &TypeRef, optional: bool, indent: &str) -> Result<String> {
         let expanded = self.model.expand_bounds(self.namespace, ty);
-        self.helpers.borrow_mut().attribute(&expanded, optional, indent)
+        self.helpers
+            .borrow_mut()
+            .attribute(&expanded, optional, indent)
     }
 }
 
@@ -98,7 +102,11 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
     // Checked for every schema first, so a collision in the last one does not
     // arrive after the earlier files are already written.
     for (namespace, units) in schemas {
-        collisions::check(namespace, units, derived_names(units, &req.schemas, req.async_api))?;
+        collisions::check(
+            namespace,
+            units,
+            derived_names(units, &req.schemas, req.async_api),
+        )?;
     }
     // JSON-RPC protocols sharing a connection whose bare method names one
     // side couldn't tell apart.
@@ -336,7 +344,11 @@ fn cargo_toml(
         deps.push('\n');
     }
     if needs_runtime {
-        let features = if needs_async { ", features = [\"async\"]" } else { "" };
+        let features = if needs_async {
+            ", features = [\"async\"]"
+        } else {
+            ""
+        };
         deps.push_str(&format!(
             "comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{RUNTIME_REV}\"{features} }}\n"
         ));
@@ -349,7 +361,10 @@ fn cargo_toml(
     // An encoding's implementation: a crate the mapping names, with the
     // version it asks for (any, if it asks for none).
     for (package, version) in mapped {
-        let already = deps.lines().any(|line| line.split_once(" = ").is_some_and(|(name, _)| name == *package));
+        let already = deps.lines().any(|line| {
+            line.split_once(" = ")
+                .is_some_and(|(name, _)| name == *package)
+        });
         if !already {
             deps.push_str(&format!("{package} = \"{}\"\n", version.unwrap_or("*")));
         }
@@ -402,10 +417,16 @@ fn schema_source(
     // `AsyncConnection`, and none uses the blocking connection API.
     let has_async = async_api && has_connection;
     let has_blocking_connection = has_connection && !async_api;
-    let errors: HashMap<u16, String> =
-        error_names(units).into_iter().map(|(ordinal, name)| (ordinal, ident(&name))).collect();
+    let errors: HashMap<u16, String> = error_names(units)
+        .into_iter()
+        .map(|(ordinal, name)| (ordinal, ident(&name)))
+        .collect();
     let imports = import_paths(units, schemas, external_std);
-    let file_bounds = FileBounds { model, namespace, helpers: RefCell::new(Helpers::default()) };
+    let file_bounds = FileBounds {
+        model,
+        namespace,
+        helpers: RefCell::new(Helpers::default()),
+    };
 
     // Only a `derive`d type needs serde, and a schema can legitimately
     // declare none - `std/validators` declares only validators, so its
@@ -437,7 +458,13 @@ fn schema_source(
     if has_async {
         output.push_str(&use_line(
             "comline_runtime::async_connection",
-            &["Answer", "AsyncConnection", "AsyncDispatch", "AsyncPeer", "AsyncTransport"],
+            &[
+                "Answer",
+                "AsyncConnection",
+                "AsyncDispatch",
+                "AsyncPeer",
+                "AsyncTransport",
+            ],
         ));
     }
     if has_blocking_connection {
@@ -449,20 +476,44 @@ fn schema_source(
     if blocking {
         output.push_str(&self::use_line(
             "comline_runtime::contract",
-            &["Call", "CallError", "Dispatch", "Envelope", "Fault", "Kind", "Reply", "RuntimeError", "WireFormat"],
+            &[
+                "Call",
+                "CallError",
+                "Dispatch",
+                "Envelope",
+                "Fault",
+                "Kind",
+                "Reply",
+                "RuntimeError",
+                "WireFormat",
+            ],
             &taken,
             true,
         ));
     } else if has_protocol {
         output.push_str(&use_line(
             "comline_runtime::contract",
-            &["Call", "CallError", "Envelope", "Fault", "Kind", "RuntimeError", "WireFormat"],
+            &[
+                "Call",
+                "CallError",
+                "Envelope",
+                "Fault",
+                "Kind",
+                "RuntimeError",
+                "WireFormat",
+            ],
         ));
     }
     if has_blocking_connection {
-        output.push_str(&use_line("comline_runtime::contract", &["ConnectionFraming", "Peer", "ProtocolNumber"]));
+        output.push_str(&use_line(
+            "comline_runtime::contract",
+            &["ConnectionFraming", "Peer", "ProtocolNumber"],
+        ));
     } else if has_async {
-        output.push_str(&use_line("comline_runtime::contract", &["ConnectionFraming", "ProtocolNumber"]));
+        output.push_str(&use_line(
+            "comline_runtime::contract",
+            &["ConnectionFraming", "ProtocolNumber"],
+        ));
     }
     if has_lockstep {
         output.push_str(&use_line("comline_runtime::serve", &["Server"]));
@@ -490,7 +541,10 @@ fn schema_source(
     }
     // JSON-RPC carries JSON whatever the package says, so only a file with
     // another protocol has use for the package's format.
-    if units.iter().any(|u| matches!(u, FrozenUnit::Protocol { parameters, .. } if !is_jsonrpc(parameters))) {
+    if units
+        .iter()
+        .any(|u| matches!(u, FrozenUnit::Protocol { parameters, .. } if !is_jsonrpc(parameters)))
+    {
         output.push_str(&format!(
             "/// The package's wire format (`wire.format`): what this file's helpers\n\
              /// encode with, and what the peer has to speak too.\n\
@@ -500,10 +554,23 @@ fn schema_source(
 
     for unit in units {
         match unit {
-            FrozenUnit::Struct { name, fields, parameters, .. } => {
+            FrozenUnit::Struct {
+                name,
+                fields,
+                parameters,
+                ..
+            } => {
                 let members = validate::field_members(model, namespace, name, fields)?;
                 let depth = comline_codegen::bounds::max_depth(parameters);
-                output.push_str(&data_struct(name, fields, &imports, &members, on_decode, depth, &file_bounds)?);
+                output.push_str(&data_struct(
+                    name,
+                    fields,
+                    &imports,
+                    &members,
+                    on_decode,
+                    depth,
+                    &file_bounds,
+                )?);
             }
             FrozenUnit::Enum { name, variants, .. } => {
                 output.push_str(&data_enum(name, variants));
@@ -516,7 +583,13 @@ fn schema_source(
             } => {
                 let members = validate::field_members(model, namespace, name, fields)?;
                 output.push_str(&error_struct(
-                    name, message, fields, &imports, &members, on_decode, &file_bounds,
+                    name,
+                    message,
+                    fields,
+                    &imports,
+                    &members,
+                    on_decode,
+                    &file_bounds,
                 )?);
             }
             FrozenUnit::TypeAlias { name, target, .. } => {
@@ -529,7 +602,14 @@ fn schema_source(
                 value,
                 ..
             } => {
-                output.push_str(&constant(docstring.as_deref(), name, ty, value.as_ref(), namespace, model));
+                output.push_str(&constant(
+                    docstring.as_deref(),
+                    name,
+                    ty,
+                    value.as_ref(),
+                    namespace,
+                    model,
+                ));
             }
             FrozenUnit::Protocol {
                 name,
@@ -565,7 +645,11 @@ fn schema_source(
 /// full path instead ([`names::resolve`]). `wrap` puts the whole list on a
 /// line of its own inside the braces, as rustfmt does past 100 columns.
 fn use_line(path: &str, names: &[&str], taken: &HashSet<String>, wrap: bool) -> String {
-    let kept: Vec<&str> = names.iter().copied().filter(|name| !taken.contains(*name)).collect();
+    let kept: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| !taken.contains(*name))
+        .collect();
     let mut s = match kept.as_slice() {
         [] => String::new(),
         [name] => format!("use {path}::{name};\n"),
@@ -575,37 +659,56 @@ fn use_line(path: &str, names: &[&str], taken: &HashSet<String>, wrap: bool) -> 
     // A trait the module declares a name like is still imported, as `_`: its
     // methods (`fmt.decode(..)`) are only callable with it in scope. Not
     // every module calls one, and a warning there is one a consumer can't fix.
-    for name in names.iter().filter(|name| taken.contains(**name) && names::is_trait(name)) {
-        s.push_str(&format!("#[allow(unused_imports)]\nuse {path}::{name} as _;\n"));
+    for name in names
+        .iter()
+        .filter(|name| taken.contains(**name) && names::is_trait(name))
+    {
+        s.push_str(&format!(
+            "#[allow(unused_imports)]\nuse {path}::{name} as _;\n"
+        ));
     }
     s
 }
 
 /// Every type and value name a module declares: the schema's own, as Rust
 /// identifiers, and the ones the generator derives from them.
-fn declared_names(units: &[FrozenUnit], schemas: &[(String, Vec<FrozenUnit>)], async_api: bool) -> HashSet<String> {
+fn declared_names(
+    units: &[FrozenUnit],
+    schemas: &[(String, Vec<FrozenUnit>)],
+    async_api: bool,
+) -> HashSet<String> {
     let own = units.iter().filter_map(|unit| match unit {
         FrozenUnit::Struct { name, .. }
         | FrozenUnit::Enum { name, .. }
         | FrozenUnit::TypeAlias { name, .. }
-        | FrozenUnit::Error { name, imported_from: None, .. }
+        | FrozenUnit::Error {
+            name,
+            imported_from: None,
+            ..
+        }
         | FrozenUnit::Protocol { name, .. } => Some(ident(name)),
         FrozenUnit::Constant { name, .. } => Some(name.clone()),
         _ => None,
     });
-    own.chain(derived_names(units, schemas, async_api).into_iter().map(|derived| derived.name)).collect()
+    own.chain(
+        derived_names(units, schemas, async_api)
+            .into_iter()
+            .map(|derived| derived.name),
+    )
+    .collect()
 }
 
 // ── data types ─────────────────────────────────────────────────────────────
 
-fn field_lines(fields: &[FrozenUnit], imports: &HashMap<String, String>, file_bounds: &FileBounds) -> Result<String> {
+fn field_lines(
+    fields: &[FrozenUnit],
+    imports: &HashMap<String, String>,
+    file_bounds: &FileBounds,
+) -> Result<String> {
     let mut s = String::new();
     for field in fields {
         if let FrozenUnit::Field {
-            name,
-            ty,
-            optional,
-            ..
+            name, ty, optional, ..
         } = field
         {
             // serde's own derive covers arrays up to 32; past that the field
@@ -643,10 +746,15 @@ fn data_struct(
     // the validators itself then, with no shadow type.
     if let Some(max) = depth {
         let name = ident(name);
-        let validate = (on_decode != ValidateOnDecode::Off && validate::any_checks(members)).then(|| {
-            let verb = if on_decode == ValidateOnDecode::First { "validate_first" } else { "validate" };
-            format!("comline_runtime::validation::Validate::{verb}(&value)")
-        });
+        let validate =
+            (on_decode != ValidateOnDecode::Off && validate::any_checks(members)).then(|| {
+                let verb = if on_decode == ValidateOnDecode::First {
+                    "validate_first"
+                } else {
+                    "validate"
+                };
+                format!("comline_runtime::validation::Validate::{verb}(&value)")
+            });
         return Ok(format!(
             "#[derive(Debug, Clone)]\npub struct {name} {{\n{}}}\n\n{}{}",
             bounds::without_serde_attributes(&lines),
@@ -669,7 +777,11 @@ fn data_struct(
 /// already goes through, just at the top level of the file instead of
 /// inside a struct.
 fn type_alias(name: &str, target: &TypeRef, imports: &HashMap<String, String>) -> String {
-    format!("pub type {} = {};\n\n", ident(name), rust_type(target, imports))
+    format!(
+        "pub type {} = {};\n\n",
+        ident(name),
+        rust_type(target, imports)
+    )
 }
 
 /// `const MAX_RETRIES: u8 = 5` -> `pub const MAX_RETRIES: u8 = 5;`.
@@ -865,7 +977,10 @@ fn derived_names(
         derived.push(Derived::new("IR_HASH", "the schema's IR hash constant"));
     }
     if any_connection {
-        derived.push(Derived::new("CONNECTION_IR_HASH", "the package's connection hash constant"));
+        derived.push(Derived::new(
+            "CONNECTION_IR_HASH",
+            "the package's connection hash constant",
+        ));
     }
     if any_formatted {
         derived.push(Derived::new("Format", "the package's wire format type"));
@@ -882,11 +997,18 @@ const PACKAGE_MODULE: &str = "connection";
 /// and `accept` / `serve` / `connect`, blocking or async. `None` when no
 /// protocol this crate emits is on a connection, or when its protocols don't
 /// share one (`comline generate` says why).
-fn package_module(req: &GenerateRequest, schemas: &[(String, Vec<FrozenUnit>)], format: &str) -> Option<String> {
+fn package_module(
+    req: &GenerateRequest,
+    schemas: &[(String, Vec<FrozenUnit>)],
+    format: &str,
+) -> Option<String> {
     let package = connections::package_connection(&req.schemas).ok()??;
     // Only what this crate emits: an external `std` provides nothing here.
     let emitted = |side: &[connections::Provided]| -> Vec<connections::Provided> {
-        side.iter().filter(|p| schemas.iter().any(|(ns, _)| *ns == p.namespace)).cloned().collect()
+        side.iter()
+            .filter(|p| schemas.iter().any(|(ns, _)| *ns == p.namespace))
+            .cloned()
+            .collect()
     };
     let (server, client) = (emitted(&package.server), emitted(&package.client));
     if server.is_empty() && client.is_empty() {
@@ -897,20 +1019,49 @@ fn package_module(req: &GenerateRequest, schemas: &[(String, Vec<FrozenUnit>)], 
     let unverified = package.handshake == HANDSHAKE_NONE;
     // JSON-RPC carries JSON whatever the package's format is.
     let encodings = &req.encodings;
-    let fmt = if jsonrpc { type_of(encodings, FORMAT_JSON) } else { "Format" };
-    let jsonrpc_framing = if jsonrpc { type_of(encodings, FRAMING_JSONRPC) } else { "" };
-    let comline_handshake = if jsonrpc && !unverified { type_of(encodings, &package.handshake) } else { "" };
+    let fmt = if jsonrpc {
+        type_of(encodings, FORMAT_JSON)
+    } else {
+        "Format"
+    };
+    let jsonrpc_framing = if jsonrpc {
+        type_of(encodings, FRAMING_JSONRPC)
+    } else {
+        ""
+    };
+    let comline_handshake = if jsonrpc && !unverified {
+        type_of(encodings, &package.handshake)
+    } else {
+        ""
+    };
     // A handshake that's neither `comline@1` nor `none` runs through
     // `accept_with` / `connect_with` whatever the framing is; those two keep
     // the constructors they always had.
-    let custom = (package.handshake != DEFAULT_HANDSHAKE && !unverified).then(|| type_of(encodings, &package.handshake));
+    let custom = (package.handshake != DEFAULT_HANDSHAKE && !unverified)
+        .then(|| type_of(encodings, &package.handshake));
     let framing_ty = type_of(encodings, &package.framing);
     let (conn, transport_bound, dispatcher, bound, (awaited, fn_kw)) = if asynchronous {
-        ("comline_runtime::async_connection::AsyncConnection", "comline_runtime::async_connection::AsyncTransport", "AsyncDispatcher", "", (".await", "async fn"))
+        (
+            "comline_runtime::async_connection::AsyncConnection",
+            "comline_runtime::async_connection::AsyncTransport",
+            "AsyncDispatcher",
+            "",
+            (".await", "async fn"),
+        )
     } else {
-        ("comline_runtime::connection::Connection", "comline_runtime::transport::Transport", "Dispatcher", " + 'static", ("", "fn"))
+        (
+            "comline_runtime::connection::Connection",
+            "comline_runtime::transport::Transport",
+            "Dispatcher",
+            " + 'static",
+            ("", "fn"),
+        )
     };
-    let conn_ty = if jsonrpc { format!("{conn}<T, {fmt}, {jsonrpc_framing}>") } else { format!("{conn}<T, {fmt}>") };
+    let conn_ty = if jsonrpc {
+        format!("{conn}<T, {fmt}, {jsonrpc_framing}>")
+    } else {
+        format!("{conn}<T, {fmt}>")
+    };
     let open = |side: &str| -> String {
         let value = format!("{fmt}::default()");
         match (jsonrpc, unverified, asynchronous) {
@@ -938,7 +1089,10 @@ fn package_module(req: &GenerateRequest, schemas: &[(String, Vec<FrozenUnit>)], 
     l.push(String::new());
     l.push("/// Digest of every schema in the package — what a connection's handshake".into());
     l.push("/// checks, so both ends agree on each protocol's number.".into());
-    l.push(format!("pub const CONNECTION_IR_HASH: u64 = {:#018x};", connections::connection_ir_hash(&req.schemas)));
+    l.push(format!(
+        "pub const CONNECTION_IR_HASH: u64 = {:#018x};",
+        connections::connection_ir_hash(&req.schemas)
+    ));
     l.push(String::new());
 
     // `Services<A, B>`, its generics, their bounds and the struct itself.
@@ -947,40 +1101,62 @@ fn package_module(req: &GenerateRequest, schemas: &[(String, Vec<FrozenUnit>)], 
         generics: String,
         bounds: String,
     }
-    let mut side = |ty: &'static str, provided: &[connections::Provided], who: &str| -> Option<Side> {
-        if provided.is_empty() {
-            return None;
-        }
-        let names: Vec<String> = provided.iter().map(|p| pascal(&p.field)).collect();
-        let bounds: Vec<String> = provided
-            .iter()
-            .zip(&names)
-            .map(|(p, g)| format!("{g}: crate::{}::{}{bound}", segments(&p.namespace), ident(&p.name)))
-            .collect();
-        l.push(format!("/// What {who} provides: one field per protocol, so leaving one out"));
-        l.push("/// doesn't compile.".into());
-        l.push(format!("pub struct {ty}<{}> {{", names.join(", ")));
-        for (p, g) in provided.iter().zip(&names) {
-            l.push(format!("    pub {}: {g},", ident(&p.field)));
-        }
-        l.push("}".into());
-        l.push(String::new());
-        l.push(format!("impl<{}> {ty}<{}> {{", bounds.join(", "), names.join(", ")));
-        l.push("    /// Provide every protocol on `conn`: the peer's calls to them come here.".into());
-        l.push(format!("    pub fn provide_on<T: {transport_bound}>(self, conn: &mut {conn_ty}) {{"));
-        for p in provided {
+    let mut side =
+        |ty: &'static str, provided: &[connections::Provided], who: &str| -> Option<Side> {
+            if provided.is_empty() {
+                return None;
+            }
+            let names: Vec<String> = provided.iter().map(|p| pascal(&p.field)).collect();
+            let bounds: Vec<String> = provided
+                .iter()
+                .zip(&names)
+                .map(|(p, g)| {
+                    format!(
+                        "{g}: crate::{}::{}{bound}",
+                        segments(&p.namespace),
+                        ident(&p.name)
+                    )
+                })
+                .collect();
             l.push(format!(
-                "        crate::{}::{}{dispatcher}(self.{}).provide_on(conn);",
-                segments(&p.namespace),
-                ident(&p.name),
-                ident(&p.field)
+                "/// What {who} provides: one field per protocol, so leaving one out"
             ));
-        }
-        l.push("    }".into());
-        l.push("}".into());
-        l.push(String::new());
-        Some(Side { ty, generics: names.join(", "), bounds: bounds.join(", ") })
-    };
+            l.push("/// doesn't compile.".into());
+            l.push(format!("pub struct {ty}<{}> {{", names.join(", ")));
+            for (p, g) in provided.iter().zip(&names) {
+                l.push(format!("    pub {}: {g},", ident(&p.field)));
+            }
+            l.push("}".into());
+            l.push(String::new());
+            l.push(format!(
+                "impl<{}> {ty}<{}> {{",
+                bounds.join(", "),
+                names.join(", ")
+            ));
+            l.push(
+                "    /// Provide every protocol on `conn`: the peer's calls to them come here."
+                    .into(),
+            );
+            l.push(format!(
+                "    pub fn provide_on<T: {transport_bound}>(self, conn: &mut {conn_ty}) {{"
+            ));
+            for p in provided {
+                l.push(format!(
+                    "        crate::{}::{}{dispatcher}(self.{}).provide_on(conn);",
+                    segments(&p.namespace),
+                    ident(&p.name),
+                    ident(&p.field)
+                ));
+            }
+            l.push("    }".into());
+            l.push("}".into());
+            l.push(String::new());
+            Some(Side {
+                ty,
+                generics: names.join(", "),
+                bounds: bounds.join(", "),
+            })
+        };
     let server_side = side("Services", &server, "the accepting side");
     let client_side = side("ClientServices", &client, "the dialling side");
 
@@ -1014,7 +1190,9 @@ fn package_module(req: &GenerateRequest, schemas: &[(String, Vec<FrozenUnit>)], 
         l.push("/// running, so the caller can take a `handle()` to call the client with".into());
         l.push("/// before it runs.".into());
     } else {
-        l.push("/// served, for a server that calls the client first, or serves one call at".into());
+        l.push(
+            "/// served, for a server that calls the client first, or serves one call at".into(),
+        );
         l.push("/// a time.".into());
     }
     l.push(signature("accept", &server_side, &conn_ty));
@@ -1022,7 +1200,11 @@ fn package_module(req: &GenerateRequest, schemas: &[(String, Vec<FrozenUnit>)], 
 
     l.push("/// [`accept`], then serve every call until the peer leaves.".into());
     l.push(signature("serve", &server_side, "()"));
-    let pass = if server_side.is_some() { "transport, services" } else { "transport" };
+    let pass = if server_side.is_some() {
+        "transport, services"
+    } else {
+        "transport"
+    };
     if asynchronous {
         l.push(format!("    accept({pass}).await?.run().await"));
     } else {
@@ -1294,7 +1476,9 @@ fn protocol(
     };
     let number = if connection {
         connections::protocol_number(schemas, namespace, proto).ok_or_else(|| {
-            eyre::eyre!("protocol `{proto}` has no number: more than 65536 protocols in the package")
+            eyre::eyre!(
+                "protocol `{proto}` has no number: more than 65536 protocols in the package"
+            )
         })?
     } else {
         0
@@ -1309,9 +1493,23 @@ fn protocol(
                 _return,
                 throws,
                 ..
-            } => Some(fn_info(proto, name, parameters, arguments, _return, throws, errors, imports, file_bounds).map(
-                |info| FnInfo { method: connections::method_name(namespace, proto, name, method_names), ..info },
-            )),
+            } => Some(
+                fn_info(
+                    proto,
+                    name,
+                    parameters,
+                    arguments,
+                    _return,
+                    throws,
+                    errors,
+                    imports,
+                    file_bounds,
+                )
+                .map(|info| FnInfo {
+                    method: connections::method_name(namespace, proto, name, method_names),
+                    ..info
+                }),
+            ),
             _ => None,
         })
         .collect::<Result<_>>()?;
@@ -1320,7 +1518,9 @@ fn protocol(
     let param_members: Vec<Vec<Member>> = functions
         .iter()
         .filter_map(|f| match f {
-            FrozenUnit::Function { name, arguments, .. } => Some(validate::argument_members(
+            FrozenUnit::Function {
+                name, arguments, ..
+            } => Some(validate::argument_members(
                 model,
                 namespace,
                 &format!("{proto}.{name}"),
@@ -1405,7 +1605,9 @@ fn protocol(
     if asynchronous {
         // Its handlers run inside the connection's future, which any
         // executor may move between threads.
-        s.push_str(&format!("pub trait {proto_trait}: Send + Sync + 'static {{\n"));
+        s.push_str(&format!(
+            "pub trait {proto_trait}: Send + Sync + 'static {{\n"
+        ));
     } else {
         s.push_str(&format!("pub trait {proto_trait} {{\n"));
     }
@@ -1461,7 +1663,17 @@ fn protocol(
     // 4. dispatcher — implements the runtime `Dispatch` trait, or for an
     //    async protocol, `AsyncDispatch`
     if asynchronous {
-        s.push_str(&async_dispatcher(proto, &proto_trait, &fns, &param_members, &calls_const, number, &open, &unverified_doc, on_decode));
+        s.push_str(&async_dispatcher(
+            proto,
+            &proto_trait,
+            &fns,
+            &param_members,
+            &calls_const,
+            number,
+            &open,
+            &unverified_doc,
+            on_decode,
+        ));
         s.push_str(&async_sender(proto, &fns, number, &unverified_doc));
         return Ok(s);
     }
@@ -1505,7 +1717,15 @@ fn protocol(
         l.push(format!("        {reply_param}: &mut $Reply,"));
         l.push("        peer: &mut P,".into());
         l.push("    ) -> $Result<(), $RuntimeError> {".into());
-        l.extend(dispatch_arms(&fns, &param_members, &calls_const, "peer.format()", "peer", on_decode, false));
+        l.extend(dispatch_arms(
+            &fns,
+            &param_members,
+            &calls_const,
+            "peer.format()",
+            "peer",
+            on_decode,
+            false,
+        ));
     } else {
         l.push("    fn dispatch<W: $WireFormat>(".into());
         l.push("        &self,".into());
@@ -1514,7 +1734,15 @@ fn protocol(
         l.push("        fmt: &W,".into());
         l.push(format!("        {reply_param}: &mut $Reply,"));
         l.push("    ) -> $Result<(), $RuntimeError> {".into());
-        l.extend(dispatch_arms(&fns, &param_members, &calls_const, "fmt", "", on_decode, false));
+        l.extend(dispatch_arms(
+            &fns,
+            &param_members,
+            &calls_const,
+            "fmt",
+            "",
+            on_decode,
+            false,
+        ));
     }
     l.push("    }".into());
     l.push("}".into());
@@ -1522,11 +1750,15 @@ fn protocol(
     l.push(format!("impl<S: {proto_trait}> {proto}Dispatcher<S> {{"));
     if connection {
         l.push("    /// This protocol's number on a connection.".into());
-        l.push(format!("    pub const PROTOCOL: $ProtocolNumber = {number};"));
+        l.push(format!(
+            "    pub const PROTOCOL: $ProtocolNumber = {number};"
+        ));
         l.push(String::new());
         l.push("    /// Provide this protocol on `conn`: the peer's calls to it come here.".into());
         l.push(format!("    /// Open `conn` with {open}."));
-        l.push("    pub fn provide_on<T: $Transport, W: $WireFormat, F: $ConnectionFraming>(".into());
+        l.push(
+            "    pub fn provide_on<T: $Transport, W: $WireFormat, F: $ConnectionFraming>(".into(),
+        );
         l.push("        self,".into());
         l.push("        conn: &mut $Connection<T, W, F>,".into());
         l.push("    ) where".into());
@@ -1537,19 +1769,32 @@ fn protocol(
     } else {
         if no_handshake {
             l.push("    /// Serve this protocol over `transport`. No handshake runs".into());
-            l.push("    /// (`@handshake = \"none\"`): nothing checks the peer's schema or encoding.".into());
+            l.push(
+                "    /// (`@handshake = \"none\"`): nothing checks the peer's schema or encoding."
+                    .into(),
+            );
         } else if let Some(handshake) = custom {
             l.push("    /// Serve this protocol over `transport`, running its handshake".into());
-            l.push(format!("    /// (`{}`) against the peer first.", handshake.rsplit("::").next().unwrap_or(handshake)));
+            l.push(format!(
+                "    /// (`{}`) against the peer first.",
+                handshake.rsplit("::").next().unwrap_or(handshake)
+            ));
         } else {
             l.push("    /// Serve this protocol over `transport`, running the connection".into());
-            l.push("    /// handshake (`IR_HASH` + `format`'s and the framing's names) against".into());
+            l.push(
+                "    /// handshake (`IR_HASH` + `format`'s and the framing's names) against".into(),
+            );
             l.push("    /// the peer first.".into());
         }
         let format = format_of(parameters, encodings);
-        l.push(format!("    /// Encodes with `{}`.", format.rsplit("::").next().unwrap_or(format)));
+        l.push(format!(
+            "    /// Encodes with `{}`.",
+            format.rsplit("::").next().unwrap_or(format)
+        ));
         l.push("    pub fn serve<T: $Transport>(self, transport: &mut T) -> $Result<(), $RuntimeError> {".into());
-        l.push(format!("        self.serve_with_format(transport, {format}::default())"));
+        l.push(format!(
+            "        self.serve_with_format(transport, {format}::default())"
+        ));
         l.push("    }".into());
         l.push(String::new());
         l.push("    /// [`serve`](Self::serve), encoding with `format` instead.".into());
@@ -1564,7 +1809,9 @@ fn protocol(
             "$Server::new(self, format)"
         };
         if let Some(handshake) = no_handshake.then_some(NO_HANDSHAKE).or(custom) {
-            l.push(format!("        {server}.serve_with(transport, &mut {handshake}, IR_HASH)"));
+            l.push(format!(
+                "        {server}.serve_with(transport, &mut {handshake}, IR_HASH)"
+            ));
         } else {
             l.push(format!("        {server}.serve(transport, IR_HASH)"));
         }
@@ -1585,11 +1832,15 @@ fn protocol(
             "/// Calls protocol `{proto}` on the other end of a connection: the peer a"
         ));
         l.push("/// `$Connection` reaches, or the one a handler was given.".into());
-        l.push(format!("pub struct {proto}Sender<'p, P: $Peer>(pub &'p mut P);"));
+        l.push(format!(
+            "pub struct {proto}Sender<'p, P: $Peer>(pub &'p mut P);"
+        ));
         l.push(String::new());
         l.push(format!("impl<'p, P: $Peer> {proto}Sender<'p, P> {{"));
         l.push("    /// This protocol's number on a connection.".into());
-        l.push(format!("    pub const PROTOCOL: $ProtocolNumber = {number};"));
+        l.push(format!(
+            "    pub const PROTOCOL: $ProtocolNumber = {number};"
+        ));
         l.push(String::new());
         l.push("    pub fn new(peer: &'p mut P) -> Self {".into());
         l.push("        Self(peer)".into());
@@ -1610,7 +1861,9 @@ fn protocol(
         l.push("    }".into());
         l.push(String::new());
         if no_handshake {
-            l.push("    /// Bind to the provider. No handshake runs (`@handshake = \"none\"`).".into());
+            l.push(
+                "    /// Bind to the provider. No handshake runs (`@handshake = \"none\"`).".into(),
+            );
         } else {
             l.push("    /// Bind + run the connection handshake against the provider.".into());
         }
@@ -1661,7 +1914,9 @@ fn protocol(
                 "    pub fn {}(&mut self{args}) -> $Result<(), $RuntimeError> {{",
                 f.ident
             ));
-            l.push(format!("        self.0.notify({protocol_arg}{addr}, {param_expr})"));
+            l.push(format!(
+                "        self.0.notify({protocol_arg}{addr}, {param_expr})"
+            ));
             l.push("    }".into());
             continue;
         }
@@ -1709,13 +1964,20 @@ fn protocol(
         let format = format_of(parameters, encodings);
         l.push(format!("impl<T: $Transport> {proto}Client<T, {format}> {{"));
         if no_handshake {
-            l.push("    /// Bind to the provider. No handshake runs (`@handshake = \"none\"`).".into());
+            l.push(
+                "    /// Bind to the provider. No handshake runs (`@handshake = \"none\"`).".into(),
+            );
         } else {
             l.push("    /// Bind + run the connection handshake against the provider.".into());
         }
-        l.push(format!("    /// Encodes with `{}`.", format.rsplit("::").next().unwrap_or(format)));
+        l.push(format!(
+            "    /// Encodes with `{}`.",
+            format.rsplit("::").next().unwrap_or(format)
+        ));
         l.push("    pub fn connect(transport: T) -> $Result<Self, $RuntimeError> {".into());
-        l.push(format!("        Self::connect_with_format(transport, {format}::default())"));
+        l.push(format!(
+            "        Self::connect_with_format(transport, {format}::default())"
+        ));
         l.push("    }".into());
         l.push("}".into());
         l.push(String::new());
@@ -1743,7 +2005,9 @@ fn async_dispatcher(
     let mut l: Vec<String> = unverified_doc.to_vec();
     l.push(format!("pub struct {proto}AsyncDispatcher<S>(pub S);"));
     l.push(String::new());
-    l.push(format!("impl<S: {proto_trait}> $AsyncDispatch for {proto}AsyncDispatcher<S> {{"));
+    l.push(format!(
+        "impl<S: {proto_trait}> $AsyncDispatch for {proto}AsyncDispatcher<S> {{"
+    ));
     l.push("    fn calls(&self) -> &'static [&'static str] {".into());
     l.push(format!("        {calls_const}"));
     l.push("    }".into());
@@ -1754,13 +2018,25 @@ fn async_dispatcher(
     l.push("        params: &'a [u8],".into());
     l.push("        peer: &'a P,".into());
     l.push("    ) -> $Result<$Answer, $RuntimeError> {".into());
-    l.extend(dispatch_arms(fns, param_members, calls_const, "peer.format()", "peer", on_decode, true));
+    l.extend(dispatch_arms(
+        fns,
+        param_members,
+        calls_const,
+        "peer.format()",
+        "peer",
+        on_decode,
+        true,
+    ));
     l.push("    }".into());
     l.push("}".into());
     l.push(String::new());
-    l.push(format!("impl<S: {proto_trait}> {proto}AsyncDispatcher<S> {{"));
+    l.push(format!(
+        "impl<S: {proto_trait}> {proto}AsyncDispatcher<S> {{"
+    ));
     l.push("    /// This protocol's number on a connection.".into());
-    l.push(format!("    pub const PROTOCOL: $ProtocolNumber = {number};"));
+    l.push(format!(
+        "    pub const PROTOCOL: $ProtocolNumber = {number};"
+    ));
     l.push(String::new());
     l.push("    /// Provide this protocol on `conn`: the peer's calls to it come here.".into());
     l.push(format!("    /// Open `conn` with {open}."));
@@ -1783,13 +2059,21 @@ fn async_dispatcher(
 /// given.
 fn async_sender(proto: &str, fns: &[FnInfo], number: u16, unverified_doc: &[String]) -> String {
     let mut l: Vec<String> = unverified_doc.to_vec();
-    l.push(format!("/// Calls protocol `{proto}` on the other end of a connection: the peer an"));
+    l.push(format!(
+        "/// Calls protocol `{proto}` on the other end of a connection: the peer an"
+    ));
     l.push("/// `$AsyncConnection`'s handle reaches, or the one a handler was given.".into());
-    l.push(format!("pub struct {proto}AsyncSender<'p, P: $AsyncPeer>(pub &'p P);"));
+    l.push(format!(
+        "pub struct {proto}AsyncSender<'p, P: $AsyncPeer>(pub &'p P);"
+    ));
     l.push(String::new());
-    l.push(format!("impl<'p, P: $AsyncPeer> {proto}AsyncSender<'p, P> {{"));
+    l.push(format!(
+        "impl<'p, P: $AsyncPeer> {proto}AsyncSender<'p, P> {{"
+    ));
     l.push("    /// This protocol's number on a connection.".into());
-    l.push(format!("    pub const PROTOCOL: $ProtocolNumber = {number};"));
+    l.push(format!(
+        "    pub const PROTOCOL: $ProtocolNumber = {number};"
+    ));
     l.push(String::new());
     l.push("    pub fn new(peer: &'p P) -> Self {".into());
     l.push("        Self(peer)".into());
@@ -1798,7 +2082,12 @@ fn async_sender(proto: &str, fns: &[FnInfo], number: u16, unverified_doc: &[Stri
         let args = sig_args(&f.args);
         let param_expr = match &f.params_ty {
             Some(ty) => {
-                let init = f.args.iter().map(|a| a.ident.clone()).collect::<Vec<_>>().join(", ");
+                let init = f
+                    .args
+                    .iter()
+                    .map(|a| a.ident.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("&{ty} {{ {init} }}")
             }
             None => "&()".to_string(),
@@ -1807,8 +2096,13 @@ fn async_sender(proto: &str, fns: &[FnInfo], number: u16, unverified_doc: &[Stri
         l.push(String::new());
         if f.one_way {
             // Sent when called: nothing to await.
-            l.push(format!("    pub fn {}(&self{args}) -> $Result<(), $RuntimeError> {{", f.ident));
-            l.push(format!("        self.0.notify(Self::PROTOCOL, {addr}, {param_expr})"));
+            l.push(format!(
+                "    pub fn {}(&self{args}) -> $Result<(), $RuntimeError> {{",
+                f.ident
+            ));
+            l.push(format!(
+                "        self.0.notify(Self::PROTOCOL, {addr}, {param_expr})"
+            ));
             l.push("    }".into());
             continue;
         }
@@ -1827,13 +2121,21 @@ fn async_sender(proto: &str, fns: &[FnInfo], number: u16, unverified_doc: &[Stri
         l.push("        match reply.envelope() {".into());
         l.push(format!("            $Envelope::Ok(payload) => fmt.decode(payload){}.map_err($CallError::Runtime),", f.unwrap_return()));
         for (ord, err) in &f.throws {
-            l.push(format!("            $Envelope::Err {{ id: {ord}u16, body }} => {{"));
+            l.push(format!(
+                "            $Envelope::Err {{ id: {ord}u16, body }} => {{"
+            ));
             l.push(format!("                let e: {err} = fmt.decode(body)?;"));
-            l.push(format!("                $Err($CallError::App({}::{err}(e)))", f.err_ty));
+            l.push(format!(
+                "                $Err($CallError::App({}::{err}(e)))",
+                f.err_ty
+            ));
             l.push("            }".into());
         }
         l.push("            $Envelope::Err { id, .. } => $Err($CallError::Runtime($RuntimeError::Remote { id })),".into());
-        l.push("            $Envelope::Fault => $Err($CallError::Runtime($RuntimeError::Provider)),".into());
+        l.push(
+            "            $Envelope::Fault => $Err($CallError::Runtime($RuntimeError::Provider)),"
+                .into(),
+        );
         l.push("        }".into());
         l.push("    }".into());
     }
@@ -1873,14 +2175,18 @@ fn dispatch_arms(
         // server cannot see it.
         let on_undecodable: Vec<String> = match (f.one_way, asynchronous) {
             (true, false) => vec!["                    $Err(_) => return $Ok(()),".into()],
-            (true, true) => vec!["                    $Err(_) => return $Ok($Answer::none()),".into()],
+            (true, true) => {
+                vec!["                    $Err(_) => return $Ok($Answer::none()),".into()]
+            }
             (false, false) => vec![
                 "                    $Err(_) => {".into(),
                 "                        reply.fault();".into(),
                 "                        return $Ok(());".into(),
                 "                    }".into(),
             ],
-            (false, true) => vec!["                    $Err(_) => return $Ok($Answer::fault()),".into()],
+            (false, true) => {
+                vec!["                    $Err(_) => return $Ok($Answer::fault()),".into()]
+            }
         };
         let call_args = match &f.params_ty {
             Some(ty) => {
@@ -1907,7 +2213,9 @@ fn dispatch_arms(
                     .join(", ")
             }
             None => {
-                l.push(format!("                let _: () = match {fmt}.decode(params) {{"));
+                l.push(format!(
+                    "                let _: () = match {fmt}.decode(params) {{"
+                ));
                 l.push("                    $Ok(unit) => unit,".into());
                 l.extend(on_undecodable);
                 l.push("                };".into());
@@ -1919,7 +2227,11 @@ fn dispatch_arms(
             (false, true) => peer.to_string(),
             (false, false) => format!("{peer}, {call_args}"),
         };
-        let call = format!("self.0.{}({call_args}){}", f.ident, if asynchronous { ".await" } else { "" });
+        let call = format!(
+            "self.0.{}({call_args}){}",
+            f.ident,
+            if asynchronous { ".await" } else { "" }
+        );
         if asynchronous {
             if f.one_way {
                 l.push(format!("                {call};"));
@@ -1928,20 +2240,34 @@ fn dispatch_arms(
                 l.push(format!("                match {call} {{"));
                 l.push("                    $Ok(value) => {".into());
                 l.push("                        let mut body = $Vec::new();".into());
-                l.push(format!("                        {fmt}.encode(&{}, &mut body)?;", f.returned("value")));
+                l.push(format!(
+                    "                        {fmt}.encode(&{}, &mut body)?;",
+                    f.returned("value")
+                ));
                 l.push("                        $Ok($Answer::ok(body))".into());
                 l.push("                    }".into());
                 for (ord, err) in &f.throws {
-                    l.push(format!("                    $Err($Fault::App({}::{err}(e))) => {{", f.err_ty));
+                    l.push(format!(
+                        "                    $Err($Fault::App({}::{err}(e))) => {{",
+                        f.err_ty
+                    ));
                     l.push("                        let mut body = $Vec::new();".into());
-                    l.push(format!("                        {fmt}.encode(&e, &mut body)?;"));
-                    l.push(format!("                        $Ok($Answer::err({ord}u16, body))"));
+                    l.push(format!(
+                        "                        {fmt}.encode(&e, &mut body)?;"
+                    ));
+                    l.push(format!(
+                        "                        $Ok($Answer::err({ord}u16, body))"
+                    ));
                     l.push("                    }".into());
                 }
                 if f.throws.is_empty() {
-                    l.push("                    $Err($Fault::App(never)) => match never {},".into());
+                    l.push(
+                        "                    $Err($Fault::App(never)) => match never {},".into(),
+                    );
                 }
-                l.push("                    $Err($Fault::Internal) => $Ok($Answer::fault()),".into());
+                l.push(
+                    "                    $Err($Fault::Internal) => $Ok($Answer::fault()),".into(),
+                );
                 l.push("                }".into());
             }
             l.push("            }".into());
@@ -1955,7 +2281,10 @@ fn dispatch_arms(
             l.push(format!("                match {call} {{"));
             l.push("                    $Ok(value) => {".into());
             l.push("                        let mut body = $Vec::new();".into());
-            l.push(format!("                        {fmt}.encode(&{}, &mut body)?;", f.returned("value")));
+            l.push(format!(
+                "                        {fmt}.encode(&{}, &mut body)?;",
+                f.returned("value")
+            ));
             l.push("                        reply.ok(&body);".into());
             l.push("                    }".into());
             for (ord, err) in &f.throws {
@@ -1964,7 +2293,9 @@ fn dispatch_arms(
                     f.err_ty
                 ));
                 l.push("                        let mut body = $Vec::new();".into());
-                l.push(format!("                        {fmt}.encode(&e, &mut body)?;"));
+                l.push(format!(
+                    "                        {fmt}.encode(&e, &mut body)?;"
+                ));
                 l.push(format!(
                     "                        reply.err({ord}u16, &body);"
                 ));
@@ -2182,7 +2513,11 @@ fn rust_path(origin: &Origin, external_std: bool) -> String {
 
 /// A namespace's `/`-separated segments as a `::` module path.
 fn segments(namespace: &str) -> String {
-    namespace.split('/').map(ident).collect::<Vec<_>>().join("::")
+    namespace
+        .split('/')
+        .map(ident)
+        .collect::<Vec<_>>()
+        .join("::")
 }
 
 fn rust_type(ty: &TypeRef, imports: &HashMap<String, String>) -> String {
@@ -2193,9 +2528,19 @@ fn rust_type(ty: &TypeRef, imports: &HashMap<String, String>) -> String {
         // exports rather than to this schema's name for it.
         TypeRef::Named(name) => imports.get(name).cloned().unwrap_or_else(|| ident(name)),
         // An array of `char` is a string, whatever its bound.
-        TypeRef::Array { element, .. } if **element == TypeRef::Primitive(PrimitiveType::Char) => "$String".to_string(),
-        TypeRef::Array { element, length: None, .. } => format!("$Vec<{}>", rust_type(element, imports)),
-        TypeRef::Array { element, length: Some(n), .. } => {
+        TypeRef::Array { element, .. } if **element == TypeRef::Primitive(PrimitiveType::Char) => {
+            "$String".to_string()
+        }
+        TypeRef::Array {
+            element,
+            length: None,
+            ..
+        } => format!("$Vec<{}>", rust_type(element, imports)),
+        TypeRef::Array {
+            element,
+            length: Some(n),
+            ..
+        } => {
             format!("[{}; {n}]", rust_type(element, imports))
         }
         TypeRef::Unit => "()".to_string(),
@@ -2239,11 +2584,9 @@ fn is_big_array(ty: &TypeRef) -> bool {
 /// Whether any struct or error field here needs `serde_big_array`.
 fn uses_big_array(units: &[FrozenUnit]) -> bool {
     units.iter().any(|unit| match unit {
-        FrozenUnit::Struct { fields, .. } | FrozenUnit::Error { fields, .. } => {
-            fields.iter().any(|f| {
-                matches!(f, FrozenUnit::Field { ty, optional: false, .. } if is_big_array(ty))
-            })
-        }
+        FrozenUnit::Struct { fields, .. } | FrozenUnit::Error { fields, .. } => fields.iter().any(
+            |f| matches!(f, FrozenUnit::Field { ty, optional: false, .. } if is_big_array(ty)),
+        ),
         _ => false,
     })
 }

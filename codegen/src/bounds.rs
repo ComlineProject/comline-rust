@@ -40,20 +40,29 @@ enum Shape {
     CharsMax(u64),
     CharsExact(u64),
     /// A dynamic array, with a maximum or (holding bounded items) without.
-    Items { of: Box<Shape>, max: Option<u64> },
+    Items {
+        of: Box<Shape>,
+        max: Option<u64>,
+    },
     Option(Box<Shape>),
 }
 
 fn shape(ty: &TypeRef) -> Result<Shape> {
     Ok(match ty {
-        TypeRef::Array { element, length, max } if **element == TypeRef::Primitive(PrimitiveType::Char) => {
-            match (length, max) {
-                (Some(n), _) => Shape::CharsExact(*n),
-                (None, Some(n)) => Shape::CharsMax(*n),
-                (None, None) => Shape::Plain,
-            }
-        }
-        TypeRef::Array { element, length: Some(_), .. } => {
+        TypeRef::Array {
+            element,
+            length,
+            max,
+        } if **element == TypeRef::Primitive(PrimitiveType::Char) => match (length, max) {
+            (Some(n), _) => Shape::CharsExact(*n),
+            (None, Some(n)) => Shape::CharsMax(*n),
+            (None, None) => Shape::Plain,
+        },
+        TypeRef::Array {
+            element,
+            length: Some(_),
+            ..
+        } => {
             if shape(element)? != Shape::Plain {
                 return Err(eyre!(
                     "a fixed-length array of bounded values isn't supported by the Rust generator yet \
@@ -62,12 +71,19 @@ fn shape(ty: &TypeRef) -> Result<Shape> {
             }
             Shape::Plain
         }
-        TypeRef::Array { element, length: None, max } => {
+        TypeRef::Array {
+            element,
+            length: None,
+            max,
+        } => {
             let of = shape(element)?;
             if max.is_none() && of == Shape::Plain {
                 Shape::Plain
             } else {
-                Shape::Items { of: Box::new(of), max: *max }
+                Shape::Items {
+                    of: Box::new(of),
+                    max: *max,
+                }
             }
         }
         _ => Shape::Plain,
@@ -139,7 +155,10 @@ impl Shape {
         match self {
             Shape::Plain => {}
             Shape::CharsMax(n) => {
-                out.push_str(&format!("{pad}{RT}::check_chars({value}, {}).map_err({RT}::ser_error)?;\n", limit(*n)));
+                out.push_str(&format!(
+                    "{pad}{RT}::check_chars({value}, {}).map_err({RT}::ser_error)?;\n",
+                    limit(*n)
+                ));
             }
             Shape::CharsExact(n) => {
                 out.push_str(&format!(
@@ -208,7 +227,12 @@ impl Helpers {
     /// The serde attribute for a position of type `expanded` (bounded
     /// aliases already expanded), `optional` for an optional field; empty
     /// when it has no bound to check.
-    pub fn attribute(&mut self, expanded: &TypeRef, optional: bool, indent: &str) -> Result<String> {
+    pub fn attribute(
+        &mut self,
+        expanded: &TypeRef,
+        optional: bool,
+        indent: &str,
+    ) -> Result<String> {
         let inner = shape(expanded)?;
         if inner == Shape::Plain {
             return Ok(String::new());
@@ -232,15 +256,27 @@ impl Helpers {
                 _ => {}
             }
         }
-        let shape = if optional { Shape::Option(Box::new(inner)) } else { inner };
+        let shape = if optional {
+            Shape::Option(Box::new(inner))
+        } else {
+            inner
+        };
         self.exact |= shape.uses_exact();
         self.opt |= optional;
         let key = shape.key();
-        self.modules.entry(key.clone()).or_insert_with(|| shape.module());
+        self.modules
+            .entry(key.clone())
+            .or_insert_with(|| shape.module());
         // An optional field may be left out of a JSON object, as one
         // without `with` may.
-        let default = if optional { format!("{indent}#[serde(default)]\n") } else { String::new() };
-        Ok(format!("{default}{indent}#[serde(with = \"{MODULE}::{key}\")]\n"))
+        let default = if optional {
+            format!("{indent}#[serde(default)]\n")
+        } else {
+            String::new()
+        };
+        Ok(format!(
+            "{default}{indent}#[serde(with = \"{MODULE}::{key}\")]\n"
+        ))
     }
 
     /// The file's `__comline_bounds` module; empty when nothing used it.
@@ -392,7 +428,11 @@ mod tests {
     use super::*;
 
     fn array(element: TypeRef, length: Option<u64>, max: Option<u64>) -> TypeRef {
-        TypeRef::Array { element: Box::new(element), length, max }
+        TypeRef::Array {
+            element: Box::new(element),
+            length,
+            max,
+        }
     }
 
     const CHAR: TypeRef = TypeRef::Primitive(PrimitiveType::Char);
@@ -400,9 +440,17 @@ mod tests {
     #[test]
     fn single_level_maximums_use_the_runtime_adapters() {
         let mut h = Helpers::default();
-        let a = h.attribute(&array(CHAR, None, Some(32)), false, "    ").unwrap();
+        let a = h
+            .attribute(&array(CHAR, None, Some(32)), false, "    ")
+            .unwrap();
         assert!(a.contains("bounds::decode::string::<_, 32>"), "{a}");
-        let a = h.attribute(&array(TypeRef::Primitive(PrimitiveType::U32), None, Some(10)), false, "    ").unwrap();
+        let a = h
+            .attribute(
+                &array(TypeRef::Primitive(PrimitiveType::U32), None, Some(10)),
+                false,
+                "    ",
+            )
+            .unwrap();
         assert!(a.contains("bounds::encode::vec::<_, _, 10>"), "{a}");
         assert_eq!(h.render(), "");
     }
@@ -411,25 +459,54 @@ mod tests {
     fn nested_optional_and_exact_bounds_get_a_module() {
         let mut h = Helpers::default();
         let nested = array(array(CHAR, None, Some(16)), None, Some(8));
-        assert!(h.attribute(&nested, false, "").unwrap().contains("__comline_bounds::items_max_8_of_chars_max_16"));
-        assert!(h.attribute(&array(CHAR, None, Some(254)), true, "").unwrap().contains("option_of_chars_max_254"));
-        assert!(h.attribute(&array(CHAR, Some(2), None), false, "").unwrap().contains("chars_2"));
+        assert!(h
+            .attribute(&nested, false, "")
+            .unwrap()
+            .contains("__comline_bounds::items_max_8_of_chars_max_16"));
+        assert!(h
+            .attribute(&array(CHAR, None, Some(254)), true, "")
+            .unwrap()
+            .contains("option_of_chars_max_254"));
+        assert!(h
+            .attribute(&array(CHAR, Some(2), None), false, "")
+            .unwrap()
+            .contains("chars_2"));
         let out = h.render();
-        assert!(out.contains("pub struct Exact") && out.contains("pub struct Opt<S>"), "{out}");
+        assert!(
+            out.contains("pub struct Exact") && out.contains("pub struct Opt<S>"),
+            "{out}"
+        );
         assert!(out.contains("ItemsSeed::<_, $Vec<$String>>::new(comline_runtime::bounds::CharsSeed::<$String>::new(16), 8)"), "{out}");
     }
 
     #[test]
     fn plain_types_have_no_attribute() {
         let mut h = Helpers::default();
-        assert_eq!(h.attribute(&TypeRef::Primitive(PrimitiveType::String), true, "").unwrap(), "");
-        assert_eq!(h.attribute(&array(TypeRef::Primitive(PrimitiveType::U8), Some(4), None), false, "").unwrap(), "");
-        assert!(h.attribute(&array(array(CHAR, Some(2), None), Some(3), None), false, "").is_err());
+        assert_eq!(
+            h.attribute(&TypeRef::Primitive(PrimitiveType::String), true, "")
+                .unwrap(),
+            ""
+        );
+        assert_eq!(
+            h.attribute(
+                &array(TypeRef::Primitive(PrimitiveType::U8), Some(4), None),
+                false,
+                ""
+            )
+            .unwrap(),
+            ""
+        );
+        assert!(h
+            .attribute(&array(array(CHAR, Some(2), None), Some(3), None), false, "")
+            .is_err());
     }
 
     #[test]
     fn serde_attributes_are_stripped_whole() {
         let lines = "    #[serde(\n        deserialize_with = \"x\",\n    )]\n    pub a: String,\n    #[serde(rename = \"b\")]\n    pub b: u8,\n";
-        assert_eq!(without_serde_attributes(lines), "    pub a: String,\n    pub b: u8,\n");
+        assert_eq!(
+            without_serde_attributes(lines),
+            "    pub a: String,\n    pub b: u8,\n"
+        );
     }
 }

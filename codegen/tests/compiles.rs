@@ -117,13 +117,21 @@ fn chat_schema() -> Vec<FrozenUnit> {
                         arg("query", TypeRef::Primitive(PrimitiveType::String)),
                         arg("limit", TypeRef::Primitive(PrimitiveType::U32)),
                     ],
-                    Some(TypeRef::Array { element: Box::new(TypeRef::Named("Message".to_string())), length: None, max: None }),
+                    Some(TypeRef::Array {
+                        element: Box::new(TypeRef::Named("Message".to_string())),
+                        length: None,
+                        max: None,
+                    }),
                     vec![],
                 ),
                 function(
                     "history",
                     vec![arg("limit", TypeRef::Primitive(PrimitiveType::U32))],
-                    Some(TypeRef::Array { element: Box::new(TypeRef::Named("Message".to_string())), length: None, max: None }),
+                    Some(TypeRef::Array {
+                        element: Box::new(TypeRef::Named("Message".to_string())),
+                        length: None,
+                        max: None,
+                    }),
                     vec![],
                 ),
                 function("wipe", vec![], Some(TypeRef::Unit), vec![]),
@@ -198,12 +206,18 @@ fn rpc_default_schema() -> Vec<FrozenUnit> {
 /// compile against the runtime's `NoHandshake` and `connect_with`.
 fn legacy_schema(name: &str, framing: Option<&str>) -> Vec<FrozenUnit> {
     let mut parameters = vec![
-        FrozenUnit::Property { name: "handshake".into(), value: ConfigValue::Str("none".into()) },
+        FrozenUnit::Property {
+            name: "handshake".into(),
+            value: ConfigValue::Str("none".into()),
+        },
         FrozenUnit::Property {
             name: "unverified".into(),
             value: ConfigValue::Str("the gateway predates Comline".into()),
         },
-        FrozenUnit::Unverified(vec![Guarantee::SchemaAgreement, Guarantee::EncodingAgreement]),
+        FrozenUnit::Unverified(vec![
+            Guarantee::SchemaAgreement,
+            Guarantee::EncodingAgreement,
+        ]),
     ];
     if let Some(framing) = framing {
         parameters.push(FrozenUnit::Property {
@@ -231,7 +245,10 @@ fn a_generated_protocol_crate_builds() {
         ("chat".to_string(), chat_schema()),
         ("rpc".to_string(), rpc_schema()),
         ("clock".to_string(), rpc_default_schema()),
-        ("legacy".to_string(), legacy_schema("Legacy", Some("datagram"))),
+        (
+            "legacy".to_string(),
+            legacy_schema("Legacy", Some("datagram")),
+        ),
         ("legacy_rpc".to_string(), legacy_schema("LegacyRpc", None)),
     ];
     // `chat` opts back to datagram with `@framing = "datagram"`; `clock`
@@ -318,11 +335,7 @@ fn uses_std_http() -> Vec<FrozenUnit> {
 
 /// Generate into a temp dir and `cargo build` it. Left in place on failure,
 /// so the generated source can be read rather than guessed at.
-fn build_generated_crate(
-    label: &str,
-    schemas: &[(String, Vec<FrozenUnit>)],
-    external_std: bool,
-) {
+fn build_generated_crate(label: &str, schemas: &[(String, Vec<FrozenUnit>)], external_std: bool) {
     let req = GenerateRequest {
         mode: Mode::Lib,
         schemas: schemas.to_vec(),
@@ -330,7 +343,10 @@ fn build_generated_crate(
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
         wire_format: "packed@1".into(),
         external_std,
         validate_on_decode: Default::default(),
@@ -344,7 +360,10 @@ fn build_generated_crate(
 /// builds it with that toolchain (through rustup) instead of the one running
 /// this test: how CI proves the generator's floor.
 fn cargo_command() -> Command {
-    match std::env::var("COMLINE_RUST_TOOLCHAIN").ok().filter(|t| !t.is_empty()) {
+    match std::env::var("COMLINE_RUST_TOOLCHAIN")
+        .ok()
+        .filter(|t| !t.is_empty())
+    {
         Some(toolchain) => {
             let mut rustup = Command::new("rustup");
             rustup.args(["run", &toolchain, "cargo"]);
@@ -402,7 +421,9 @@ fn check_generated_crate(label: &str, req: &GenerateRequest, behaviour: Option<&
         contents.push_str("\n[dev-dependencies]\nserde_json = \"1\"\n");
         // An async behaviour needs an executor to run the connections on.
         if req.async_api {
-            contents.push_str("tokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\"] }\n");
+            contents.push_str(
+                "tokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\"] }\n",
+            );
         }
         fs::write(&manifest, contents).unwrap();
     }
@@ -410,7 +431,10 @@ fn check_generated_crate(label: &str, req: &GenerateRequest, behaviour: Option<&
     // Isolated target dir so it doesn't fight this crate's build lock.
     let mut cargo = cargo_command();
     let status = cargo
-        .args([if behaviour.is_some() { "test" } else { "build" }, "--quiet"])
+        .args([
+            if behaviour.is_some() { "test" } else { "build" },
+            "--quiet",
+        ])
         .current_dir(&dir)
         .env("CARGO_TARGET_DIR", dir.join("target"))
         .status()
@@ -457,7 +481,11 @@ fn a_generated_crate_with_constants_builds() {
             constant("DEEP", P::S128, Integer(-1)),
             constant("DEBUG", P::Bool, Bool(true)),
             constant("QUIET", P::Bool, Bool(false)),
-            constant("SERVICE_NAME", P::String, Literal::String("store".to_string())),
+            constant(
+                "SERVICE_NAME",
+                P::String,
+                Literal::String("store".to_string()),
+            ),
         ],
     )];
     build_generated_crate("constants", &schemas, false);
@@ -539,9 +567,9 @@ protocol Social {
 "#;
 
 fn validated_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
+    use comline_core::package::stdlib;
     use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
     use comline_core::schema::ir::compiler::Compile;
-    use comline_core::package::stdlib;
     // std's own `validators.ids`, as every build gets it.
     let (_, std_validators) = stdlib::schemas()
         .find(|(namespace, _)| namespace.join("/") == "std/validators")
@@ -551,7 +579,10 @@ fn validated_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
             "std/validators".to_string(),
             IncrementalInterpreter::from_source(std_validators),
         ),
-        ("app".to_string(), IncrementalInterpreter::from_source(VALIDATED)),
+        (
+            "app".to_string(),
+            IncrementalInterpreter::from_source(VALIDATED),
+        ),
     ]
 }
 
@@ -569,7 +600,10 @@ fn generated_validators_run() {
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: ValidateOnDecode::Collect,
@@ -679,7 +713,10 @@ fn generated_connection_protocols_call_both_ways() {
     use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
     use comline_core::schema::ir::compiler::Compile;
 
-    let schemas = vec![("link".to_string(), IncrementalInterpreter::from_source(CONNECTED))];
+    let schemas = vec![(
+        "link".to_string(),
+        IncrementalInterpreter::from_source(CONNECTED),
+    )];
     let req = GenerateRequest {
         mode: Mode::Lib,
         schemas: schemas.to_vec(),
@@ -687,7 +724,10 @@ fn generated_connection_protocols_call_both_ways() {
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
@@ -695,9 +735,19 @@ fn generated_connection_protocols_call_both_ways() {
         encodings: comline_codegen::encodings::official_for("rust"),
     };
     let files = generate_rust(&req).unwrap();
-    let link = &files.iter().find(|f| f.path.ends_with("link.rs")).unwrap().contents;
-    assert!(link.contains("pub const PROTOCOL: ProtocolNumber = 1;"), "Events is the second protocol");
-    assert!(!link.contains("ChatClient"), "a connection protocol gets a sender, not a client");
+    let link = &files
+        .iter()
+        .find(|f| f.path.ends_with("link.rs"))
+        .unwrap()
+        .contents;
+    assert!(
+        link.contains("pub const PROTOCOL: ProtocolNumber = 1;"),
+        "Events is the second protocol"
+    );
+    assert!(
+        !link.contains("ChatClient"),
+        "a connection protocol gets a sender, not a client"
+    );
     check_generated_crate("connections", &req, Some(CONNECTED_BEHAVIOUR));
 }
 
@@ -802,7 +852,10 @@ fn generated_jsonrpc_connection_protocols_call_both_ways() {
     use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
     use comline_core::schema::ir::compiler::Compile;
 
-    let schemas = vec![("link".to_string(), IncrementalInterpreter::from_source(CONNECTED_JSONRPC))];
+    let schemas = vec![(
+        "link".to_string(),
+        IncrementalInterpreter::from_source(CONNECTED_JSONRPC),
+    )];
     let req = GenerateRequest {
         mode: Mode::Lib,
         schemas: schemas.to_vec(),
@@ -810,7 +863,10 @@ fn generated_jsonrpc_connection_protocols_call_both_ways() {
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
@@ -818,13 +874,25 @@ fn generated_jsonrpc_connection_protocols_call_both_ways() {
         encodings: comline_codegen::encodings::official_for("rust"),
     };
     let files = generate_rust(&req).unwrap();
-    let link = &files.iter().find(|f| f.path.ends_with("link.rs")).unwrap().contents;
-    assert!(link.contains(r#"pub const CHAT_CALLS: &[&str] = &["send", "count"];"#), "{link}");
+    let link = &files
+        .iter()
+        .find(|f| f.path.ends_with("link.rs"))
+        .unwrap()
+        .contents;
     assert!(
-        link.contains(r#"pub const EVENTS_CALLS: &[&str] = &["link.Events/message", "link.Events/ping"];"#),
+        link.contains(r#"pub const CHAT_CALLS: &[&str] = &["send", "count"];"#),
         "{link}"
     );
-    assert!(!link.contains("ChatClient"), "Chat is on the connection too");
+    assert!(
+        link.contains(
+            r#"pub const EVENTS_CALLS: &[&str] = &["link.Events/message", "link.Events/ping"];"#
+        ),
+        "{link}"
+    );
+    assert!(
+        !link.contains("ChatClient"),
+        "Chat is on the connection too"
+    );
     let behaviour = CONNECTED_BEHAVIOUR
         .replace(
             "use comline_runtime::format::Json;",
@@ -857,12 +925,21 @@ fn bare_jsonrpc_names_that_would_clash_on_a_connection_are_refused() {
         )
     };
     let generate = |admin_framing: &str| {
-        let schemas = vec![("link".to_string(), IncrementalInterpreter::from_source(&source(admin_framing)))];
+        let schemas = vec![(
+            "link".to_string(),
+            IncrementalInterpreter::from_source(&source(admin_framing)),
+        )];
         let req = GenerateRequest {
             mode: Mode::Code,
             schemas: schemas.to_vec(),
-            package: PackageMeta { name: "x".into(), version: "0.0.0".into() },
-            target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+            package: PackageMeta {
+                name: "x".into(),
+                version: "0.0.0".into(),
+            },
+            target: TargetLanguage {
+                language: "rust".into(),
+                version: comline_codegen_rust::LANG_VERSION.into(),
+            },
             wire_format: "packed@1".into(),
             external_std: false,
             validate_on_decode: Default::default(),
@@ -872,7 +949,10 @@ fn bare_jsonrpc_names_that_would_clash_on_a_connection_are_refused() {
         generate_rust(&req).map(|_| ())
     };
     let err = generate("\"jsonrpc\"").unwrap_err().to_string();
-    assert!(err.contains("`link::Chat` and `link::Admin` both have a function `send`"), "{err}");
+    assert!(
+        err.contains("`link::Chat` and `link::Admin` both have a function `send`"),
+        "{err}"
+    );
     generate("{ name = \"jsonrpc\", method_names = qualified }").unwrap();
 }
 
@@ -884,7 +964,10 @@ fn generated_async_connection_protocols_call_both_ways() {
     use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
     use comline_core::schema::ir::compiler::Compile;
 
-    let schemas = vec![("link".to_string(), IncrementalInterpreter::from_source(CONNECTED))];
+    let schemas = vec![(
+        "link".to_string(),
+        IncrementalInterpreter::from_source(CONNECTED),
+    )];
     let req = GenerateRequest {
         mode: Mode::Lib,
         schemas: schemas.to_vec(),
@@ -892,7 +975,10 @@ fn generated_async_connection_protocols_call_both_ways() {
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
@@ -900,7 +986,11 @@ fn generated_async_connection_protocols_call_both_ways() {
         encodings: comline_codegen::encodings::official_for("rust"),
     };
     let files = generate_rust(&req).unwrap();
-    let manifest = &files.iter().find(|f| f.path.ends_with("Cargo.toml")).unwrap().contents;
+    let manifest = &files
+        .iter()
+        .find(|f| f.path.ends_with("Cargo.toml"))
+        .unwrap()
+        .contents;
     assert!(manifest.contains("features = [\"async\"]"), "{manifest}");
     check_generated_crate("async-connections", &req, Some(ASYNC_CONNECTED_BEHAVIOUR));
 }
@@ -1016,8 +1106,14 @@ fn game_request(schemas: &[(String, Vec<FrozenUnit>)], async_api: bool) -> Gener
     GenerateRequest {
         mode: Mode::Lib,
         schemas: schemas.to_vec(),
-        package: PackageMeta { name: "comline-codegen-rust-compiletest".into(), version: "0.0.0".into() },
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        package: PackageMeta {
+            name: "comline-codegen-rust-compiletest".into(),
+            version: "0.0.0".into(),
+        },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
@@ -1030,8 +1126,14 @@ fn game_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
     use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
     use comline_core::schema::ir::compiler::Compile;
     vec![
-        ("game".to_string(), IncrementalInterpreter::from_source(GAME)),
-        ("items".to_string(), IncrementalInterpreter::from_source(ITEMS)),
+        (
+            "game".to_string(),
+            IncrementalInterpreter::from_source(GAME),
+        ),
+        (
+            "items".to_string(),
+            IncrementalInterpreter::from_source(ITEMS),
+        ),
     ]
 }
 
@@ -1043,10 +1145,20 @@ fn services_serve_every_protocol_on_one_connection() {
     let schemas = game_schemas();
     let req = game_request(&schemas, false);
     let files = generate_rust(&req).unwrap();
-    let lib = &files.iter().find(|f| f.path.ends_with("src/lib.rs")).unwrap().contents;
-    assert!(lib.contains("pub struct Services<Account, Player, Inventory> {"), "{lib}");
+    let lib = &files
+        .iter()
+        .find(|f| f.path.ends_with("src/lib.rs"))
+        .unwrap()
+        .contents;
+    assert!(
+        lib.contains("pub struct Services<Account, Player, Inventory> {"),
+        "{lib}"
+    );
     assert!(lib.contains("pub struct ClientServices<Events> {"), "{lib}");
-    assert!(lib.contains("pub type Format = comline_runtime::format::Packed;"), "{lib}");
+    assert!(
+        lib.contains("pub type Format = comline_runtime::format::Packed;"),
+        "{lib}"
+    );
     check_generated_crate("services", &req, Some(SERVICES_BEHAVIOUR));
 }
 
@@ -1117,7 +1229,11 @@ fn async_services_serve_every_protocol_on_one_connection() {
     let schemas = game_schemas();
     let req = game_request(&schemas, true);
     let files = generate_rust(&req).unwrap();
-    let lib = &files.iter().find(|f| f.path.ends_with("src/lib.rs")).unwrap().contents;
+    let lib = &files
+        .iter()
+        .find(|f| f.path.ends_with("src/lib.rs"))
+        .unwrap()
+        .contents;
     assert!(lib.contains("pub async fn serve<"), "{lib}");
     check_generated_crate("async-services", &req, Some(ASYNC_SERVICES_BEHAVIOUR));
 }
@@ -1278,8 +1394,14 @@ fn keyword_names_build_and_keep_their_wire_names() {
     use comline_core::schema::ir::compiler::Compile;
 
     let schemas = vec![
-        ("match".to_string(), IncrementalInterpreter::from_source(KEYWORDS)),
-        ("api".to_string(), IncrementalInterpreter::from_source(KEYWORDS_USE)),
+        (
+            "match".to_string(),
+            IncrementalInterpreter::from_source(KEYWORDS),
+        ),
+        (
+            "api".to_string(),
+            IncrementalInterpreter::from_source(KEYWORDS_USE),
+        ),
     ];
     let req = GenerateRequest {
         mode: Mode::Lib,
@@ -1288,7 +1410,10 @@ fn keyword_names_build_and_keep_their_wire_names() {
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
@@ -1318,13 +1443,22 @@ fn a_third_party_framing_and_format_build() {
         version: Some("0.2".into()),
     };
     let mut encodings = comline_codegen::encodings::official_for("rust");
-    encodings.insert("com.acme.lines@1".into(), mapping("acme_encodings::LinesFraming"));
+    encodings.insert(
+        "com.acme.lines@1".into(),
+        mapping("acme_encodings::LinesFraming"),
+    );
     encodings.insert("com.acme.cbor@1".into(), mapping("acme_encodings::Cbor"));
     let req = GenerateRequest {
         mode: Mode::Lib,
         schemas: vec![("lines".to_string(), protocol)],
-        package: PackageMeta { name: "comline-codegen-rust-acmetest".into(), version: "0.0.0".into() },
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        package: PackageMeta {
+            name: "comline-codegen-rust-acmetest".into(),
+            version: "0.0.0".into(),
+        },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
         wire_format: "com.acme.cbor@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
@@ -1343,10 +1477,18 @@ fn a_third_party_framing_and_format_build() {
 /// it against a stub `acme-encodings` whose `src/lib.rs` is `stub`, linking
 /// the same runtime the generated crate does. Given a test file, it's added
 /// as `tests/behaviour.rs` and the crate is tested instead.
-fn build_against_acme_stub(label: &str, req: &GenerateRequest, stub: &str, behaviour: Option<&str>) {
+fn build_against_acme_stub(
+    label: &str,
+    req: &GenerateRequest,
+    stub: &str,
+    behaviour: Option<&str>,
+) {
     let files = generate_rust(req).expect("generation");
 
-    let dir = std::env::temp_dir().join(format!("comline-rust-compiletest-{label}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "comline-rust-compiletest-{label}-{}",
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&dir);
     for f in &files {
         let path = dir.join(&f.path);
@@ -1355,11 +1497,21 @@ fn build_against_acme_stub(label: &str, req: &GenerateRequest, stub: &str, behav
     }
     let manifest = dir.join("Cargo.toml");
     let generated = fs::read_to_string(&manifest).unwrap();
-    assert!(generated.contains("acme-encodings = \"0.2\"\n"), "{generated}");
+    assert!(
+        generated.contains("acme-encodings = \"0.2\"\n"),
+        "{generated}"
+    );
     // The stub links the same runtime the generated crate does.
-    let runtime = generated.lines().find(|l| l.starts_with("comline-runtime = ")).expect("a runtime dependency");
+    let runtime = generated
+        .lines()
+        .find(|l| l.starts_with("comline-runtime = "))
+        .expect("a runtime dependency");
     // An async handshake drives the transport's `Stream` and `Sink`.
-    let futures = if req.async_api { "futures-util = { version = \"0.3\", features = [\"sink\"] }\n" } else { "" };
+    let futures = if req.async_api {
+        "futures-util = { version = \"0.3\", features = [\"sink\"] }\n"
+    } else {
+        ""
+    };
     let stub_dir = dir.join("acme");
     fs::create_dir_all(stub_dir.join("src")).unwrap();
     fs::write(
@@ -1385,7 +1537,10 @@ fn build_against_acme_stub(label: &str, req: &GenerateRequest, stub: &str, behav
     }
 
     let status = cargo_command()
-        .args([if behaviour.is_some() { "test" } else { "build" }, "--quiet"])
+        .args([
+            if behaviour.is_some() { "test" } else { "build" },
+            "--quiet",
+        ])
         .current_dir(&dir)
         .env("CARGO_TARGET_DIR", dir.join("target"))
         .status()
@@ -1394,7 +1549,11 @@ fn build_against_acme_stub(label: &str, req: &GenerateRequest, stub: &str, behav
     if ok {
         let _ = fs::remove_dir_all(&dir);
     }
-    assert!(ok, "generated crate failed to build or its test failed; left at {} for inspection", dir.display());
+    assert!(
+        ok,
+        "generated crate failed to build or its test failed; left at {} for inspection",
+        dir.display()
+    );
 }
 
 /// A namespaced handshake (`com.acme.hello@1`) mapped onto a type of a
@@ -1411,13 +1570,21 @@ fn a_third_party_handshake_runs() {
             value: ConfigValue::Str("com.acme.hello@1".into()),
         }];
         if let Some(framing) = framing {
-            parameters.push(FrozenUnit::Property { name: "framing".into(), value: ConfigValue::Str(framing.into()) });
+            parameters.push(FrozenUnit::Property {
+                name: "framing".into(),
+                value: ConfigValue::Str(framing.into()),
+            });
         }
         FrozenUnit::Protocol {
             docstring: String::new(),
             parameters,
             name: name.into(),
-            functions: vec![function("now", vec![], Some(TypeRef::Primitive(PrimitiveType::U32)), vec![])],
+            functions: vec![function(
+                "now",
+                vec![],
+                Some(TypeRef::Primitive(PrimitiveType::U32)),
+                vec![],
+            )],
             span: (0, 0),
         }
     };
@@ -1432,9 +1599,18 @@ fn a_third_party_handshake_runs() {
     );
     let req = GenerateRequest {
         mode: Mode::Lib,
-        schemas: vec![("hello".to_string(), vec![protocol("Clock", Some("datagram")), protocol("Link", None)])],
-        package: PackageMeta { name: "comline-codegen-rust-hellotest".into(), version: "0.0.0".into() },
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        schemas: vec![(
+            "hello".to_string(),
+            vec![protocol("Clock", Some("datagram")), protocol("Link", None)],
+        )],
+        package: PackageMeta {
+            name: "comline-codegen-rust-hellotest".into(),
+            version: "0.0.0".into(),
+        },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
@@ -1442,10 +1618,22 @@ fn a_third_party_handshake_runs() {
         encodings,
     };
     let files = generate_rust(&req).unwrap();
-    let file = |end: &str| &files.iter().find(|f| f.path.ends_with(end)).unwrap().contents;
+    let file = |end: &str| {
+        &files
+            .iter()
+            .find(|f| f.path.ends_with(end))
+            .unwrap()
+            .contents
+    };
     let (hello, lib) = (file("src/hello.rs"), file("src/lib.rs"));
-    assert!(hello.contains(".serve_with(transport, &mut acme_encodings::Hello, IR_HASH)"), "{hello}");
-    assert!(hello.contains("&mut acme_encodings::Hello, IR_HASH)?))"), "{hello}");
+    assert!(
+        hello.contains(".serve_with(transport, &mut acme_encodings::Hello, IR_HASH)"),
+        "{hello}"
+    );
+    assert!(
+        hello.contains("&mut acme_encodings::Hello, IR_HASH)?))"),
+        "{hello}"
+    );
     assert!(
         lib.contains(
             "comline_runtime::connection::Connection::accept_with(transport, Format::default(), \
@@ -1477,14 +1665,25 @@ fn a_third_party_handshake_runs_on_an_async_connection() {
             value: ConfigValue::Str("com.acme.hello@1".into()),
         }],
         name: "Link".into(),
-        functions: vec![function("now", vec![], Some(TypeRef::Primitive(PrimitiveType::U32)), vec![])],
+        functions: vec![function(
+            "now",
+            vec![],
+            Some(TypeRef::Primitive(PrimitiveType::U32)),
+            vec![],
+        )],
         span: (0, 0),
     };
     let req = GenerateRequest {
         mode: Mode::Lib,
         schemas: vec![("hello".to_string(), vec![link])],
-        package: PackageMeta { name: "comline-codegen-rust-hellotest".into(), version: "0.0.0".into() },
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        package: PackageMeta {
+            name: "comline-codegen-rust-hellotest".into(),
+            version: "0.0.0".into(),
+        },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
@@ -1648,12 +1847,38 @@ fn colliding_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
     use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
     use comline_core::schema::ir::compiler::Compile;
     let structs = [
-        "Option", "Vec", "Result", "Box", "Serialize", "Deserialize", "Client", "Answer", "AsyncConnection",
-        "AsyncDispatch", "AsyncPeer", "AsyncTransport", "Connection", "Call", "CallError", "ConnectionFraming",
-        "Dispatch", "Envelope", "Fault", "Kind", "Peer", "ProtocolNumber", "Reply", "RuntimeError", "WireFormat",
-        "Server", "Transport",
+        "Option",
+        "Vec",
+        "Result",
+        "Box",
+        "Serialize",
+        "Deserialize",
+        "Client",
+        "Answer",
+        "AsyncConnection",
+        "AsyncDispatch",
+        "AsyncPeer",
+        "AsyncTransport",
+        "Connection",
+        "Call",
+        "CallError",
+        "ConnectionFraming",
+        "Dispatch",
+        "Envelope",
+        "Fault",
+        "Kind",
+        "Peer",
+        "ProtocolNumber",
+        "Reply",
+        "RuntimeError",
+        "WireFormat",
+        "Server",
+        "Transport",
     ];
-    let mut source: String = structs.iter().map(|name| format!("struct {name} {{\n    a: u8\n}}\n\n")).collect();
+    let mut source: String = structs
+        .iter()
+        .map(|name| format!("struct {name} {{\n    a: u8\n}}\n\n"))
+        .collect();
     source.push_str(
         "struct Holder {\n    optional o: Option\n    v: Vec[]\n    s: string\n    n: u8[]\n}\n\n\
          const None: u8 = 1\n\n\
@@ -1663,7 +1888,10 @@ fn colliding_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
          @framing = \"datagram\"\nprotocol Lock {\n    function new(k: Kind) -> Client ! Oops;\n    \
          function connect_with_format(t: Transport) -> Server;\n    function connect(r: Reply) -> Envelope;\n}\n",
     );
-    vec![("shapes".to_string(), IncrementalInterpreter::from_source(&source))]
+    vec![(
+        "shapes".to_string(),
+        IncrementalInterpreter::from_source(&source),
+    )]
 }
 
 #[test]
@@ -1676,8 +1904,14 @@ fn schema_names_the_generated_code_also_uses_build_async() {
     let req = GenerateRequest {
         mode: Mode::Lib,
         schemas: colliding_schemas(),
-        package: PackageMeta { name: "comline-codegen-rust-compiletest".into(), version: "0.0.0".into() },
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        package: PackageMeta {
+            name: "comline-codegen-rust-compiletest".into(),
+            version: "0.0.0".into(),
+        },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: Default::default(),
@@ -1723,7 +1957,10 @@ fn generated_bounds_are_checked_while_decoding_and_encoding() {
     use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
     use comline_core::schema::ir::compiler::Compile;
 
-    let schemas = vec![("shop".to_string(), IncrementalInterpreter::from_source(BOUNDED))];
+    let schemas = vec![(
+        "shop".to_string(),
+        IncrementalInterpreter::from_source(BOUNDED),
+    )];
     let req = GenerateRequest {
         mode: Mode::Lib,
         schemas: schemas.to_vec(),
@@ -1731,7 +1968,10 @@ fn generated_bounds_are_checked_while_decoding_and_encoding() {
             name: "comline-codegen-rust-compiletest".into(),
             version: "0.0.0".into(),
         },
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.into() },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
         wire_format: "packed@1".into(),
         external_std: false,
         validate_on_decode: ValidateOnDecode::Off,

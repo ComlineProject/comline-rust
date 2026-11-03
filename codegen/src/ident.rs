@@ -17,14 +17,13 @@
 /// Every keyword, strict or reserved, of every edition.
 const KEYWORDS: &[&str] = &[
     // strict, 2015
-    "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in",
-    "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super",
-    "trait", "true", "type", "unsafe", "use", "where", "while",
-    // strict from 2018
-    "async", "await", "dyn",
-    // reserved
-    "abstract", "become", "box", "do", "final", "macro", "override", "priv", "typeof", "unsized", "virtual", "yield",
-    // reserved from 2018 and 2024
+    "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for",
+    "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
+    "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where",
+    "while", // strict from 2018
+    "async", "await", "dyn", // reserved
+    "abstract", "become", "box", "do", "final", "macro", "override", "priv", "typeof", "unsized",
+    "virtual", "yield", // reserved from 2018 and 2024
     "try", "gen",
 ];
 
@@ -78,12 +77,19 @@ mod tests {
         assert_eq!(ident("self"), "self_");
         assert_eq!(ident("Self"), "Self_");
         assert_eq!(ident("name"), "name");
-        assert_eq!(ident("union"), "union", "a weak keyword is a valid identifier");
+        assert_eq!(
+            ident("union"),
+            "union",
+            "a weak keyword is a valid identifier"
+        );
     }
 
     #[test]
     fn only_the_underscored_ones_need_a_rename() {
         assert_eq!(serde_rename("match", "    "), "");
-        assert_eq!(serde_rename("self", "    "), "    #[serde(rename = \"self\")]\n");
+        assert_eq!(
+            serde_rename("self", "    "),
+            "    #[serde(rename = \"self\")]\n"
+        );
     }
 }

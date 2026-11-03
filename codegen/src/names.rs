@@ -29,20 +29,38 @@ const PATHS: &[(&str, &str)] = &[
     ("Deserialize", "::serde::Deserialize"),
     ("Client", "::comline_runtime::client::Client"),
     ("Answer", "::comline_runtime::async_connection::Answer"),
-    ("AsyncConnection", "::comline_runtime::async_connection::AsyncConnection"),
-    ("AsyncDispatch", "::comline_runtime::async_connection::AsyncDispatch"),
-    ("AsyncPeer", "::comline_runtime::async_connection::AsyncPeer"),
-    ("AsyncTransport", "::comline_runtime::async_connection::AsyncTransport"),
+    (
+        "AsyncConnection",
+        "::comline_runtime::async_connection::AsyncConnection",
+    ),
+    (
+        "AsyncDispatch",
+        "::comline_runtime::async_connection::AsyncDispatch",
+    ),
+    (
+        "AsyncPeer",
+        "::comline_runtime::async_connection::AsyncPeer",
+    ),
+    (
+        "AsyncTransport",
+        "::comline_runtime::async_connection::AsyncTransport",
+    ),
     ("Connection", "::comline_runtime::connection::Connection"),
     ("Call", "::comline_runtime::contract::Call"),
     ("CallError", "::comline_runtime::contract::CallError"),
-    ("ConnectionFraming", "::comline_runtime::contract::ConnectionFraming"),
+    (
+        "ConnectionFraming",
+        "::comline_runtime::contract::ConnectionFraming",
+    ),
     ("Dispatch", "::comline_runtime::contract::Dispatch"),
     ("Envelope", "::comline_runtime::contract::Envelope"),
     ("Fault", "::comline_runtime::contract::Fault"),
     ("Kind", "::comline_runtime::contract::Kind"),
     ("Peer", "::comline_runtime::contract::Peer"),
-    ("ProtocolNumber", "::comline_runtime::contract::ProtocolNumber"),
+    (
+        "ProtocolNumber",
+        "::comline_runtime::contract::ProtocolNumber",
+    ),
     ("Reply", "::comline_runtime::contract::Reply"),
     ("RuntimeError", "::comline_runtime::contract::RuntimeError"),
     ("WireFormat", "::comline_runtime::contract::WireFormat"),
@@ -54,8 +72,16 @@ const PATHS: &[(&str, &str)] = &[
 /// has to be in scope even where the module declares a name like it.
 pub fn is_trait(name: &str) -> bool {
     [
-        "Serialize", "Deserialize", "AsyncDispatch", "AsyncPeer", "AsyncTransport", "ConnectionFraming", "Dispatch",
-        "Peer", "WireFormat", "Transport",
+        "Serialize",
+        "Deserialize",
+        "AsyncDispatch",
+        "AsyncPeer",
+        "AsyncTransport",
+        "ConnectionFraming",
+        "Dispatch",
+        "Peer",
+        "WireFormat",
+        "Transport",
     ]
     .contains(&name)
 }
@@ -68,14 +94,20 @@ pub fn resolve(text: &str, taken: &HashSet<String>) -> String {
     while let Some(at) = rest.find('$') {
         out.push_str(&rest[..at]);
         let after = &rest[at + 1..];
-        let len = after.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(after.len());
+        let len = after
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(after.len());
         let name = &after[..len];
         match PATHS.iter().find(|(marked, _)| *marked == name) {
             Some((_, path)) if taken.contains(name) => out.push_str(path),
             Some(_) => out.push_str(name),
             None => out.push('$'),
         }
-        rest = if PATHS.iter().any(|(marked, _)| *marked == name) { &after[len..] } else { after };
+        rest = if PATHS.iter().any(|(marked, _)| *marked == name) {
+            &after[len..]
+        } else {
+            after
+        };
     }
     out.push_str(rest);
     out
@@ -89,7 +121,10 @@ mod tests {
     fn a_mark_is_the_bare_name_unless_the_module_takes_it() {
         let taken: HashSet<String> = ["Call".to_string()].into();
         assert_eq!(
-            resolve("fn f(c: $Call, k: $Kind) -> $Result<(), $RuntimeError>", &taken),
+            resolve(
+                "fn f(c: $Call, k: $Kind) -> $Result<(), $RuntimeError>",
+                &taken
+            ),
             "fn f(c: ::comline_runtime::contract::Call, k: Kind) -> Result<(), RuntimeError>"
         );
         // Not a mark: left as written.

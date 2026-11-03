@@ -60,7 +60,10 @@ pub const SUPPORT: SupportTable = &[
              non-optional type (serde's derive stops at 32)",
         ),
     ),
-    (Feature::Unions, Support::unsupported("Rust has no anonymous sum type to render one as")),
+    (
+        Feature::Unions,
+        Support::unsupported("Rust has no anonymous sum type to render one as"),
+    ),
     (Feature::TypeAliases, Support::supported()),
     (Feature::Constants, Support::supported()),
     (Feature::Protocols, Support::supported()),

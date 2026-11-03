@@ -19,9 +19,18 @@ fn run(request: &Request) -> Response {
         .stderr(Stdio::inherit())
         .spawn()
         .expect("spawn comline-gen-rust");
-    child.stdin.take().unwrap().write_all(&encode(request).unwrap()).unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&encode(request).unwrap())
+        .unwrap();
     let out = child.wait_with_output().unwrap();
-    assert!(out.status.success(), "comline-gen-rust exited with {}", out.status);
+    assert!(
+        out.status.success(),
+        "comline-gen-rust exited with {}",
+        out.status
+    );
     decode(&out.stdout).expect("a Response on stdout")
 }
 
@@ -29,9 +38,17 @@ fn request(fx: &Fixture, version: &str) -> GenerateRequest {
     GenerateRequest {
         mode: fx.mode,
         schemas: fx.schemas.clone(),
-        package: PackageMeta { name: "conformance".into(), version: "0.0.0".into() },
-        target: TargetLanguage { language: "rust".into(), version: version.into() },
-        wire_format: fx.wire_format.map_or_else(|| DEFAULT_FORMAT.to_string(), str::to_string),
+        package: PackageMeta {
+            name: "conformance".into(),
+            version: "0.0.0".into(),
+        },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: version.into(),
+        },
+        wire_format: fx
+            .wire_format
+            .map_or_else(|| DEFAULT_FORMAT.to_string(), str::to_string),
         external_std: fx.external_std,
         validate_on_decode: fx.validate_on_decode,
         async_api: fx.async_api,
@@ -57,15 +74,24 @@ fn the_binary_generates_what_the_linked_generator_does() {
                 other => panic!("{} @ {version}: unexpected {other:?}", fx.name),
             };
             assert_eq!(got, expected, "{} @ {version}", fx.name);
-            if is_ok { generated += 1 } else { refused += 1 }
+            if is_ok {
+                generated += 1
+            } else {
+                refused += 1
+            }
         }
     }
-    assert!(generated >= 20, "only {generated} runs generated files ({refused} were refused)");
+    assert!(
+        generated >= 20,
+        "only {generated} runs generated files ({refused} were refused)"
+    );
 }
 
 #[test]
 fn the_binary_describes_the_rust_generator() {
-    let Response::Describe(d) = run(&Request::describe()) else { panic!("not a Describe") };
+    let Response::Describe(d) = run(&Request::describe()) else {
+        panic!("not a Describe")
+    };
     assert_eq!(d.languages.len(), 1);
     assert_eq!(d.languages[0].id, "rust");
     assert_eq!(d.languages[0].versions.floor, VERSIONS.floor);
