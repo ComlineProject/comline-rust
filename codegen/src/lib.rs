@@ -77,6 +77,8 @@ pub const SUPPORT: SupportTable = &[
     (Feature::ValidateOnDecode, Support::supported()),
     (Feature::FramingJsonRpc, Support::supported()),
     (Feature::HandshakeNone, Support::supported()),
+    (Feature::FramingDatagram3, Support::supported()),
+    (Feature::HandshakeComline2, Support::supported()),
     (Feature::Connections, Support::supported()),
     (Feature::Async, Support::supported()),
     (Feature::FormatPacked, Support::supported()),

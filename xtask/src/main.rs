@@ -72,6 +72,7 @@ fn main() -> eyre::Result<()> {
         validate_on_decode: Default::default(),
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
+        facts: None,
     };
 
     let files = generate_rust(&req)?;

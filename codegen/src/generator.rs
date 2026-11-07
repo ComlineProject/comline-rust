@@ -30,6 +30,7 @@ use crate::validate::{self, Member};
 use comline_codegen::collisions::{self, Derived};
 use comline_codegen::connections;
 use comline_codegen::encodings::type_of;
+use comline_codegen::facts::{PackageFacts, FRAMING_DATAGRAM3, HANDSHAKE_COMLINE2};
 use comline_codegen::modules::{NamespaceTree, TreeLayout};
 use comline_codegen::naming::{pascal, screaming_snake};
 use comline_codegen::protocol::EncodingMapping;
@@ -69,6 +70,10 @@ const ASYNC_DRIVER: &str = "comline_runtime::async_connection::";
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
 const RUNTIME_REV: &str = "17c3b70e3a350bd2473316d1727006d43d0d8fad";
+/// The runtime a package choosing `datagram@3` or `comline@2` links: the
+/// first with both. Every other package keeps [`RUNTIME_REV`], so its output
+/// doesn't change until the defaults flip.
+const RUNTIME_REV_COMLINE2: &str = "4f582f19ff02d8c0ad30426a0bdb0f586ef6f0b9";
 
 /// `comline_std` — std's own pre-generated bindings, referenced instead of
 /// inlined when `external_std` is on. Same git-pin shape as
@@ -86,7 +91,20 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
     // and handshake) has to be mapped to a type: an unmapped one is refused
     // here, before a file is produced, never rendered as something else.
     comline_codegen::encodings::check(req)?;
+    // A protocol addressed by wire numbers, or running `comline@2`, has the
+    // facts it needs; nothing is ever numbered by position instead.
+    comline_codegen::facts::check(req)?;
     let format = type_of(&req.encodings, &req.wire_format);
+    let runtime_rev = match comline_codegen::facts::needed(&req.schemas, &req.encodings) {
+        true => RUNTIME_REV_COMLINE2,
+        false => RUNTIME_REV,
+    };
+    // Where the package module is: its own file in `code` mode, the crate
+    // root in `lib` mode.
+    let package_path = match req.mode {
+        Mode::Code => format!("crate::{PACKAGE_MODULE}"),
+        Mode::Lib => "crate".to_string(),
+    };
 
     // Only *emission* is narrowed by `external_std`; `&req.schemas` stays
     // the list every reference resolves against. `stdlib::split` carries
@@ -134,6 +152,8 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
             req.validate_on_decode,
             req.async_api,
             &req.encodings,
+            req.facts.as_ref(),
+            &package_path,
         )
         .map(|body| format!("{header}{body}"))
     };
@@ -168,7 +188,7 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
                 let contents = if contents.contains(ASYNC_DRIVER) {
                     format!(
                         "// This file uses `comline_runtime`'s async driver - enable its feature in your Cargo.toml:\n\
-                         // comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{RUNTIME_REV}\", features = [\"async\"] }}\n{contents}"
+                         // comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{runtime_rev}\", features = [\"async\"] }}\n{contents}"
                     )
                 } else {
                     contents
@@ -181,7 +201,7 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
                 {
                     format!(
                         "// This file uses `comline_runtime` - add it to your Cargo.toml:\n\
-                         // comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{RUNTIME_REV}\" }}\n{contents}"
+                         // comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{runtime_rev}\" }}\n{contents}"
                     )
                 } else {
                     contents
@@ -247,6 +267,7 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
                     std.needs_std_dependency,
                     needs_big_array,
                     &mapped,
+                    runtime_rev,
                 ),
             }];
             // The render closure takes every schema in the request, not just
@@ -330,6 +351,7 @@ impl TreeLayout for RustLayout {
 /// `lang_version` is the toolchain the target declared (`rust#1.85.0`), so
 /// the crate states the version it was generated for rather than leaving a
 /// consumer to discover it by failing to build.
+#[allow(clippy::too_many_arguments)]
 fn cargo_toml(
     pkg: &PackageMeta,
     lang_version: &str,
@@ -338,6 +360,7 @@ fn cargo_toml(
     needs_std_dep: bool,
     needs_big_array: bool,
     mapped: &[(&str, Option<&str>)],
+    runtime_rev: &str,
 ) -> String {
     let mut deps = String::from("serde = { version = \"1\", features = [\"derive\"] }\n");
     if needs_big_array {
@@ -351,7 +374,7 @@ fn cargo_toml(
             ""
         };
         deps.push_str(&format!(
-            "comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{RUNTIME_REV}\"{features} }}\n"
+            "comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{runtime_rev}\"{features} }}\n"
         ));
     }
     if needs_std_dep {
@@ -400,6 +423,8 @@ fn schema_source(
     on_decode: ValidateOnDecode,
     async_api: bool,
     encodings: &Encodings,
+    facts: Option<&PackageFacts>,
+    package_path: &str,
 ) -> Result<String> {
     let has_protocol = units
         .iter()
@@ -631,6 +656,8 @@ fn schema_source(
                     async_api,
                     encodings,
                     &file_bounds,
+                    facts,
+                    package_path,
                 )?);
             }
             _ => {}
@@ -1019,7 +1046,10 @@ fn package_module(
     }
     let asynchronous = req.async_api;
     let jsonrpc = package.framing == FRAMING_JSONRPC;
+    // A connection on a framing other than `datagram@2` names it.
+    let typed = jsonrpc || package.framing == FRAMING_DATAGRAM3;
     let unverified = package.handshake == HANDSHAKE_NONE;
+    let comline2 = package.handshake == HANDSHAKE_COMLINE2;
     // A framing that writes JSON carries it whatever the package's format is.
     let encodings = &req.encodings;
     let fmt = if comline_codegen::encodings::writes_json(encodings, &package.framing) {
@@ -1027,12 +1057,12 @@ fn package_module(
     } else {
         "Format"
     };
-    let jsonrpc_framing = if jsonrpc {
-        type_of(encodings, FRAMING_JSONRPC)
+    let jsonrpc_framing = if typed {
+        type_of(encodings, &package.framing)
     } else {
         ""
     };
-    let comline_handshake = if jsonrpc && !unverified {
+    let comline_handshake = if typed && !unverified && !comline2 {
         type_of(encodings, &package.handshake)
     } else {
         ""
@@ -1040,7 +1070,7 @@ fn package_module(
     // A handshake that's neither `comline@1` nor `none` runs through
     // `accept_with` / `connect_with` whatever the framing is; those two keep
     // the constructors they always had.
-    let custom = (package.handshake != DEFAULT_HANDSHAKE && !unverified)
+    let custom = (package.handshake != DEFAULT_HANDSHAKE && !unverified && !comline2)
         .then(|| type_of(encodings, &package.handshake));
     let framing_ty = type_of(encodings, &package.framing);
     let (conn, transport_bound, dispatcher, bound, (awaited, fn_kw)) = if asynchronous {
@@ -1060,14 +1090,20 @@ fn package_module(
             ("", "fn"),
         )
     };
-    let conn_ty = if jsonrpc {
+    let conn_ty = if typed {
         format!("{conn}<T, {fmt}, {jsonrpc_framing}>")
     } else {
         format!("{conn}<T, {fmt}>")
     };
     let open = |side: &str| -> String {
         let value = format!("{fmt}::default()");
-        match (jsonrpc, unverified, asynchronous) {
+        if comline2 {
+            // `handshake`, set up by the caller: its outcome is kept.
+            return format!(
+                "{conn}::{side}_with(transport, {value}, {framing_ty}, &mut handshake, CONNECTION_IR_HASH){awaited}?"
+            );
+        }
+        match (typed, unverified, asynchronous) {
             // A custom handshake runs through `_with`, blocking or async.
             (false, false, _) if custom.is_some() => format!(
                 "{conn}::{side}_with(transport, {value}, {framing_ty}, &mut {}, CONNECTION_IR_HASH){awaited}?",
@@ -1097,6 +1133,9 @@ fn package_module(
         connections::connection_ir_hash(&req.schemas)
     ));
     l.push(String::new());
+    if comline2 {
+        comline2_items(req, &package, asynchronous, &mut l).ok()?;
+    }
 
     // `Services<A, B>`, its generics, their bounds and the struct itself.
     struct Side {
@@ -1176,7 +1215,31 @@ fn package_module(
         }
     };
     let body = |l: &mut Vec<String>, side: &Option<Side>, open: String| {
-        if side.is_some() {
+        if comline2 {
+            l.push("    let mut handshake = handshake();".into());
+            // An async connection's extensions are reached through a handle.
+            let binding = if asynchronous && side.is_none() {
+                "conn"
+            } else {
+                "mut conn"
+            };
+            l.push(format!("    let {binding} = {open};"));
+            // What the handshake agreed goes with the connection, where
+            // senders check each call against it.
+            let negotiated = "handshake.negotiated().cloned().unwrap_or_else(|| unreachable!(\"a handshake that succeeded agreed something\"))";
+            if asynchronous {
+                l.push(format!(
+                    "    comline_runtime::async_connection::AsyncPeer::extensions(&conn.handle()).insert(Negotiation {{ negotiated: {negotiated}, unavailable: $None }});"
+                ));
+            } else {
+                l.push(format!(
+                    "    comline_runtime::contract::Peer::extensions(&mut conn).insert(Negotiation {{ negotiated: {negotiated}, unavailable: $None }});"
+                ));
+            }
+            if side.is_some() {
+                l.push("    services.provide_on(&mut conn);".into());
+            }
+        } else if side.is_some() {
             l.push(format!("    let mut conn = {open};"));
             l.push("    services.provide_on(&mut conn);".into());
         } else {
@@ -1224,6 +1287,222 @@ fn package_module(
 
     // The package module declares none of the names it uses (`names`).
     Some(names::resolve(&l.join("\n"), &HashSet::new()))
+}
+
+/// The package module's `comline@2` items: this end's Hello (the facts it
+/// was generated from), `handshake()` with the parameters the package states,
+/// and what senders check each call against.
+fn comline2_items(
+    req: &GenerateRequest,
+    package: &connections::PackageConnection,
+    asynchronous: bool,
+    l: &mut Vec<String>,
+) -> Result<()> {
+    let (hello, protocols) = comline_codegen::facts::hello(req, package)?;
+    let params = comline_codegen::facts::Comline2Params::of(&package.handshake_value);
+    let facts = req.facts.as_ref().expect("hello() had facts");
+    l.push(format!(
+        "/// This end's `comline@2` Hello: version {} of package `{}`, as its",
+        facts.version,
+        facts.id.as_deref().unwrap_or_default()
+    ));
+    l.push("/// history records it. Its protocols, by wire number:".into());
+    l.push("///".into());
+    for p in &protocols {
+        let functions: Vec<String> = p
+            .functions
+            .iter()
+            .map(|(f, n)| format!("`{f}` {n}"))
+            .collect();
+        l.push(format!(
+            "/// - {} `{}::{}`, line {}: {}",
+            p.number,
+            p.namespace,
+            p.name,
+            p.line,
+            functions.join(", ")
+        ));
+    }
+    let bytes: Vec<String> = hello.iter().map(|b| format!("{b:#04x}")).collect();
+    l.push("pub const HELLO: &[u8] = &[".into());
+    for chunk in bytes.chunks(12) {
+        l.push(format!("    {},", chunk.join(", ")));
+    }
+    l.push("];".into());
+    l.push(String::new());
+    let variant = |v: &str| pascal(v);
+    l.push("/// The `comline@2` handshake, with [`HELLO`] and the parameters the package".into());
+    l.push(format!(
+        "/// states: `scope = {}`, `newer_consumer = {}`, `same_version_differs = {}`, `exchange = {}`.",
+        params.scope, params.newer_consumer, params.same_version_differs, params.exchange
+    ));
+    l.push("pub fn handshake() -> comline_runtime::comline2::Comline2Handshake {".into());
+    l.push("    use comline_runtime::comline2 as c2;".into());
+    l.push("    let hello = match c2::Message::decode(HELLO) {".into());
+    l.push("        $Ok(c2::Message::Hello(hello)) => hello,".into());
+    l.push("        _ => unreachable!(\"HELLO is a Hello message\"),".into());
+    l.push("    };".into());
+    l.push("    let params = c2::Params {".into());
+    l.push(format!(
+        "        scope: c2::Scope::{},",
+        variant(&params.scope)
+    ));
+    l.push(format!(
+        "        newer_consumer: c2::NewerConsumer::{},",
+        variant(&params.newer_consumer)
+    ));
+    l.push(format!(
+        "        same_version_differs: c2::SameVersionDiffers::{},",
+        variant(&params.same_version_differs)
+    ));
+    l.push(format!(
+        "        exchange: c2::Exchange::{},",
+        variant(&params.exchange)
+    ));
+    l.push("    };".into());
+    l.push("    c2::Comline2Handshake::new(params, hello)".into());
+    l.push("}".into());
+    l.push(String::new());
+    l.push("/// The package's protocols on the connection, by wire number.".into());
+    let paths: Vec<String> = protocols
+        .iter()
+        .map(|p| format!("({}, \"{}::{}\")", p.number, p.namespace, p.name))
+        .collect();
+    l.push(format!(
+        "const PROTOCOLS: &[(u16, &str)] = &[{}];",
+        paths.join(", ")
+    ));
+    l.push(String::new());
+    l.push("fn protocol_path(number: u16) -> &'static str {".into());
+    l.push(
+        "    PROTOCOLS.iter().find(|(n, _)| *n == number).map_or(\"?\", |(_, path)| path)".into(),
+    );
+    l.push("}".into());
+    l.push(String::new());
+    l.push("/// What the `comline@2` handshake agreed, which `accept` / `connect` keep in".into());
+    l.push("/// the connection's extensions.".into());
+    l.push("#[derive(Debug, Clone)]".into());
+    l.push("pub struct Negotiation {".into());
+    l.push("    pub negotiated: comline_runtime::comline2::Negotiated,".into());
+    l.push("    /// The last call that wasn't made because the peer can't take it.".into());
+    l.push("    pub unavailable: $Option<Unavailable>,".into());
+    l.push("}".into());
+    l.push(String::new());
+    l.push("/// A call that wasn't sent because the peer can't take it: which, and why.".into());
+    l.push("/// The call itself fails with `RuntimeError::Unavailable`, which carries no".into());
+    l.push("/// detail; [`unavailable`] gives this.".into());
+    l.push("#[derive(Debug, Clone, Copy, PartialEq, Eq)]".into());
+    l.push("pub struct Unavailable {".into());
+    l.push("    /// `namespace::Protocol`.".into());
+    l.push("    pub protocol: &'static str,".into());
+    l.push("    pub function: &'static str,".into());
+    l.push("    /// Why the peer refused the protocol, or `None` when the peer lacks the".into());
+    l.push("    /// function (`newer_consumer = degrade`).".into());
+    l.push("    pub refused: $Option<comline_runtime::contract::Reason>,".into());
+    l.push("}".into());
+    l.push(String::new());
+    l.push("impl ::core::fmt::Display for Unavailable {".into());
+    l.push("    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {".into());
+    l.push("        match self.refused {".into());
+    l.push("            $Some(reason) => write!(f, \"`{}.{}` wasn't called: the connection refused protocol `{}` ({reason})\", self.protocol, self.function, self.protocol),".into());
+    l.push("            $None => write!(f, \"`{}.{}` wasn't called: the peer lacks it\", self.protocol, self.function),".into());
+    l.push("        }".into());
+    l.push("    }".into());
+    l.push("}".into());
+    l.push(String::new());
+    l.push("impl ::core::error::Error for Unavailable {}".into());
+    l.push(String::new());
+    let (bound, reach, hold) = if asynchronous {
+        (
+            "comline_runtime::async_connection::AsyncPeer",
+            "&P",
+            "let extensions = peer.extensions();",
+        )
+    } else {
+        (
+            "comline_runtime::contract::Peer",
+            "&mut P",
+            "let extensions = peer.extensions();",
+        )
+    };
+    let check = if asynchronous {
+        "check_call_async"
+    } else {
+        "check_call"
+    };
+    l.push(
+        "/// What the connection's `comline@2` handshake agreed, if `accept` / `connect`".into(),
+    );
+    l.push("/// opened it.".into());
+    l.push(format!(
+        "pub fn negotiated<P: {bound}>(peer: {reach}) -> $Option<comline_runtime::comline2::Negotiated> {{"
+    ));
+    l.push(format!("    {hold}"));
+    l.push("    extensions.get::<Negotiation>().map(|n| n.negotiated.clone())".into());
+    l.push("}".into());
+    l.push(String::new());
+    l.push("/// The protocols that connected although their wire shape differs from the".into());
+    l.push("/// peer's at the same version (`same_version_differs = warn`), by path.".into());
+    l.push(format!(
+        "pub fn warnings<P: {bound}>(peer: {reach}) -> $Vec<&'static str> {{"
+    ));
+    l.push(format!("    {hold}"));
+    l.push("    match extensions.get::<Negotiation>() {".into());
+    l.push(
+        "        $Some(n) => n.negotiated.warnings.iter().map(|p| protocol_path(*p)).collect(),"
+            .into(),
+    );
+    l.push("        $None => $Vec::new(),".into());
+    l.push("    }".into());
+    l.push("}".into());
+    l.push(String::new());
+    l.push("/// The last call on this connection that failed with `Unavailable`: which".into());
+    l.push("/// function, and why.".into());
+    l.push(format!(
+        "pub fn unavailable<P: {bound}>(peer: {reach}) -> $Option<Unavailable> {{"
+    ));
+    l.push(format!("    {hold}"));
+    l.push("    extensions.get::<Negotiation>().and_then(|n| n.unavailable)".into());
+    l.push("}".into());
+    l.push(String::new());
+    l.push("/// Whether `function` of `protocol` may be called: what each sender runs".into());
+    l.push("/// before it writes a request. A connection opened some other way than".into());
+    l.push("/// `accept` / `connect` has nothing to check against, and every call goes.".into());
+    l.push("#[doc(hidden)]".into());
+    l.push(format!(
+        "pub fn {check}<P: {bound}>(peer: {reach}, protocol: u16, function: u16, path: &'static str, name: &'static str) -> $Result<(), comline_runtime::contract::RuntimeError> {{"
+    ));
+    l.push(if asynchronous {
+        "    let mut extensions = peer.extensions();".to_string()
+    } else {
+        "    let extensions = peer.extensions();".to_string()
+    });
+    l.push("    let $Some(n) = extensions.get_mut::<Negotiation>() else {".into());
+    l.push("        return $Ok(());".into());
+    l.push("    };".into());
+    l.push("    let error = match n.negotiated.check_call(protocol, function) {".into());
+    l.push("        $Ok(()) => return $Ok(()),".into());
+    l.push("        $Err(error) => error,".into());
+    l.push("    };".into());
+    l.push("    let refused = n.negotiated.protocols.iter().find(|p| p.number == protocol).and_then(|p| match p.state {".into());
+    l.push(
+        "        comline_runtime::comline2::ProtocolState::Refused { reason } => $Some(reason),"
+            .into(),
+    );
+    l.push("        _ => $None,".into());
+    l.push("    });".into());
+    l.push(
+        "    // A protocol this end doesn't have isn't refused by the peer: it's unknown.".into(),
+    );
+    l.push("    let refused = refused.or_else(|| (!n.negotiated.protocols.iter().any(|p| p.number == protocol)).then_some(comline_runtime::contract::Reason::UnknownProtocol));".into());
+    l.push(
+        "    n.unavailable = $Some(Unavailable { protocol: path, function: name, refused });"
+            .into(),
+    );
+    l.push("    $Err(error)".into());
+    l.push("}".into());
+    l.push(String::new());
+    Ok(())
 }
 
 /// One generated error type: the per-function `<Proto><Fn>Error`, or the
@@ -1289,6 +1568,9 @@ impl Arg {
 }
 
 struct FnInfo {
+    /// The number a call to it carries: its position, or its wire number
+    /// under a framing that calls by number.
+    call: u16,
     /// What a call names it on the wire, and the call table holds: the
     /// schema's name, or under JSON-RPC's qualified method names
     /// `ns.Proto/name`.
@@ -1429,6 +1711,8 @@ fn protocol(
     async_api: bool,
     encodings: &Encodings,
     file_bounds: &FileBounds,
+    facts: Option<&PackageFacts>,
+    package_path: &str,
 ) -> Result<String> {
     let framing = framing_choice(parameters, encodings);
     // On a connection: handlers take the peer, the dispatcher is provided
@@ -1470,19 +1754,55 @@ fn protocol(
     } else {
         open
     };
-    let open = format!("{open}, or let the package's `serve` / `connect` do it");
+    let open = if connection && connections::handshake_name(parameters) == HANDSHAKE_COMLINE2 {
+        "the package's `accept` / `serve` / `connect`, which run `comline@2` with this package's facts".to_string()
+    } else {
+        format!("{open}, or let the package's `serve` / `connect` do it")
+    };
     // A framing that names its calls does so bare, or qualified by protocol.
     let method_names = MethodNames::of_protocol(parameters);
-    let number = if connection {
-        connections::protocol_number(schemas, namespace, proto).ok_or_else(|| {
-            eyre::eyre!(
-                "protocol `{proto}` has no number: more than 65536 protocols in the package"
-            )
-        })?
+    // On a connection: the number its frames carry, and each call's.
+    let addressing = if connection {
+        Some(comline_codegen::facts::addressing(
+            facts, schemas, encodings, namespace, proto, parameters, functions,
+        )?)
     } else {
-        0
+        None
     };
-    let fns: Vec<FnInfo> = functions
+    let number = addressing.as_ref().map_or(0, |a| a.protocol);
+    let by_id = addressing.as_ref().is_some_and(|a| a.by_id);
+    // Under `comline@2`, what a call is checked by before it's sent: the
+    // function's wire number, and its name for the message when it can't be.
+    let checks: Vec<Option<(u16, String)>> = functions
+        .iter()
+        .filter(|f| matches!(f, FrozenUnit::Function { .. }))
+        .enumerate()
+        .map(|(i, f)| {
+            let FrozenUnit::Function { name, .. } = f else {
+                unreachable!()
+            };
+            addressing
+                .as_ref()
+                .and_then(|a| a.checks.as_ref())
+                .map(|c| (c[i], name.clone()))
+        })
+        .collect();
+    let call_numbers: Vec<u16> = match &addressing {
+        Some(a) => a.calls.clone(),
+        None => (0..checks.len() as u16).collect(),
+    };
+    let check_line = |i: usize, peer: &str, asynchronous: bool| -> Option<String> {
+        let (function, name) = checks[i].as_ref()?;
+        let helper = if asynchronous {
+            "check_call_async"
+        } else {
+            "check_call"
+        };
+        Some(format!(
+            "        {package_path}::{helper}({peer}, Self::PROTOCOL, {function}, \"{namespace}::{proto}\", \"{name}\")?;"
+        ))
+    };
+    let mut fns: Vec<FnInfo> = functions
         .iter()
         .filter_map(|f| match f {
             FrozenUnit::Function {
@@ -1512,6 +1832,9 @@ fn protocol(
             _ => None,
         })
         .collect::<Result<_>>()?;
+    for (f, call) in fns.iter_mut().zip(&call_numbers) {
+        f.call = *call;
+    }
     // What each function's arguments check, in `fns` order. An argument
     // carries checks only through a `type` alias.
     let param_members: Vec<Vec<Member>> = functions
@@ -1672,8 +1995,12 @@ fn protocol(
             &open,
             &unverified_doc,
             on_decode,
+            by_id,
         ));
-        s.push_str(&async_sender(proto, &fns, number, &unverified_doc));
+        let checks: Vec<Option<String>> = (0..fns.len())
+            .map(|i| check_line(i, "self.0", true))
+            .collect();
+        s.push_str(&async_sender(proto, &fns, number, &unverified_doc, &checks));
         return Ok(s);
     }
     let mut l: Vec<String> = Vec::new();
@@ -1724,6 +2051,7 @@ fn protocol(
             "peer",
             on_decode,
             false,
+            by_id,
         ));
     } else {
         l.push("    fn dispatch<W: $WireFormat>(".into());
@@ -1741,6 +2069,7 @@ fn protocol(
             "",
             on_decode,
             false,
+            by_id,
         ));
     }
     l.push("    }".into());
@@ -1904,8 +2233,10 @@ fn protocol(
             None => "&()".to_string(),
         };
         // Both addresses — the framing picks (ordinal for datagram, name for
-        // a name-oriented framing like JSON-RPC).
-        let addr = format!("$Call::new({i}, \"{}\")", f.method);
+        // a name-oriented framing like JSON-RPC, wire number for one that
+        // calls by number).
+        let addr = format!("$Call::new({}, \"{}\")", f.call, f.method);
+        let check = check_line(i, "&mut *self.0", false);
         l.push(String::new());
         if f.one_way {
             // Fire-and-forget: no reply, so no `CallError<E>`.
@@ -1913,6 +2244,7 @@ fn protocol(
                 "    pub fn {}(&mut self{args}) -> $Result<(), $RuntimeError> {{",
                 f.ident
             ));
+            l.extend(check.clone());
             l.push(format!(
                 "        self.0.notify({protocol_arg}{addr}, {param_expr})"
             ));
@@ -1923,6 +2255,7 @@ fn protocol(
             "    pub fn {}(&mut self{args}) -> $Result<{}, $CallError<{}>> {{",
             f.ident, f.ret, f.err_ty
         ));
+        l.extend(check);
         let call = match f.timeout_ms {
             Some(ms) => format!(
                 "self.0.call_with_timeout({protocol_arg}{addr}, {param_expr}, core::time::Duration::from_millis({ms}))"
@@ -2000,6 +2333,7 @@ fn async_dispatcher(
     open: &str,
     unverified_doc: &[String],
     on_decode: ValidateOnDecode,
+    by_id: bool,
 ) -> String {
     let mut l: Vec<String> = unverified_doc.to_vec();
     l.push(format!("pub struct {proto}AsyncDispatcher<S>(pub S);"));
@@ -2025,6 +2359,7 @@ fn async_dispatcher(
         "peer",
         on_decode,
         true,
+        by_id,
     ));
     l.push("    }".into());
     l.push("}".into());
@@ -2056,7 +2391,13 @@ fn async_dispatcher(
 /// An async protocol's sender: `<Proto>AsyncSender`, calling through any
 /// `AsyncPeer` - an `AsyncConnection`'s handle, or the peer a handler was
 /// given.
-fn async_sender(proto: &str, fns: &[FnInfo], number: u16, unverified_doc: &[String]) -> String {
+fn async_sender(
+    proto: &str,
+    fns: &[FnInfo],
+    number: u16,
+    unverified_doc: &[String],
+    checks: &[Option<String>],
+) -> String {
     let mut l: Vec<String> = unverified_doc.to_vec();
     l.push(format!(
         "/// Calls protocol `{proto}` on the other end of a connection: the peer an"
@@ -2091,7 +2432,7 @@ fn async_sender(proto: &str, fns: &[FnInfo], number: u16, unverified_doc: &[Stri
             }
             None => "&()".to_string(),
         };
-        let addr = format!("$Call::new({i}, \"{}\")", f.method);
+        let addr = format!("$Call::new({}, \"{}\")", f.call, f.method);
         l.push(String::new());
         if f.one_way {
             // Sent when called: nothing to await.
@@ -2099,6 +2440,7 @@ fn async_sender(proto: &str, fns: &[FnInfo], number: u16, unverified_doc: &[Stri
                 "    pub fn {}(&self{args}) -> $Result<(), $RuntimeError> {{",
                 f.ident
             ));
+            l.extend(checks[i].clone());
             l.push(format!(
                 "        self.0.notify(Self::PROTOCOL, {addr}, {param_expr})"
             ));
@@ -2109,6 +2451,7 @@ fn async_sender(proto: &str, fns: &[FnInfo], number: u16, unverified_doc: &[Stri
             "    pub async fn {}(&self{args}) -> $Result<{}, $CallError<{}>> {{",
             f.ident, f.ret, f.err_ty
         ));
+        l.extend(checks[i].clone());
         let call = match f.timeout_ms {
             Some(ms) => format!(
                 "self.0.call_with_timeout(Self::PROTOCOL, {addr}, {param_expr}, core::time::Duration::from_millis({ms}))"
@@ -2151,6 +2494,7 @@ fn async_sender(proto: &str, fns: &[FnInfo], number: u16, unverified_doc: &[Stri
 ///
 /// `asynchronous`: the handler is awaited, and the outcome is the arm's
 /// `Answer` rather than written into `reply`.
+#[allow(clippy::too_many_arguments)]
 fn dispatch_arms(
     fns: &[FnInfo],
     param_members: &[Vec<Member>],
@@ -2159,13 +2503,25 @@ fn dispatch_arms(
     peer: &str,
     on_decode: ValidateOnDecode,
     asynchronous: bool,
+    by_id: bool,
 ) -> Vec<String> {
     let mut l: Vec<String> = Vec::new();
-    l.push(format!(
-        "        match call.resolve({calls_const}).ok_or($RuntimeError::UnknownCall)? {{"
-    ));
+    if by_id {
+        // A call carries its function's wire number, which isn't its
+        // position: matched as it is.
+        l.push("        let number = match call {".into());
+        l.push("            $Kind::Id(number) => number,".into());
+        l.push("            $Kind::Named(_) => return $Err($RuntimeError::UnknownCall),".into());
+        l.push("        };".into());
+        l.push("        match number {".into());
+    } else {
+        l.push(format!(
+            "        match call.resolve({calls_const}).ok_or($RuntimeError::UnknownCall)? {{"
+        ));
+    }
     for (i, f) in fns.iter().enumerate() {
-        l.push(format!("            {i} => {{"));
+        let arm = if by_id { f.call } else { i as u16 };
+        l.push(format!("            {arm} => {{"));
         // Params that will not decode are this call's failure, not the
         // connection's. A request/response call answers with a fault; a
         // one-way call has no response frame, so there is nowhere to say so
@@ -2380,6 +2736,7 @@ fn fn_info(
         })
         .collect();
     Ok(FnInfo {
+        call: 0,
         method: name.to_string(),
         ident: crate::ident::method_ident(name),
         params_ty,

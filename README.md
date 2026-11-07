@@ -66,6 +66,8 @@ with the fixtures that prove each claim, is in
 | `validate_on_decode` <br><sub>`validate-on-decode`</sub> | ✅ supported |
 | JSON-RPC framing <br><sub>`framing-jsonrpc`</sub> | ✅ supported |
 | no handshake <br><sub>`handshake-none`</sub> | ✅ supported |
+| `datagram@3` framing <br><sub>`framing-datagram3`</sub> | ✅ supported |
+| `comline@2` handshake <br><sub>`handshake-comline2`</sub> | ✅ supported |
 | connections <br><sub>`connections`</sub> | ✅ supported |
 | `async` <br><sub>`async`</sub> | ✅ supported |
 | the `packed@1` format <br><sub>`format-packed`</sub> | ✅ supported |
