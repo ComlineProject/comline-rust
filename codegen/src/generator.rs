@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use comline_core::schema::idl::annotations::{
-    MethodNames, DEFAULT_HANDSHAKE, FORMAT_JSON, FRAMING_JSONRPC, HANDSHAKE_NONE,
+    MethodNames, IMPLICIT_HANDSHAKE, FORMAT_JSON, FRAMING_JSONRPC, HANDSHAKE_NONE,
 };
 use comline_core::schema::ir::frozen::schema_ir_hash;
 use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
@@ -69,11 +69,8 @@ const ASYNC_DRIVER: &str = "comline_runtime::async_connection::";
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
-const RUNTIME_REV: &str = "17c3b70e3a350bd2473316d1727006d43d0d8fad";
-/// The runtime a package choosing `datagram@3` or `comline@2` links: the
-/// first with both. Every other package keeps [`RUNTIME_REV`], so its output
-/// doesn't change until the defaults flip.
-const RUNTIME_REV_COMLINE2: &str = "4f582f19ff02d8c0ad30426a0bdb0f586ef6f0b9";
+/// The first with `datagram@3` and `comline@2`, core's defaults.
+const RUNTIME_REV: &str = "4f582f19ff02d8c0ad30426a0bdb0f586ef6f0b9";
 
 /// `comline_std` — std's own pre-generated bindings, referenced instead of
 /// inlined when `external_std` is on. Same git-pin shape as
@@ -95,10 +92,7 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
     // facts it needs; nothing is ever numbered by position instead.
     comline_codegen::facts::check(req)?;
     let format = type_of(&req.encodings, &req.wire_format);
-    let runtime_rev = match comline_codegen::facts::needed(&req.schemas, &req.encodings) {
-        true => RUNTIME_REV_COMLINE2,
-        false => RUNTIME_REV,
-    };
+    let runtime_rev = RUNTIME_REV;
     // Where the package module is: its own file in `code` mode, the crate
     // root in `lib` mode.
     let package_path = match req.mode {
@@ -1070,7 +1064,7 @@ fn package_module(
     // A handshake that's neither `comline@1` nor `none` runs through
     // `accept_with` / `connect_with` whatever the framing is; those two keep
     // the constructors they always had.
-    let custom = (package.handshake != DEFAULT_HANDSHAKE && !unverified && !comline2)
+    let custom = (package.handshake != IMPLICIT_HANDSHAKE && !unverified && !comline2)
         .then(|| type_of(encodings, &package.handshake));
     let framing_ty = type_of(encodings, &package.framing);
     let (conn, transport_bound, dispatcher, bound, (awaited, fn_kw)) = if asynchronous {
@@ -1674,7 +1668,7 @@ fn no_handshake_of(parameters: &[FrozenUnit]) -> bool {
 /// generated for them doesn't change.
 fn custom_handshake<'a>(parameters: &[FrozenUnit], encodings: &'a Encodings) -> Option<&'a str> {
     let name = connections::handshake_name(parameters);
-    (name != DEFAULT_HANDSHAKE && name != HANDSHAKE_NONE).then(|| type_of(encodings, &name))
+    (name != IMPLICIT_HANDSHAKE && name != HANDSHAKE_NONE).then(|| type_of(encodings, &name))
 }
 
 fn framing_choice(parameters: &[FrozenUnit], encodings: &Encodings) -> FramingChoice {
