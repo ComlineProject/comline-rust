@@ -20,6 +20,7 @@ fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenerateRequest {
         validate_on_decode: Default::default(),
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
+        facts: None,
     }
 }
 
@@ -40,6 +41,7 @@ fn lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenerateRequest {
         validate_on_decode: Default::default(),
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
+        facts: None,
     }
 }
 
@@ -519,11 +521,19 @@ fn a_third_party_framing_writing_json_encodes_with_json() {
     let schemas = vec![("lines".to_string(), acme_protocol("com.acme.lines@1"))];
     let source = |grammar| {
         let mut req = lib_req(&schemas);
-        req.encodings.insert("com.acme.lines@1".into(), stating(grammar, "by_index"));
+        req.encodings
+            .insert("com.acme.lines@1".into(), stating(grammar, "by_index"));
         let files = generate_rust(&req).unwrap();
-        files.iter().find(|f| f.path.to_str() == Some("src/lines.rs")).unwrap().contents.clone()
+        files
+            .iter()
+            .find(|f| f.path.to_str() == Some("src/lines.rs"))
+            .unwrap()
+            .contents
+            .clone()
     };
-    let json = comline_codegen::encodings::official_for("rust")["json@1"].type_path.clone();
+    let json = comline_codegen::encodings::official_for("rust")["json@1"]
+        .type_path
+        .clone();
     let writes_json = source(Some("json"));
     assert!(writes_json.contains(&json), "{writes_json}");
     assert!(!writes_json.contains("pub type Format"), "{writes_json}");
@@ -549,9 +559,14 @@ fn a_third_party_framing_naming_its_calls_takes_method_names() {
     }
     let schemas = vec![("lines".to_string(), units)];
     let mut req = lib_req(&schemas);
-    req.encodings.insert("com.acme.lines@1".into(), stating(None, "by_name"));
+    req.encodings
+        .insert("com.acme.lines@1".into(), stating(None, "by_name"));
     let files = generate_rust(&req).unwrap();
-    let source = &files.iter().find(|f| f.path.to_str() == Some("src/lines.rs")).unwrap().contents;
+    let source = &files
+        .iter()
+        .find(|f| f.path.to_str() == Some("src/lines.rs"))
+        .unwrap()
+        .contents;
     assert!(source.contains("lines.Lines/"), "{source}");
 }
 

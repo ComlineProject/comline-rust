@@ -63,7 +63,10 @@ fn main() -> eyre::Result<()> {
         },
         // The one generator this crate registers, so the version it
         // registers under is the one `comline_std`'s own manifest states.
-        target: TargetLanguage { language: "rust".into(), version: comline_codegen_rust::LANG_VERSION.to_string() },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.to_string(),
+        },
         wire_format: "packed@1".into(),
         // comline_std is generated inline, as an ordinary standalone
         // crate - external_std only matters to a *consumer* referencing
@@ -72,6 +75,7 @@ fn main() -> eyre::Result<()> {
         validate_on_decode: Default::default(),
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
+        facts: None,
     };
 
     let files = generate_rust(&req)?;

@@ -352,6 +352,7 @@ fn build_generated_crate(label: &str, schemas: &[(String, Vec<FrozenUnit>)], ext
         validate_on_decode: Default::default(),
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
+        facts: None,
     };
     check_generated_crate(label, &req, None);
 }
@@ -609,6 +610,7 @@ fn generated_validators_run() {
         validate_on_decode: ValidateOnDecode::Collect,
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
+        facts: None,
     };
     check_generated_crate("validators", &req, Some(VALIDATED_BEHAVIOUR));
 }
@@ -733,6 +735,7 @@ fn generated_connection_protocols_call_both_ways() {
         validate_on_decode: Default::default(),
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
+        facts: None,
     };
     let files = generate_rust(&req).unwrap();
     let link = &files
@@ -872,6 +875,7 @@ fn generated_jsonrpc_connection_protocols_call_both_ways() {
         validate_on_decode: Default::default(),
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
+        facts: None,
     };
     let files = generate_rust(&req).unwrap();
     let link = &files
@@ -945,6 +949,7 @@ fn bare_jsonrpc_names_that_would_clash_on_a_connection_are_refused() {
             validate_on_decode: Default::default(),
             async_api: false,
             encodings: comline_codegen::encodings::official_for("rust"),
+            facts: None,
         };
         generate_rust(&req).map(|_| ())
     };
@@ -984,6 +989,7 @@ fn generated_async_connection_protocols_call_both_ways() {
         validate_on_decode: Default::default(),
         async_api: true,
         encodings: comline_codegen::encodings::official_for("rust"),
+        facts: None,
     };
     let files = generate_rust(&req).unwrap();
     let manifest = &files
@@ -1119,6 +1125,7 @@ fn game_request(schemas: &[(String, Vec<FrozenUnit>)], async_api: bool) -> Gener
         validate_on_decode: Default::default(),
         async_api,
         encodings: comline_codegen::encodings::official_for("rust"),
+        facts: None,
     }
 }
 
@@ -1419,6 +1426,7 @@ fn keyword_names_build_and_keep_their_wire_names() {
         validate_on_decode: Default::default(),
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
+        facts: None,
     };
     check_generated_crate("keywords", &req, Some(KEYWORDS_BEHAVIOUR));
 }
@@ -1465,6 +1473,7 @@ fn a_third_party_framing_and_format_build() {
         validate_on_decode: Default::default(),
         async_api: false,
         encodings,
+        facts: None,
     };
     build_against_acme_stub(
         "acme",
@@ -1618,6 +1627,7 @@ fn a_third_party_handshake_runs() {
         validate_on_decode: Default::default(),
         async_api: false,
         encodings,
+        facts: None,
     };
     let files = generate_rust(&req).unwrap();
     let file = |end: &str| {
@@ -1692,6 +1702,7 @@ fn a_third_party_handshake_runs_on_an_async_connection() {
         validate_on_decode: Default::default(),
         async_api: true,
         encodings,
+        facts: None,
     };
     let stub = format!("{HELLO_STUB}{HELLO_ASYNC_STUB}");
     build_against_acme_stub("hello-async", &req, &stub, Some(HELLO_ASYNC_BEHAVIOUR));
@@ -1920,6 +1931,7 @@ fn schema_names_the_generated_code_also_uses_build_async() {
         validate_on_decode: Default::default(),
         async_api: true,
         encodings: comline_codegen::encodings::official_for("rust"),
+        facts: None,
     };
     check_generated_crate("collisions-async", &req, None);
 }
@@ -1980,6 +1992,7 @@ fn generated_bounds_are_checked_while_decoding_and_encoding() {
         validate_on_decode: ValidateOnDecode::Off,
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
+        facts: None,
     };
     check_generated_crate("bounds", &req, Some(BOUNDED_BEHAVIOUR));
 }
@@ -2118,3 +2131,368 @@ fn arguments_and_returns_are_checked() {
     assert_eq!(Packed.decode::<__ShopRenameReturn>(&hostile).unwrap_err(), chars());
 }
 "##;
+
+// ── datagram@3 + comline@2, end to end ─────────────────────────────────────
+
+/// Version 0.1.0 of a package choosing `datagram@3` and `comline@2`.
+const CHAT_V1: &str = r#"
+@framing = "datagram@3"
+@handshake = { name = "comline@2", newer_consumer = "degrade" }
+protocol Chat {
+    function hello(name: string) -> u32;
+    function shout(text: string) -> u32;
+}
+"#;
+
+/// Version 0.2.0: `shout` moved first and `whisper` added in between. Each
+/// keeps its wire number, so an old peer still answers the right one.
+const CHAT_V2: &str = r#"
+@framing = "datagram@3"
+@handshake = { name = "comline@2", newer_consumer = "degrade" }
+protocol Chat {
+    function shout(text: string) -> u32;
+    function whisper(text: string) -> u32;
+    function hello(name: string) -> u32;
+}
+"#;
+
+/// The facts core's history would give `chat::Chat` at `version`, with the
+/// encodings' real parameter hashes.
+fn chat_facts(
+    id: &str,
+    version: &str,
+    shape: &str,
+    functions: &[(&str, u16)],
+) -> comline_codegen::facts::PackageFacts {
+    use comline_codegen::facts::{EncodingFacts, FunctionFacts, PackageFacts, ProtocolFacts};
+    let encoding = |kind: &str, name: &str| {
+        let e = comline_core::compat::encoding(kind, name, Default::default());
+        EncodingFacts {
+            kind: e.kind,
+            name: e.name,
+            params: e.params,
+            param_hash: e.param_hash,
+        }
+    };
+    PackageFacts {
+        id: Some(id.into()),
+        version: version.into(),
+        protocols: vec![ProtocolFacts {
+            path: "chat::Chat".into(),
+            namespace: "chat".into(),
+            name: "Chat".into(),
+            line: "0.1.0".into(),
+            number: 0,
+            shape_hash: shape.repeat(32),
+            functions: functions
+                .iter()
+                .map(|(name, number)| FunctionFacts {
+                    name: (*name).into(),
+                    since: "0.1.0".into(),
+                    number: *number,
+                })
+                .collect(),
+        }],
+        encodings: vec![
+            encoding("format", "packed@1"),
+            encoding("framing", "datagram@3"),
+            encoding("handshake", "comline@2"),
+        ],
+    }
+}
+
+fn chat_request(
+    name: &str,
+    source: &str,
+    facts: comline_codegen::facts::PackageFacts,
+    async_api: bool,
+) -> GenerateRequest {
+    use comline_core::schema::ir::compiler::interpreter::incremental::IncrementalInterpreter;
+    use comline_core::schema::ir::compiler::Compile;
+    GenerateRequest {
+        mode: Mode::Lib,
+        schemas: vec![(
+            "chat".to_string(),
+            IncrementalInterpreter::from_source(source),
+        )],
+        package: PackageMeta {
+            name: name.into(),
+            version: facts.version.clone(),
+        },
+        target: TargetLanguage {
+            language: "rust".into(),
+            version: comline_codegen_rust::LANG_VERSION.into(),
+        },
+        wire_format: "packed@1".into(),
+        external_std: false,
+        validate_on_decode: Default::default(),
+        async_api,
+        encodings: comline_codegen::encodings::official_for("rust"),
+        facts: Some(facts),
+    }
+}
+
+/// Three crates generated from the package's versions: `c2_old` (0.1.0),
+/// `c2_new` (0.2.0, functions reordered and one added), and `c2_alien` (the
+/// 0.1.0 schema under another package id). `c2_new`'s tests run against
+/// the other two.
+fn check_comline2_crates(label: &str, async_api: bool, behaviour: &str) {
+    const ID: &str = "0123456789abcdef0123456789abcdef";
+    const ALIEN: &str = "fedcba9876543210fedcba9876543210";
+    let old = chat_request(
+        "c2-old",
+        CHAT_V1,
+        chat_facts(ID, "0.1.0", "aa", &[("hello", 0), ("shout", 1)]),
+        async_api,
+    );
+    let alien = chat_request(
+        "c2-alien",
+        CHAT_V1,
+        chat_facts(ALIEN, "0.1.0", "aa", &[("hello", 0), ("shout", 1)]),
+        async_api,
+    );
+    let new = chat_request(
+        "c2-new",
+        CHAT_V2,
+        chat_facts(
+            ID,
+            "0.2.0",
+            "bb",
+            &[("shout", 1), ("whisper", 2), ("hello", 0)],
+        ),
+        async_api,
+    );
+
+    let dir = std::env::temp_dir().join(format!("comline-rust-c2-{label}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    for (sub, req) in [("old", &old), ("alien", &alien), ("new", &new)] {
+        for f in generate_rust(req).expect("generation") {
+            let path = dir.join(sub).join(&f.path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, &f.contents).unwrap();
+        }
+    }
+    let lib = fs::read_to_string(dir.join("new/src/lib.rs")).unwrap();
+    assert!(lib.contains("pub const HELLO: &[u8] = &["), "{lib}");
+    assert!(lib.contains("Datagram3Framing"), "{lib}");
+    let chat = fs::read_to_string(dir.join("new/src/chat.rs")).unwrap();
+    // `whisper` is called by its wire number, 2, though it's declared second.
+    assert!(
+        chat.contains("$Call::new(2, \"whisper\")".trim_start_matches('$'))
+            || chat.contains("Call::new(2, \"whisper\")"),
+        "{chat}"
+    );
+
+    let manifest = dir.join("new/Cargo.toml");
+    let mut contents = fs::read_to_string(&manifest).unwrap();
+    contents.push_str("\n[dev-dependencies]\nc2-old = { path = \"../old\" }\nc2-alien = { path = \"../alien\" }\n");
+    if async_api {
+        contents.push_str(
+            "tokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\"] }\n",
+        );
+    }
+    if let Some(runtime) = std::env::var("COMLINE_RUNTIME_PATH")
+        .ok()
+        .filter(|p| !p.is_empty())
+    {
+        let runtime = std::fs::canonicalize(&runtime).unwrap();
+        for sub in ["old", "alien", "new"] {
+            let m = dir.join(sub).join("Cargo.toml");
+            let mut c = if sub == "new" {
+                contents.clone()
+            } else {
+                fs::read_to_string(&m).unwrap()
+            };
+            c.push_str(&format!(
+                "\n[patch.\"https://github.com/ComlineProject/runtime\"]\ncomline-runtime = {{ path = {runtime:?} }}\n"
+            ));
+            if sub == "new" {
+                contents = c;
+            } else {
+                fs::write(&m, c).unwrap();
+            }
+        }
+    }
+    fs::write(&manifest, contents).unwrap();
+    fs::create_dir_all(dir.join("new/tests")).unwrap();
+    fs::write(dir.join("new/tests/behaviour.rs"), behaviour).unwrap();
+
+    let status = cargo_command()
+        .args(["test", "--quiet"])
+        .current_dir(dir.join("new"))
+        .env("CARGO_TARGET_DIR", dir.join("target"))
+        .status()
+        .expect("run cargo test");
+    if status.success() {
+        let _ = fs::remove_dir_all(&dir);
+    }
+    assert!(
+        status.success(),
+        "generated crates failed; left at {} for inspection",
+        dir.display()
+    );
+}
+
+/// A client of version 0.2.0 calls a server of 0.1.0: by number, so the
+/// reordered functions still reach the right handler; the function the
+/// server lacks fails locally (`newer_consumer = degrade`), saying which;
+/// and a server of another package is refused, at both ends.
+#[test]
+fn datagram3_and_comline2_connect_two_versions() {
+    check_comline2_crates("sync", false, COMLINE2_BEHAVIOUR);
+}
+
+const COMLINE2_BEHAVIOUR: &str = r##"
+use std::thread;
+
+use comline_runtime::contract::{CallError, Fault, Peer, Reason, RuntimeError, Side};
+use comline_runtime::transport::duplex;
+
+struct Old;
+impl c2_old::chat::Chat for Old {
+    fn hello(&self, _peer: &mut impl Peer, name: &str) -> Result<u32, Fault<c2_old::chat::ChatHelloError>> {
+        Ok(name.len() as u32)
+    }
+    fn shout(&self, _peer: &mut impl Peer, text: &str) -> Result<u32, Fault<c2_old::chat::ChatShoutError>> {
+        Ok(100 + text.len() as u32)
+    }
+}
+
+struct Alien;
+impl c2_alien::chat::Chat for Alien {
+    fn hello(&self, _peer: &mut impl Peer, _name: &str) -> Result<u32, Fault<c2_alien::chat::ChatHelloError>> {
+        Ok(0)
+    }
+    fn shout(&self, _peer: &mut impl Peer, _text: &str) -> Result<u32, Fault<c2_alien::chat::ChatShoutError>> {
+        Ok(0)
+    }
+}
+
+#[test]
+fn a_newer_client_calls_an_older_server_by_number() {
+    let (a, b) = duplex();
+    let server = thread::spawn(move || c2_old::serve(b, c2_old::Services { chat: Old }));
+    let mut conn = c2_new::connect(a).unwrap();
+    let peer_version = c2_new::negotiated(&mut conn).unwrap().peer_version;
+    assert_eq!((peer_version.release.major, peer_version.release.minor), (0, 1));
+
+    assert_eq!(c2_new::chat::ChatSender::new(&mut conn).hello("ana").unwrap(), 3);
+    assert_eq!(c2_new::chat::ChatSender::new(&mut conn).shout("hey").unwrap(), 103);
+
+    let err = c2_new::chat::ChatSender::new(&mut conn).whisper("psst").unwrap_err();
+    assert!(matches!(err, CallError::Runtime(RuntimeError::Unavailable)), "{err:?}");
+    let why = c2_new::unavailable(&mut conn).unwrap();
+    assert_eq!((why.protocol, why.function, why.refused), ("chat::Chat", "whisper", None));
+    assert_eq!(why.to_string(), "`chat::Chat.whisper` wasn't called: the peer lacks it");
+    assert!(c2_new::warnings(&mut conn).is_empty());
+
+    // Still connected after the call that wasn't made.
+    assert_eq!(c2_new::chat::ChatSender::new(&mut conn).hello("bo").unwrap(), 2);
+    drop(conn);
+    let _ = server.join().unwrap();
+}
+
+#[test]
+fn another_package_is_refused_at_both_ends() {
+    let (a, b) = duplex();
+    let server = thread::spawn(move || c2_alien::serve(b, c2_alien::Services { chat: Alien }));
+    let refused = RuntimeError::Refused { reason: Reason::PackageMismatch, side: Side::Responder };
+    assert_eq!(c2_new::connect(a).err(), Some(refused));
+    assert_eq!(server.join().unwrap(), Err(refused));
+}
+"##;
+
+/// [`COMLINE2_BEHAVIOUR`], async.
+#[test]
+fn async_datagram3_and_comline2_connect_two_versions() {
+    check_comline2_crates("async", true, ASYNC_COMLINE2_BEHAVIOUR);
+}
+
+const ASYNC_COMLINE2_BEHAVIOUR: &str = r##"
+use comline_runtime::async_connection::{async_duplex, AsyncPeer};
+use comline_runtime::contract::{CallError, Fault, Reason, RuntimeError, Side};
+
+struct Old;
+impl c2_old::chat::Chat for Old {
+    async fn hello(&self, _peer: &impl AsyncPeer, name: &str) -> Result<u32, Fault<c2_old::chat::ChatHelloError>> {
+        Ok(name.len() as u32)
+    }
+    async fn shout(&self, _peer: &impl AsyncPeer, text: &str) -> Result<u32, Fault<c2_old::chat::ChatShoutError>> {
+        Ok(100 + text.len() as u32)
+    }
+}
+
+struct Alien;
+impl c2_alien::chat::Chat for Alien {
+    async fn hello(&self, _peer: &impl AsyncPeer, _name: &str) -> Result<u32, Fault<c2_alien::chat::ChatHelloError>> {
+        Ok(0)
+    }
+    async fn shout(&self, _peer: &impl AsyncPeer, _text: &str) -> Result<u32, Fault<c2_alien::chat::ChatShoutError>> {
+        Ok(0)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newer_client_calls_an_older_server_by_number() {
+    let (dialler, acceptor) = async_duplex();
+    let server = tokio::spawn(c2_old::serve(acceptor, c2_old::Services { chat: Old }));
+    let client = c2_new::connect(dialler).await.unwrap();
+    let to_server = client.handle();
+    let client = tokio::spawn(client.run());
+
+    let chat = c2_new::chat::ChatAsyncSender::new(&to_server);
+    assert_eq!(chat.hello("ana").await.unwrap(), 3);
+    assert_eq!(chat.shout("hey").await.unwrap(), 103);
+    let err = chat.whisper("psst").await.unwrap_err();
+    assert!(matches!(err, CallError::Runtime(RuntimeError::Unavailable)), "{err:?}");
+    let why = c2_new::unavailable(&to_server).unwrap();
+    assert_eq!(why.to_string(), "`chat::Chat.whisper` wasn't called: the peer lacks it");
+    assert!(c2_new::warnings(&to_server).is_empty());
+
+    to_server.close();
+    client.await.unwrap().unwrap();
+    let _ = server.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn another_package_is_refused_at_both_ends() {
+    let (dialler, acceptor) = async_duplex();
+    let server = tokio::spawn(c2_alien::serve(acceptor, c2_alien::Services { chat: Alien }));
+    let refused = RuntimeError::Refused { reason: Reason::PackageMismatch, side: Side::Responder };
+    assert_eq!(c2_new::connect(dialler).await.err(), Some(refused));
+    assert_eq!(server.await.unwrap().err(), Some(refused));
+}
+"##;
+
+/// Wire numbers come from the facts or not at all: a package choosing
+/// `datagram@3` with no facts, or with facts older than its schema, is
+/// refused, never numbered by position.
+#[test]
+fn datagram3_without_its_facts_is_refused() {
+    let facts = chat_facts(
+        "0123456789abcdef0123456789abcdef",
+        "0.1.0",
+        "aa",
+        &[("hello", 0), ("shout", 1)],
+    );
+    let mut req = chat_request("c2", CHAT_V1, facts.clone(), false);
+    req.facts = None;
+    let err = generate_rust(&req).unwrap_err().to_string();
+    assert!(err.contains("the request carries no facts"), "{err}");
+    assert!(err.contains("run `comline build` first"), "{err}");
+
+    let err = generate_rust(&chat_request("c2", CHAT_V2, facts.clone(), false))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("function `whisper`: the facts have no wire number for it"),
+        "{err}"
+    );
+
+    let mut no_id = facts;
+    no_id.id = None;
+    let err = generate_rust(&chat_request("c2", CHAT_V1, no_id, false))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("identifies the package by its `id`"), "{err}");
+}
