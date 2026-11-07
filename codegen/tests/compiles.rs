@@ -1441,6 +1441,7 @@ fn a_third_party_framing_and_format_build() {
         type_path: ty.into(),
         package: Some("acme-encodings".into()),
         version: Some("0.2".into()),
+        ..Default::default()
     };
     let mut encodings = comline_codegen::encodings::official_for("rust");
     encodings.insert(
@@ -1595,6 +1596,7 @@ fn a_third_party_handshake_runs() {
             type_path: "acme_encodings::Hello".into(),
             package: Some("acme-encodings".into()),
             version: Some("0.2".into()),
+            ..Default::default()
         },
     );
     let req = GenerateRequest {
@@ -1656,6 +1658,7 @@ fn a_third_party_handshake_runs_on_an_async_connection() {
             type_path: "acme_encodings::Hello".into(),
             package: Some("acme-encodings".into()),
             version: Some("0.2".into()),
+            ..Default::default()
         },
     );
     let link = FrozenUnit::Protocol {

@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use comline_core::schema::idl::annotations::{
-    DEFAULT_HANDSHAKE, FORMAT_JSON, FRAMING_JSONRPC, HANDSHAKE_NONE,
+    MethodNames, DEFAULT_HANDSHAKE, FORMAT_JSON, FRAMING_JSONRPC, HANDSHAKE_NONE,
 };
 use comline_core::schema::ir::frozen::schema_ir_hash;
 use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
@@ -105,12 +105,12 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
         collisions::check(
             namespace,
             units,
-            derived_names(units, &req.schemas, req.async_api),
+            derived_names(units, &req.schemas, req.async_api, &req.encodings),
         )?;
     }
     // JSON-RPC protocols sharing a connection whose bare method names one
     // side couldn't tell apart.
-    connections::check(&req.schemas)?;
+    connections::check(&req.schemas, &req.encodings)?;
 
     // What each value's validation runs, resolved against every schema in
     // the request - a validator or alias can come from one this crate
@@ -227,7 +227,8 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
             // the official encodings come from).
             let referenced = |ty: &str| sources.values().chain(&module).any(|s| s.contains(ty));
             let mut mapped: Vec<(&str, Option<&str>)> = Vec::new();
-            for name in comline_codegen::encodings::used(&req.schemas, &req.wire_format) {
+            let writes_json = |framing: &str| comline_codegen::encodings::writes_json(&req.encodings, framing);
+            for name in comline_codegen::encodings::used(&req.schemas, &req.wire_format, &writes_json) {
                 let mapping = &req.encodings[&name];
                 if let Some(package) = &mapping.package {
                     if referenced(&mapping.type_path) && !mapped.iter().any(|(p, _)| p == package) {
@@ -445,7 +446,7 @@ fn schema_source(
 
     // The names this module declares, which the names its code uses from
     // elsewhere can't be imported under (`names`).
-    let taken = declared_names(units, schemas, async_api);
+    let taken = declared_names(units, schemas, async_api, encodings);
     let use_line = |path: &str, names: &[&str]| use_line(path, names, &taken, false);
 
     let mut output = String::new();
@@ -543,7 +544,7 @@ fn schema_source(
     // another protocol has use for the package's format.
     if units
         .iter()
-        .any(|u| matches!(u, FrozenUnit::Protocol { parameters, .. } if !is_jsonrpc(parameters)))
+        .any(|u| matches!(u, FrozenUnit::Protocol { parameters, .. } if !writes_json(parameters, encodings)))
     {
         output.push_str(&format!(
             "/// The package's wire format (`wire.format`): what this file's helpers\n\
@@ -676,6 +677,7 @@ fn declared_names(
     units: &[FrozenUnit],
     schemas: &[(String, Vec<FrozenUnit>)],
     async_api: bool,
+    encodings: &Encodings,
 ) -> HashSet<String> {
     let own = units.iter().filter_map(|unit| match unit {
         FrozenUnit::Struct { name, .. }
@@ -691,7 +693,7 @@ fn declared_names(
         _ => None,
     });
     own.chain(
-        derived_names(units, schemas, async_api)
+        derived_names(units, schemas, async_api, encodings)
             .into_iter()
             .map(|derived| derived.name),
     )
@@ -899,6 +901,7 @@ fn derived_names(
     units: &[FrozenUnit],
     schemas: &[(String, Vec<FrozenUnit>)],
     async_api: bool,
+    encodings: &Encodings,
 ) -> Vec<Derived> {
     let mut derived = Vec::new();
     let mut any_protocol = false;
@@ -918,7 +921,7 @@ fn derived_names(
         any_protocol = true;
         let connection = connections::on_connection(schemas, parameters);
         any_connection |= connection;
-        any_formatted |= !is_jsonrpc(parameters);
+        any_formatted |= !writes_json(parameters, encodings);
 
         derived.push(Derived::new(
             format!("{proto}Error"),
@@ -1017,9 +1020,9 @@ fn package_module(
     let asynchronous = req.async_api;
     let jsonrpc = package.framing == FRAMING_JSONRPC;
     let unverified = package.handshake == HANDSHAKE_NONE;
-    // JSON-RPC carries JSON whatever the package's format is.
+    // A framing that writes JSON carries it whatever the package's format is.
     let encodings = &req.encodings;
-    let fmt = if jsonrpc {
+    let fmt = if comline_codegen::encodings::writes_json(encodings, &package.framing) {
         type_of(encodings, FORMAT_JSON)
     } else {
         "Format"
@@ -1396,16 +1399,16 @@ fn framing_choice(parameters: &[FrozenUnit], encodings: &Encodings) -> FramingCh
     framing_for(&connections::framing_name(parameters), encodings)
 }
 
-/// Whether a protocol runs JSON-RPC, which carries JSON whatever the
+/// Whether a protocol's framing writes JSON, which it carries whatever the
 /// package's format is.
-fn is_jsonrpc(parameters: &[FrozenUnit]) -> bool {
-    connections::framing(parameters).name == FRAMING_JSONRPC
+fn writes_json(parameters: &[FrozenUnit], encodings: &Encodings) -> bool {
+    comline_codegen::encodings::writes_json(encodings, &connections::framing_name(parameters))
 }
 
-/// What a protocol's helpers encode with: JSON for a JSON-RPC protocol, the
-/// package's `Format` otherwise.
+/// What a protocol's helpers encode with: JSON on a framing that writes it,
+/// the package's `Format` otherwise.
 fn format_of<'a>(parameters: &[FrozenUnit], encodings: &'a Encodings) -> &'a str {
-    if is_jsonrpc(parameters) {
+    if writes_json(parameters, encodings) {
         type_of(encodings, FORMAT_JSON)
     } else {
         "Format"
@@ -1468,12 +1471,8 @@ fn protocol(
         open
     };
     let open = format!("{open}, or let the package's `serve` / `connect` do it");
-    // JSON-RPC names a call by its method: bare, or qualified by protocol.
-    let framing_value = connections::framing(parameters);
-    let method_names = match framing_value.name {
-        FRAMING_JSONRPC => framing_value.method_names,
-        _ => Default::default(),
-    };
+    // A framing that names its calls does so bare, or qualified by protocol.
+    let method_names = MethodNames::of_protocol(parameters);
     let number = if connection {
         connections::protocol_number(schemas, namespace, proto).ok_or_else(|| {
             eyre::eyre!(

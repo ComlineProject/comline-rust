@@ -501,7 +501,58 @@ fn acme(ty: &str) -> comline_codegen::protocol::EncodingMapping {
         type_path: ty.into(),
         package: Some("acme-encodings".into()),
         version: Some("0.2".into()),
+        ..Default::default()
     }
+}
+
+/// A third party's framing, by what its mapping says its profile states.
+fn stating(grammar: Option<&str>, calls: &str) -> comline_codegen::protocol::EncodingMapping {
+    comline_codegen::protocol::EncodingMapping {
+        grammar: grammar.map(str::to_string),
+        calls: Some(calls.to_string()),
+        ..acme("acme_encodings::LinesFraming")
+    }
+}
+
+#[test]
+fn a_third_party_framing_writing_json_encodes_with_json() {
+    let schemas = vec![("lines".to_string(), acme_protocol("com.acme.lines@1"))];
+    let source = |grammar| {
+        let mut req = lib_req(&schemas);
+        req.encodings.insert("com.acme.lines@1".into(), stating(grammar, "by_index"));
+        let files = generate_rust(&req).unwrap();
+        files.iter().find(|f| f.path.to_str() == Some("src/lines.rs")).unwrap().contents.clone()
+    };
+    let json = comline_codegen::encodings::official_for("rust")["json@1"].type_path.clone();
+    let writes_json = source(Some("json"));
+    assert!(writes_json.contains(&json), "{writes_json}");
+    assert!(!writes_json.contains("pub type Format"), "{writes_json}");
+    let opaque = source(None);
+    assert!(opaque.contains("pub type Format"), "{opaque}");
+}
+
+#[test]
+fn a_third_party_framing_naming_its_calls_takes_method_names() {
+    let mut units = one_plain_protocol("Lines");
+    if let FrozenUnit::Protocol { parameters, .. } = &mut units[0] {
+        parameters.push(FrozenUnit::Property {
+            name: "provider".into(),
+            value: ConfigValue::Name("Client".into()),
+        });
+        parameters.push(FrozenUnit::Property {
+            name: "framing".into(),
+            value: ConfigValue::Dict(vec![
+                ("name".into(), ConfigValue::Str("com.acme.lines@1".into())),
+                ("method_names".into(), ConfigValue::Name("qualified".into())),
+            ]),
+        });
+    }
+    let schemas = vec![("lines".to_string(), units)];
+    let mut req = lib_req(&schemas);
+    req.encodings.insert("com.acme.lines@1".into(), stating(None, "by_name"));
+    let files = generate_rust(&req).unwrap();
+    let source = &files.iter().find(|f| f.path.to_str() == Some("src/lines.rs")).unwrap().contents;
+    assert!(source.contains("lines.Lines/"), "{source}");
 }
 
 #[test]
