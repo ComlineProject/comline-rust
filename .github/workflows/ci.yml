@@ -19,6 +19,24 @@ jobs:
       - name: std-extra/ matches a fresh regen
         run: cargo run -p xtask -- --check
 
+  # The same build and test on the other platforms (core#9). The Linux x86_64
+  # job above keeps its name; these are additional checks.
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup update stable && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --verbose
+      - run: cargo test --verbose
+      - name: std-extra/ matches a fresh regen
+        run: cargo run -p xtask -- --check
+
   wasip1:
     # The generator as a WASI module, which the CLI runs under wasmtime.
     # `comline-codegen` takes comline-core with `default-features = false`
