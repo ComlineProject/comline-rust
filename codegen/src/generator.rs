@@ -85,7 +85,7 @@ const RUNTIME_REV: &str = "3b9cc9dc53a83fb2830d91b267bd5f477f0a1e51";
 /// `comline-runtime` above, pointing at `comline-rust`'s own `std-extra/`
 /// (see `xtask/`, which regenerates it and is what this pin must match).
 const STD_GIT: &str = "https://github.com/ComlineProject/comline-rust";
-pub const STD_REV: &str = "e1b2167eef2a5d85fe629bf1cb9cebba5257e791";
+pub const STD_REV: &str = "8b36b5a9ebb555f6e9760969be0a119e99b87aaa";
 
 pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
     // What this generator can't render at all is refused up front, every use
