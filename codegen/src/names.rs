@@ -28,22 +28,22 @@ const PATHS: &[(&str, &str)] = &[
     ("Serialize", "::serde::Serialize"),
     ("Deserialize", "::serde::Deserialize"),
     ("Client", "::comline_runtime::client::Client"),
-    ("Answer", "::comline_runtime::async_connection::Answer"),
+    ("Answer", "::comline_runtime::connection::Answer"),
     (
         "AsyncConnection",
-        "::comline_runtime::async_connection::AsyncConnection",
+        "::comline_runtime::connection::AsyncConnection",
     ),
     (
         "AsyncDispatch",
-        "::comline_runtime::async_connection::AsyncDispatch",
+        "::comline_runtime::connection::AsyncDispatch",
     ),
     (
         "AsyncPeer",
-        "::comline_runtime::async_connection::AsyncPeer",
+        "::comline_runtime::connection::AsyncPeer",
     ),
     (
         "AsyncTransport",
-        "::comline_runtime::async_connection::AsyncTransport",
+        "::comline_runtime::transport::AsyncTransport",
     ),
     ("Connection", "::comline_runtime::connection::Connection"),
     ("Call", "::comline_runtime::contract::Call"),
