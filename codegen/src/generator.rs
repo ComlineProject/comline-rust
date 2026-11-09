@@ -62,15 +62,23 @@ impl FileBounds<'_, '_> {
     }
 }
 
-/// The module path of the runtime's async driver, which its `async` feature
-/// gates: a file that uses it needs the feature turned on.
-const ASYNC_DRIVER: &str = "comline_runtime::async_connection::";
+/// Whether `source` uses the runtime's async driver, which its `async` feature
+/// gates: a file that does needs the feature turned on. The driver's types sit
+/// beside the blocking ones (`connection`, `transport`), so it's their `Async`
+/// names (and `Answer`) that tell it apart.
+fn uses_async_driver(source: &str) -> bool {
+    source.lines().any(|line| {
+        (line.contains("comline_runtime::connection::")
+            || line.contains("comline_runtime::transport::"))
+            && (line.contains("Async") || line.contains("Answer"))
+    })
+}
 
 /// `comline-runtime` — the crate the generated RPC code links against. Pinned
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
 /// The first with `datagram@3` and `comline@2`, core's defaults.
-const RUNTIME_REV: &str = "4f582f19ff02d8c0ad30426a0bdb0f586ef6f0b9";
+const RUNTIME_REV: &str = "3b9cc9dc53a83fb2830d91b267bd5f477f0a1e51";
 
 /// `comline_std` — std's own pre-generated bindings, referenced instead of
 /// inlined when `external_std` is on. Same git-pin shape as
@@ -179,7 +187,7 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
                 };
                 // The async driver is behind a runtime feature, which nothing
                 // in the code itself would tell a reader.
-                let contents = if contents.contains(ASYNC_DRIVER) {
+                let contents = if uses_async_driver(&contents) {
                     format!(
                         "// This file uses `comline_runtime`'s async driver - enable its feature in your Cargo.toml:\n\
                          // comline-runtime = {{ git = \"{RUNTIME_GIT}\", rev = \"{runtime_rev}\", features = [\"async\"] }}\n{contents}"
@@ -230,7 +238,7 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
             // A protocol links the runtime, and so does any validation.
             let needs_runtime = sources.values().any(|s| s.contains("comline_runtime::"));
             // The async driver is behind the runtime's `async` feature.
-            let needs_async = sources.values().any(|s| s.contains(ASYNC_DRIVER));
+            let needs_async = sources.values().any(|s| uses_async_driver(s));
 
             let needs_big_array = schemas.iter().any(|(_, units)| uses_big_array(units));
 
@@ -477,15 +485,10 @@ fn schema_source(
     }
     if has_async {
         output.push_str(&use_line(
-            "comline_runtime::async_connection",
-            &[
-                "Answer",
-                "AsyncConnection",
-                "AsyncDispatch",
-                "AsyncPeer",
-                "AsyncTransport",
-            ],
+            "comline_runtime::connection",
+            &["Answer", "AsyncConnection", "AsyncDispatch", "AsyncPeer"],
         ));
+        output.push_str(&use_line("comline_runtime::transport", &["AsyncTransport"]));
     }
     if has_blocking_connection {
         output.push_str(&use_line("comline_runtime::connection", &["Connection"]));
@@ -1069,8 +1072,8 @@ fn package_module(
     let framing_ty = type_of(encodings, &package.framing);
     let (conn, transport_bound, dispatcher, bound, (awaited, fn_kw)) = if asynchronous {
         (
-            "comline_runtime::async_connection::AsyncConnection",
-            "comline_runtime::async_connection::AsyncTransport",
+            "comline_runtime::connection::AsyncConnection",
+            "comline_runtime::transport::AsyncTransport",
             "AsyncDispatcher",
             "",
             (".await", "async fn"),
@@ -1223,7 +1226,7 @@ fn package_module(
             let negotiated = "handshake.negotiated().cloned().unwrap_or_else(|| unreachable!(\"a handshake that succeeded agreed something\"))";
             if asynchronous {
                 l.push(format!(
-                    "    comline_runtime::async_connection::AsyncPeer::extensions(&conn.handle()).insert(Negotiation {{ negotiated: {negotiated}, unavailable: $None }});"
+                    "    comline_runtime::connection::AsyncPeer::extensions(&conn.handle()).insert(Negotiation {{ negotiated: {negotiated}, unavailable: $None }});"
                 ));
             } else {
                 l.push(format!(
@@ -1330,8 +1333,8 @@ fn comline2_items(
         "/// states: `scope = {}`, `newer_consumer = {}`, `same_version_differs = {}`, `exchange = {}`.",
         params.scope, params.newer_consumer, params.same_version_differs, params.exchange
     ));
-    l.push("pub fn handshake() -> comline_runtime::comline2::Comline2Handshake {".into());
-    l.push("    use comline_runtime::comline2 as c2;".into());
+    l.push("pub fn handshake() -> comline_runtime::handshake::comline2::Comline2Handshake {".into());
+    l.push("    use comline_runtime::handshake::comline2 as c2;".into());
     l.push("    let hello = match c2::Message::decode(HELLO) {".into());
     l.push("        $Ok(c2::Message::Hello(hello)) => hello,".into());
     l.push("        _ => unreachable!(\"HELLO is a Hello message\"),".into());
@@ -1377,7 +1380,7 @@ fn comline2_items(
     l.push("/// the connection's extensions.".into());
     l.push("#[derive(Debug, Clone)]".into());
     l.push("pub struct Negotiation {".into());
-    l.push("    pub negotiated: comline_runtime::comline2::Negotiated,".into());
+    l.push("    pub negotiated: comline_runtime::handshake::comline2::Negotiated,".into());
     l.push("    /// The last call that wasn't made because the peer can't take it.".into());
     l.push("    pub unavailable: $Option<Unavailable>,".into());
     l.push("}".into());
@@ -1408,7 +1411,7 @@ fn comline2_items(
     l.push(String::new());
     let (bound, reach, hold) = if asynchronous {
         (
-            "comline_runtime::async_connection::AsyncPeer",
+            "comline_runtime::connection::AsyncPeer",
             "&P",
             "let extensions = peer.extensions();",
         )
@@ -1429,7 +1432,7 @@ fn comline2_items(
     );
     l.push("/// opened it.".into());
     l.push(format!(
-        "pub fn negotiated<P: {bound}>(peer: {reach}) -> $Option<comline_runtime::comline2::Negotiated> {{"
+        "pub fn negotiated<P: {bound}>(peer: {reach}) -> $Option<comline_runtime::handshake::comline2::Negotiated> {{"
     ));
     l.push(format!("    {hold}"));
     l.push("    extensions.get::<Negotiation>().map(|n| n.negotiated.clone())".into());
@@ -1480,7 +1483,7 @@ fn comline2_items(
     l.push("    };".into());
     l.push("    let refused = n.negotiated.protocols.iter().find(|p| p.number == protocol).and_then(|p| match p.state {".into());
     l.push(
-        "        comline_runtime::comline2::ProtocolState::Refused { reason } => $Some(reason),"
+        "        comline_runtime::handshake::comline2::ProtocolState::Refused { reason } => $Some(reason),"
             .into(),
     );
     l.push("        _ => $None,".into());

@@ -668,7 +668,7 @@ fn a_third_party_handshake_on_an_async_connection_runs_through_with() {
     let (lib, link) = (file("src/lib.rs"), file("src/link.rs"));
     for side in ["accept", "connect"] {
         let open = format!(
-            "comline_runtime::async_connection::AsyncConnection::{side}_with(transport, Format::default(), \
+            "comline_runtime::connection::AsyncConnection::{side}_with(transport, Format::default(), \
              comline_runtime::contract::Datagram2Framing, &mut acme_encodings::Hello, CONNECTION_IR_HASH).await?"
         );
         assert!(lib.contains(&open), "{lib}");
@@ -1910,7 +1910,8 @@ fn async_makes_a_connection_protocol_async() {
         src.contains("pub struct RpcAsyncSender<'p, P: AsyncPeer>(pub &'p P);"),
         "{src}"
     );
-    assert!(src.contains("use comline_runtime::async_connection::{Answer, AsyncConnection, AsyncDispatch, AsyncPeer, AsyncTransport};"));
+    assert!(src.contains("use comline_runtime::connection::{Answer, AsyncConnection, AsyncDispatch, AsyncPeer};"));
+    assert!(src.contains("use comline_runtime::transport::AsyncTransport;"));
     // Nothing of the blocking connection API, so no unused imports.
     for blocking in [
         "RpcDispatcher<",

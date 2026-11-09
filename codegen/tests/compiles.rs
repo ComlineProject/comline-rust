@@ -1005,7 +1005,8 @@ const ASYNC_CONNECTED_BEHAVIOUR: &str = r##"
 use std::sync::{Arc, Mutex};
 
 use comline_codegen_rust_compiletest::link::*;
-use comline_runtime::async_connection::{async_duplex, AsyncConnection, AsyncPeer};
+use comline_runtime::connection::{AsyncConnection, AsyncPeer};
+use comline_runtime::transport::async_duplex;
 use comline_runtime::contract::Fault;
 use comline_runtime::format::Json;
 
@@ -1252,7 +1253,8 @@ use std::time::Duration;
 use comline_codegen_rust_compiletest::game::*;
 use comline_codegen_rust_compiletest::items::*;
 use comline_codegen_rust_compiletest::{connect, serve, ClientServices, Services};
-use comline_runtime::async_connection::{async_duplex, AsyncPeer};
+use comline_runtime::connection::AsyncPeer;
+use comline_runtime::transport::async_duplex;
 use comline_runtime::contract::Fault;
 
 struct AccountImpl;
@@ -1747,7 +1749,7 @@ impl Handshake for Hello {
 /// `Hello` on an async connection: the same exchange over an
 /// `AsyncTransport`, counted the same way.
 const HELLO_ASYNC_STUB: &str = r##"
-use comline_runtime::async_connection::AsyncTransport;
+use comline_runtime::transport::AsyncTransport;
 use comline_runtime::handshake::AsyncHandshake;
 use futures_util::{SinkExt, StreamExt};
 
@@ -1779,7 +1781,8 @@ use std::sync::atomic::Ordering;
 use acme_encodings::RAN;
 use comline_codegen_rust_hellotest::hello::*;
 use comline_codegen_rust_hellotest::{connect, serve, Services};
-use comline_runtime::async_connection::{async_duplex, AsyncPeer};
+use comline_runtime::connection::AsyncPeer;
+use comline_runtime::transport::async_duplex;
 use comline_runtime::contract::Fault;
 
 struct LinkImpl;
@@ -2409,7 +2412,8 @@ fn async_datagram3_and_comline2_connect_two_versions() {
 }
 
 const ASYNC_COMLINE2_BEHAVIOUR: &str = r##"
-use comline_runtime::async_connection::{async_duplex, AsyncPeer};
+use comline_runtime::connection::AsyncPeer;
+use comline_runtime::transport::async_duplex;
 use comline_runtime::contract::{CallError, Fault, Reason, RuntimeError, Side};
 
 struct Old;
