@@ -4,76 +4,95 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+# A newer push to the same pull request supersedes this run; a branch's runs
+# queue instead.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build_and_test:
-    name: Rust project - stable
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: rustup update stable && rustup default stable
-      - run: cargo build --verbose
-      - run: cargo test --verbose
-      - name: std-extra/ matches a fresh regen
-        run: cargo run -p xtask -- --check
+  # The toolchain matrix (stable, beta, nightly), the same build and tests on
+  # the other platforms (core#9), and a stable canary on ubuntu-26.04 that may
+  # fail without failing the run. The reusable workflow's own jobs set the
+  # runner, the timeouts and the pinned actions.
+  #
+  # `extra-setup` runs in every one of those jobs before the build: the
+  # check that std-extra/ matches a fresh regen used to run on every platform,
+  # and still does.
+  rust:
+    name: rust
+    permissions:
+      contents: read
+    uses: ComlineProject/.github/.github/workflows/rust-ci.yml@797d473553d7f2fc50895bb2573acb83ac63c7cb # main, no release tag yet
+    with:
+      extra-setup: cargo run -p xtask -- --check
 
-  # The same build and test on the other platforms (core#9). The Linux x86_64
-  # job above keeps its name; these are additional checks.
-  test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest, ubuntu-24.04-arm]
-    steps:
-      - uses: actions/checkout@v7
-      - run: rustup update stable && rustup default stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --verbose
-      - run: cargo test --verbose
-      - name: std-extra/ matches a fresh regen
-        run: cargo run -p xtask -- --check
-
+  # The generator as a WASI module, which the CLI runs under wasmtime.
+  # `comline-codegen` takes comline-core with `default-features = false`
+  # (the IR only), so the parser and its tree-sitter dependency stay out of
+  # this build (core#144). In the wasm CI image (stable 1.99.1, both wasm
+  # targets).
   wasip1:
-    # The generator as a WASI module, which the CLI runs under wasmtime.
-    # `comline-codegen` takes comline-core with `default-features = false`
-    # (the IR only), so the parser and its tree-sitter dependency stay out of
-    # this build (core#144).
     name: Generator builds for wasm32-wasip1
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container: ghcr.io/comlineproject/ci-wasm@sha256:badd6af13cee6c459c9284de8ef0ef4a1667ed7e35582f87d1afb08f3c30fd8f
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - run: rustup update stable && rustup default stable
-      - run: rustup target add wasm32-wasip1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: cargo build --verbose -p comline-codegen-rust --bin comline-gen-rust --target wasm32-wasip1
 
+  # Generated crates must build on the oldest toolchain the generator
+  # registers at (`LANG_VERSION`). The tests run on stable (1.99.1, in the
+  # tools CI image); the crates they generate are built with the floor
+  # toolchain, which rustup fetches (minimal profile).
   floor:
-    # Generated crates must build on the oldest toolchain the generator
-    # registers at (`LANG_VERSION`). The tests run on stable; the crates they
-    # generate are built with the floor toolchain.
     name: Generated code builds at the floor (Rust 1.85.0)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container: ghcr.io/comlineproject/ci-tools@sha256:bf98b8798137193a49d1e1952a5b5f87e3d59a31729028c001bcd7883a22f71b
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - run: rustup update stable && rustup default stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: rustup toolchain install 1.85.0 --profile minimal
       - run: cargo test --verbose -p comline-codegen-rust --test compiles
         env:
           COMLINE_RUST_TOOLCHAIN: 1.85.0
 
+  # `STD_REV` can only point at a merge commit once that commit exists, so
+  # this runs after the merge rather than on the PR that regenerates
+  # `std-extra/`. Needs full history: the check diffs HEAD against STD_REV,
+  # and skips (passes) when git can't answer, so it stays on the VM, where git
+  # is known to be there.
   std_pin:
-    # `STD_REV` can only point at a merge commit once that commit exists, so
-    # this runs after the merge rather than on the PR that regenerates
-    # `std-extra/`. Needs full history: the check diffs HEAD against STD_REV.
     name: comline_std pin is current
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - run: rustup update stable && rustup default stable
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo run -p xtask -- --check-pin
