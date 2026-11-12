@@ -1850,7 +1850,7 @@ fn handshake_none_runs_no_handshake_and_documents_what_is_given_up() {
         "Ok(Self(Client::connect_with(transport, format, comline_runtime::contract::DatagramFraming, \
          &mut comline_runtime::handshake::NoHandshake, IR_HASH)?))"
     ));
-    let doc = "/// **Unverified:** gives up schema agreement and encoding agreement (handshake `none`).\n\
+    let doc = "/// **Unverified:** gives up schema agreement and encoding agreement.\n\
                /// Reason given: the 2009 gateway\n";
     assert!(src.contains(&format!("{doc}pub struct GateDispatcher<S>(pub S);")));
     assert!(src.contains(&format!("{doc}pub struct GateClient<T, W>")));
@@ -1862,6 +1862,70 @@ fn handshake_none_runs_no_handshake_and_documents_what_is_given_up() {
     assert!(rpc.contains(
         "Ok(Self(Client::connect_with(transport, format, framing, &mut comline_runtime::handshake::NoHandshake, IR_HASH)?))"
     ));
+}
+
+/// The `Gate` protocol of a lockstep schema, with these `@unverified`
+/// parameters; the lockstep dispatcher and client carry the doc.
+fn unverified_gate(marker: ConfigValue, set: Vec<comline_core::schema::ir::frozen::unit::Guarantee>) -> String {
+    let schemas = vec![(
+        "gate".to_string(),
+        lockstep(vec![FrozenUnit::Protocol {
+            docstring: String::new(),
+            parameters: vec![
+                FrozenUnit::Property { name: "unverified".into(), value: marker },
+                FrozenUnit::Unverified(set),
+            ],
+            name: "Gate".to_string(),
+            functions: vec![FrozenUnit::Function {
+                docstring: String::new(),
+                name: "ping".to_string(),
+                parameters: vec![],
+                arguments: vec![],
+                _return: None,
+                throws: vec![],
+                span: (0, 0),
+            }],
+            span: (0, 0),
+        }]),
+    )];
+    generate_rust(&code_req(&schemas)).unwrap().remove(0).contents
+}
+
+/// core#253: the cause was recomputed from the official encodings, so a
+/// protocol given up only for its size read as `(handshake ...)`.
+#[test]
+fn unverified_docs_render_the_frozen_reasons_not_a_handshake() {
+    use comline_core::schema::ir::frozen::unit::Guarantee;
+    let reason = "the uploader streams whatever it's given";
+
+    let src = unverified_gate(ConfigValue::Str(reason.into()), vec![Guarantee::BoundedSize]);
+    let doc = format!("/// **Unverified:** gives up bounded size.\n/// Reason given: {reason}\n");
+    assert!(src.contains(&format!("{doc}pub struct GateClient<T, W>")), "{src}");
+    assert!(!src.contains("(handshake"), "{src}");
+
+    let src = unverified_gate(ConfigValue::Str("lines has no vectors".into()), vec![Guarantee::EncodingConformance]);
+    assert!(src.contains("/// **Unverified:** gives up encoding conformance.\n/// Reason given: lines has no vectors\n"), "{src}");
+    assert!(!src.contains("(handshake"), "{src}");
+
+    // Nothing recorded beside a bounded size: what the build shows for it.
+    let keyed = ConfigValue::Dict(vec![]);
+    let src = unverified_gate(keyed, vec![Guarantee::BoundedSize]);
+    assert!(src.contains("/// Reason given: a string, list or nesting it reaches has no maximum\n"), "{src}");
+}
+
+/// A keyed `@unverified` says each guarantee's own reason.
+#[test]
+fn a_keyed_unverified_renders_each_guarantees_reason() {
+    use comline_core::schema::ir::frozen::unit::Guarantee;
+    let keyed = ConfigValue::Dict(vec![
+        ("schema_agreement".into(), ConfigValue::Str("the gateway predates Comline".into())),
+        ("bounded_size".into(), ConfigValue::Str("the uploader streams".into())),
+    ]);
+    let src = unverified_gate(keyed, vec![Guarantee::SchemaAgreement, Guarantee::BoundedSize]);
+    let doc = "/// **Unverified:** gives up schema agreement and bounded size.\n\
+               /// Reason given for schema agreement: the gateway predates Comline\n\
+               /// Reason given for bounded size: the uploader streams\n";
+    assert!(src.contains(&format!("{doc}pub struct GateClient<T, W>")), "{src}");
 }
 
 #[test]
