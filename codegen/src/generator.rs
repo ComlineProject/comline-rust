@@ -1023,7 +1023,7 @@ const PACKAGE_MODULE: &str = "connection";
 /// accepting side provides), `ClientServices` (what the dialling side does),
 /// and `accept` / `serve` / `connect`, blocking or async. `None` when no
 /// protocol this crate emits is on a connection, or when its protocols don't
-/// share one (`comline generate` says why).
+/// share one (`comline generation` says why).
 fn package_module(
     req: &GenerateRequest,
     schemas: &[(String, Vec<FrozenUnit>)],
