@@ -1,5 +1,5 @@
 //! Regenerates `std-extra/` from Comline's real `std` schemas, by running
-//! the same `generate_rust` every consumer's `comline generate -m lib` call
+//! the same `generate_rust` every consumer's `comline generation -m lib` call
 //! goes through - so `comline_std` is never hand-edited, only regenerated.
 //!
 //! `cargo run -p xtask` writes it; `cargo run -p xtask -- --check` diffs
