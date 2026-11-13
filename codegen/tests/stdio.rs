@@ -5,8 +5,9 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use comline_codegen::protocol::{decode, encode, FileOut, Request, Response};
-use comline_codegen::{GenerateRequest, PackageMeta, TargetLanguage};
+use comline_codegen::docs::Topic;
+use comline_codegen::protocol::{decode, describe, encode, FileOut, Request, Response};
+use comline_codegen::{GenerateRequest, PackageMeta, Registry, TargetLanguage};
 use comline_codegen_rust::{generate_rust, VERSIONS};
 use comline_conformance::{corpus, Fixture};
 use comline_core::schema::idl::annotations::DEFAULT_FORMAT;
@@ -96,4 +97,18 @@ fn the_binary_describes_the_rust_generator() {
     assert_eq!(d.languages.len(), 1);
     assert_eq!(d.languages[0].id, "rust");
     assert_eq!(d.languages[0].versions.floor, VERSIONS.floor);
+}
+
+#[test]
+fn the_registered_generator_carries_the_connections_docs_link() {
+    let mut registry = Registry::new();
+    comline_codegen_rust::register(&mut registry);
+    let languages = describe(&registry).languages;
+    assert_eq!(languages.len(), 1);
+    assert_eq!(
+        languages[0].doc(Topic::Connections),
+        Some(
+            "https://comlineproject.github.io/docs/languages/rust/connections/#when-theyre-generated"
+        )
+    );
 }
