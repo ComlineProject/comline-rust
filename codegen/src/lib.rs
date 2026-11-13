@@ -16,6 +16,7 @@ mod message;
 mod names;
 mod validate;
 
+use comline_codegen::docs::{DocsTable, Topic};
 use comline_codegen::features::{Feature, Support, SupportTable};
 use comline_codegen::versions::Versions;
 use comline_codegen::Generator;
@@ -88,6 +89,12 @@ pub const SUPPORT: SupportTable = &[
     (Feature::Chars, Support::supported()),
 ];
 
+/// The documentation pages this generator points users at, by topic.
+pub const DOCS: DocsTable = &[(
+    Topic::Connections,
+    "https://comlineproject.github.io/docs/languages/rust/connections/#when-theyre-generated",
+)];
+
 /// Contribute the Rust generator to a CLI's [`Registry`](comline_codegen::Registry).
 pub fn register(registry: &mut comline_codegen::Registry) {
     registry.register(Generator {
@@ -96,5 +103,6 @@ pub fn register(registry: &mut comline_codegen::Registry) {
         generate: generate_rust,
         support: SUPPORT,
         versions: VERSIONS,
+        docs: DOCS,
     });
 }
