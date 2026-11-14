@@ -145,6 +145,25 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
         req.target.version,
         crate::VERSIONS.verified_up_to
     );
+    // The package's `Services`, `serve` and the rest, which each protocol's
+    // file refers to rather than repeating what it defines.
+    let package = package_module(req, schemas, format);
+    // A schema at the crate root can't share a name with what the package
+    // module declares there.
+    if let Some(module) = package.as_ref().filter(|_| matches!(req.mode, Mode::Lib)) {
+        for (namespace, _) in schemas {
+            let first = comline_codegen::facts::namespace_segments(namespace)
+                .next()
+                .map(ident)
+                .unwrap_or_default();
+            if module.reserved.iter().any(|name| *name == first) {
+                return Err(eyre::eyre!(
+                    "a schema named `{first}` would be a module of the same name as the \
+                     package's `{first}` at the crate root - rename the schema"
+                ));
+            }
+        }
+    }
     let render = |namespace: &str, units: &[FrozenUnit]| {
         schema_source(
             namespace,
@@ -158,6 +177,7 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
             &req.encodings,
             req,
             &package_path,
+            package.as_ref(),
         )
         .map(|body| format!("{header}{body}"))
     };
@@ -212,7 +232,7 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
                 };
                 Ok(GeneratedFile { path: PathBuf::from(format!("{namespace}.rs")), contents })
             })
-            .chain(package_module(req, schemas, format).map(|module| {
+            .chain(package.as_ref().map(|module| {
                 // Loose files have no crate root to put it in: it gets a
                 // file of its own, which a schema of that name would be.
                 if schemas.iter().any(|(namespace, _)| namespace == PACKAGE_MODULE) {
@@ -223,7 +243,7 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
                 }
                 Ok(GeneratedFile {
                     path: PathBuf::from(format!("{PACKAGE_MODULE}.rs")),
-                    contents: format!("{header}{module}"),
+                    contents: format!("{header}{}{}", module.docs, module.body),
                 })
             }))
             .collect(),
@@ -245,11 +265,16 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
             let needs_big_array = schemas.iter().any(|(_, units)| uses_big_array(units));
 
             // The package's `Services` and `serve`, at the crate root.
-            let module = package_module(req, schemas, format);
+            let module = &package;
             // Each mapped encoding's package the crate's code names a type
             // of, unless it's a dependency already (`comline-runtime`, which
             // the official encodings come from).
-            let referenced = |ty: &str| sources.values().chain(&module).any(|s| s.contains(ty));
+            let referenced = |ty: &str| {
+                sources
+                    .values()
+                    .chain(module.iter().map(|m| &m.body))
+                    .any(|s| s.contains(ty))
+            };
             let mut mapped: Vec<(&str, Option<&str>)> = Vec::new();
             let writes_json = |framing: &str| comline_codegen::encodings::writes_json(&req.encodings, framing);
             for name in comline_codegen::encodings::used(&req.schemas, &req.wire_format, &writes_json) {
@@ -280,13 +305,19 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
             files.extend(tree.emit("src", &RustLayout, &|namespace, _units| {
                 sources.get(namespace).cloned().unwrap_or_default()
             }));
+            // The crate root says what to use, whatever the package's shape.
+            let docs = match module {
+                Some(module) => module.docs.clone(),
+                None => no_connection_docs(req, schemas),
+            };
+            let root = files
+                .iter_mut()
+                .find(|f| f.path == Path::new("src/lib.rs"))
+                .ok_or_else(|| eyre::eyre!("no crate root to put the package's docs and `serve` in"))?;
+            root.contents = with_crate_docs(&root.contents, &docs);
             if let Some(module) = module {
-                let root = files
-                    .iter_mut()
-                    .find(|f| f.path == Path::new("src/lib.rs"))
-                    .ok_or_else(|| eyre::eyre!("no crate root to put the package's `serve` in"))?;
                 root.contents.push('\n');
-                root.contents.push_str(&module);
+                root.contents.push_str(&module.body);
             }
             Ok(files)
         }
@@ -429,6 +460,7 @@ fn schema_source(
     encodings: &Encodings,
     req: &GenerateRequest,
     package_path: &str,
+    package: Option<&PackageModule>,
 ) -> Result<String> {
     let has_protocol = units
         .iter()
@@ -546,6 +578,9 @@ fn schema_source(
     if blocking {
         output.push_str(&use_line("comline_runtime::transport", &["Transport"]));
     }
+    // Where the imports above end: what the body names by mark (`names`)
+    // and no import above covers is imported here, once the body is known.
+    let imports_end = output.len();
     output.push('\n');
 
     if has_protocol {
@@ -556,25 +591,49 @@ fn schema_source(
             schema_ir_hash(units)
         ));
     }
-    if has_connection {
-        output.push_str(&format!(
-            "/// Digest of every schema in the package — what a connection's handshake\n\
-             /// checks, so both ends agree on each protocol's number.\n\
-             pub const CONNECTION_IR_HASH: u64 = {:#018x};\n\n",
-            connections::connection_ir_hash(schemas)
-        ));
-    }
     // JSON-RPC carries JSON whatever the package says, so only a file with
     // another protocol has use for the package's format.
-    if units
+    let needs_format = units
         .iter()
-        .any(|u| matches!(u, FrozenUnit::Protocol { parameters, .. } if !writes_json(parameters, encodings)))
-    {
-        output.push_str(&format!(
-            "/// The package's wire format (`wire.format`): what this file's helpers\n\
-             /// encode with, and what the peer has to speak too.\n\
-             pub type Format = {format};\n\n"
-        ));
+        .any(|u| matches!(u, FrozenUnit::Protocol { parameters, .. } if !writes_json(parameters, encodings)));
+    if package.is_some() {
+        // The package's module defines these once, and this file refers to
+        // them: what it says for the connection and for the format is the
+        // same thing in every file. Kept `pub` here, so what named
+        // `chat::CONNECTION_IR_HASH` before still does.
+        let mut shared = Vec::new();
+        if has_connection {
+            shared.push("CONNECTION_IR_HASH");
+        }
+        if needs_format {
+            shared.push("Format");
+        }
+        match shared.as_slice() {
+            [] => {}
+            [name] => output.push_str(&format!(
+                "#[doc(hidden)]\npub use {package_path}::{name};\n\n"
+            )),
+            _ => output.push_str(&format!(
+                "#[doc(hidden)]\npub use {package_path}::{{{}}};\n\n",
+                shared.join(", ")
+            )),
+        }
+    } else {
+        if has_connection {
+            output.push_str(&format!(
+                "/// Digest of every schema in the package — what a connection's handshake\n\
+                 /// checks, so both ends agree on each protocol's number.\n\
+                 pub const CONNECTION_IR_HASH: u64 = {:#018x};\n\n",
+                connections::connection_ir_hash(schemas)
+            ));
+        }
+        if needs_format {
+            output.push_str(&format!(
+                "/// The package's wire format (`wire.format`): what this file's helpers\n\
+                 /// encode with, and what the peer has to speak too.\n\
+                 pub type Format = {format};\n\n"
+            ));
+        }
     }
 
     for unit in units {
@@ -657,12 +716,27 @@ fn schema_source(
                     &file_bounds,
                     req,
                     package_path,
+                    package,
                 )?);
             }
             _ => {}
         }
     }
     output.push_str(&file_bounds.helpers.borrow().render());
+
+    // The framings, format and handshake a body names by mark and no import
+    // above covers.
+    let extra: String = [
+        ("comline_runtime::contract", "Datagram3Framing"),
+        ("comline_runtime::format", "Json"),
+        ("comline_runtime::framing", "JsonRpcFraming"),
+        ("comline_runtime::handshake", "NoHandshake"),
+    ]
+    .iter()
+    .filter(|(_, name)| names::marks(&output, name))
+    .map(|(path, name)| use_line(path, &[name]))
+    .collect();
+    output.insert_str(imports_end, &extra);
 
     Ok(names::resolve(&output, &taken))
 }
@@ -1023,6 +1097,23 @@ fn derived_names(
 /// schema can't take there. In `lib` mode it's the crate root instead.
 const PACKAGE_MODULE: &str = "connection";
 
+/// The package's connection, as a module: what to use (its docs), what it
+/// defines (its body), and what that means for the files beside it.
+struct PackageModule {
+    /// The `//!` lines that open the file (`code`) or the crate (`lib`):
+    /// what a user of this package implements, serves, dials and calls.
+    docs: String,
+    /// The items.
+    body: String,
+    /// The protocols its `Services` / `ClientServices` provide, as
+    /// `(namespace, name)`: their dispatchers are its business, not the
+    /// reader's.
+    covered: HashSet<(String, String)>,
+    /// What it declares or imports at its top level, which a schema at the
+    /// crate root (`lib` mode) can't be named like.
+    reserved: Vec<String>,
+}
+
 /// The package's one connection, set up in one call: `Services` (what the
 /// accepting side provides), `ClientServices` (what the dialling side does),
 /// and `accept` / `serve` / `connect`, blocking or async. `None` when no
@@ -1032,7 +1123,7 @@ fn package_module(
     req: &GenerateRequest,
     schemas: &[(String, Vec<FrozenUnit>)],
     format: &str,
-) -> Option<String> {
+) -> Option<PackageModule> {
     let package = connections::package_connection_among(&req.schemas, &req.dependencies).ok()??;
     // Only what this crate emits: an external `std` provides nothing here.
     let emitted = |side: &[connections::Provided]| -> Vec<connections::Provided> {
@@ -1074,10 +1165,13 @@ fn package_module(
     let custom = (package.handshake != IMPLICIT_HANDSHAKE && !unverified && !comline2)
         .then(|| type_of(encodings, &package.handshake));
     let framing_ty = type_of(encodings, &package.framing);
-    let (conn, transport_bound, dispatcher, bound, (awaited, fn_kw)) = if asynchronous {
+    // What the module imports, by the name its text uses: the connection's
+    // own type is `Connection`, so the runtime's is reached by its path.
+    let (conn, transport_ty, peer_ty, dispatcher, bound, (awaited, fn_kw)) = if asynchronous {
         (
             "comline_runtime::connection::AsyncConnection",
-            "comline_runtime::transport::AsyncTransport",
+            "AsyncTransport",
+            "AsyncPeer",
             "AsyncDispatcher",
             "",
             (".await", "async fn"),
@@ -1085,16 +1179,12 @@ fn package_module(
     } else {
         (
             "comline_runtime::connection::Connection",
-            "comline_runtime::transport::Transport",
+            "Transport",
+            "Peer",
             "Dispatcher",
             " + 'static",
             ("", "fn"),
         )
-    };
-    let conn_ty = if typed {
-        format!("{conn}<T, {fmt}, {jsonrpc_framing}>")
-    } else {
-        format!("{conn}<T, {fmt}>")
     };
     let open = |side: &str| -> String {
         let value = format!("{fmt}::default()");
@@ -1123,7 +1213,50 @@ fn package_module(
         }
     };
 
-    let mut l: Vec<String> = Vec::new();
+    // The runtime items the module names, imported once.
+    let mut contract = vec!["RuntimeError"];
+    let mut reserved: Vec<String> = vec![
+        "Format".into(),
+        "Connection".into(),
+        "RuntimeError".into(),
+        transport_ty.into(),
+    ];
+    let mut imports: Vec<String> = Vec::new();
+    if comline2 {
+        contract.extend(["Reason"]);
+        reserved.extend(
+            [
+                peer_ty,
+                "Reason",
+                "Negotiated",
+                "Comline2Handshake",
+                "Negotiation",
+                "Unavailable",
+            ]
+            .map(String::from),
+        );
+        if asynchronous {
+            imports.push("use comline_runtime::connection::AsyncPeer;".into());
+        } else {
+            contract.push("Peer");
+        }
+    }
+    contract.sort_unstable();
+    imports.push(match contract.as_slice() {
+        [one] => format!("use comline_runtime::contract::{one};"),
+        _ => format!("use comline_runtime::contract::{{{}}};", contract.join(", ")),
+    });
+    if comline2 {
+        imports.push(
+            "use comline_runtime::handshake::comline2::{Comline2Handshake, Negotiated};".into(),
+        );
+    }
+    imports.push(format!("use comline_runtime::transport::{transport_ty};"));
+    if typed {
+        reserved.push("Framing".into());
+    }
+    let mut l: Vec<String> = imports;
+    l.push(String::new());
     l.push("/// The package's wire format (`wire.format`).".into());
     l.push(format!("pub type Format = {format};"));
     l.push(String::new());
@@ -1134,9 +1267,61 @@ fn package_module(
         connections::connection_ir_hash(&req.schemas)
     ));
     l.push(String::new());
+    // The connection's type, written once: every `accept`, `serve`,
+    // `connect` and `provide_on` below returns or takes it, and a user
+    // names it as `Connection<Tcp>`.
+    if typed {
+        l.push(format!(
+            "/// The framing the package's connection runs on (`{}`).",
+            package.framing
+        ));
+        l.push(format!("pub type Framing = {jsonrpc_framing};"));
+        l.push(String::new());
+    }
+    l.push(
+        "/// The package's connection over the transport `T`: what [`accept`] and [`connect`]"
+            .into(),
+    );
+    if typed {
+        l.push(format!(
+            "/// return, written `Connection<Tcp>`: {} over [`Framing`].",
+            if fmt == "Format" {
+                "[`Format`]"
+            } else {
+                "JSON"
+            }
+        ));
+        l.push(format!("pub type Connection<T> = {conn}<T, {fmt}, Framing>;"));
+    } else {
+        l.push("/// return, written `Connection<Tcp>`: [`Format`] over the default framing.".into());
+        l.push(format!("pub type Connection<T> = {conn}<T, {fmt}>;"));
+    }
+    l.push(String::new());
     if comline2 {
         comline2_items(req, &package, asynchronous, &mut l).ok()?;
     }
+
+    // Generic names that nothing else in the module can mean: a protocol
+    // is named after its trait, and one named `Transport` or `Connection`
+    // would otherwise hide the item the signatures below use.
+    let used: HashSet<String> = reserved
+        .iter()
+        .cloned()
+        .chain(
+            [
+                "T", "P", "Services", "ClientServices", "Option", "Some", "None", "Result", "Ok",
+                "Err", "Vec", "String", "Box",
+            ]
+            .map(String::from),
+        )
+        .collect();
+    let generic = |field: &str| -> String {
+        let mut name = pascal(field);
+        while used.contains(&name) {
+            name.push_str("Impl");
+        }
+        name
+    };
 
     // `Services<A, B>`, its generics, their bounds and the struct itself.
     struct Side {
@@ -1144,12 +1329,14 @@ fn package_module(
         generics: String,
         bounds: String,
     }
+    let mut declared: Vec<&'static str> = Vec::new();
     let mut side =
         |ty: &'static str, provided: &[connections::Provided], who: &str| -> Option<Side> {
             if provided.is_empty() {
                 return None;
             }
-            let names: Vec<String> = provided.iter().map(|p| pascal(&p.field)).collect();
+            declared.push(ty);
+            let names: Vec<String> = provided.iter().map(|p| generic(&p.field)).collect();
             let bounds: Vec<String> = provided
                 .iter()
                 .zip(&names)
@@ -1181,7 +1368,7 @@ fn package_module(
                     .into(),
             );
             l.push(format!(
-                "    pub fn provide_on<T: {transport_bound}>(self, conn: &mut {conn_ty}) {{"
+                "    pub fn provide_on<T: {transport_ty}>(self, conn: &mut Connection<T>) {{"
             ));
             for p in provided {
                 l.push(format!(
@@ -1202,16 +1389,17 @@ fn package_module(
         };
     let server_side = side("Services", &server, "the accepting side");
     let client_side = side("ClientServices", &client, "the dialling side");
+    reserved.extend(declared.into_iter().map(String::from));
 
     // `<T: Transport, A: crate::x::A, ...>(transport: T, services: Services<A, ...>)`
     let signature = |name: &str, side: &Option<Side>, ret: &str| -> String {
         match side {
             Some(s) => format!(
-                "pub {fn_kw} {name}<T: {transport_bound}, {}>(transport: T, services: {}<{}>) -> $Result<{ret}, comline_runtime::contract::RuntimeError> {{",
+                "pub {fn_kw} {name}<T: {transport_ty}, {}>(transport: T, services: {}<{}>) -> $Result<{ret}, RuntimeError> {{",
                 s.bounds, s.ty, s.generics
             ),
             None => format!(
-                "pub {fn_kw} {name}<T: {transport_bound}>(transport: T) -> $Result<{ret}, comline_runtime::contract::RuntimeError> {{"
+                "pub {fn_kw} {name}<T: {transport_ty}>(transport: T) -> $Result<{ret}, RuntimeError> {{"
             ),
         }
     };
@@ -1230,11 +1418,11 @@ fn package_module(
             let negotiated = "handshake.negotiated().cloned().unwrap_or_else(|| unreachable!(\"a handshake that succeeded agreed something\"))";
             if asynchronous {
                 l.push(format!(
-                    "    comline_runtime::connection::AsyncPeer::extensions(&conn.handle()).insert(Negotiation {{ negotiated: {negotiated}, unavailable: $None }});"
+                    "    AsyncPeer::extensions(&conn.handle()).insert(Negotiation {{ negotiated: {negotiated}, unavailable: $None }});"
                 ));
             } else {
                 l.push(format!(
-                    "    comline_runtime::contract::Peer::extensions(&mut conn).insert(Negotiation {{ negotiated: {negotiated}, unavailable: $None }});"
+                    "    Peer::extensions(&mut conn).insert(Negotiation {{ negotiated: {negotiated}, unavailable: $None }});"
                 ));
             }
             if side.is_some() {
@@ -1262,7 +1450,7 @@ fn package_module(
         );
         l.push("/// a time.".into());
     }
-    l.push(signature("accept", &server_side, &conn_ty));
+    l.push(signature("accept", &server_side, "Connection<T>"));
     body(&mut l, &server_side, open("accept"));
 
     l.push("/// [`accept`], then serve every call until the peer leaves.".into());
@@ -1280,14 +1468,255 @@ fn package_module(
     l.push("}".into());
     l.push(String::new());
 
-    l.push("/// Dial over `transport`: run the handshake, then provide every protocol in".into());
-    l.push("/// `services`, which the server calls. Call the server's protocols through".into());
-    l.push("/// their senders.".into());
-    l.push(signature("connect", &client_side, &conn_ty));
+    // With nothing to provide, there's no `services` to take and none to
+    // mention.
+    if client_side.is_some() {
+        l.push(
+            "/// Dial over `transport`: run the handshake, then provide every protocol in".into(),
+        );
+        l.push("/// `services`, which the server calls. Call the server's protocols through".into());
+        l.push("/// their senders.".into());
+    } else {
+        l.push("/// Dial over `transport`: run the handshake. Call the server's protocols".into());
+        l.push("/// through their senders.".into());
+    }
+    l.push(signature("connect", &client_side, "Connection<T>"));
     body(&mut l, &client_side, open("connect"));
 
+    // What the package's user is pointed at, first.
+    let mut docs: Vec<String> = vec![
+        format!(
+            "The package's protocols share one connection: `{}` framing, the `{}` handshake. To use it:",
+            package.framing, package.handshake
+        ),
+        String::new(),
+    ];
+    let traits = |provided: &[connections::Provided]| -> String {
+        provided
+            .iter()
+            .map(|p| format!("`{}`", display_path(&p.namespace, &p.name)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let fields = |provided: &[connections::Provided]| -> String {
+        provided
+            .iter()
+            .map(|p| format!("{}: ..", ident(&p.field)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if !server.is_empty() {
+        docs.push(format!(
+            "- Implement the trait of each protocol the server provides: {}.",
+            traits(&server)
+        ));
+    }
+    if !client.is_empty() {
+        docs.push(format!(
+            "- Implement the trait of each protocol the client provides: {}.",
+            traits(&client)
+        ));
+    }
+    let serve_args = if server.is_empty() {
+        "transport".to_string()
+    } else {
+        format!("transport, Services {{ {} }}", fields(&server))
+    };
+    let connect_args = if client.is_empty() {
+        "transport".to_string()
+    } else {
+        format!("transport, ClientServices {{ {} }}", fields(&client))
+    };
+    if asynchronous {
+        docs.push(format!(
+            "- Serve with [`serve`]`({serve_args}).await`, which runs until the peer leaves. [`accept`] hands the connection back first, not yet running: take its `handle()` to call the client, then `run().await` it."
+        ));
+        docs.push(format!(
+            "- Dial with [`connect`]`({connect_args}).await`, then `run().await` the connection it returns."
+        ));
+    } else {
+        docs.push(format!(
+            "- Serve with [`serve`]`({serve_args})`, which serves every call until the peer leaves. [`accept`] hands the connection back first, for a server that calls the client or serves one call at a time."
+        ));
+        docs.push(format!("- Dial with [`connect`]`({connect_args})`."));
+    }
+    let call = |p: &connections::Provided| -> Option<String> {
+        let function = first_function(&req.schemas, &p.namespace, &p.name)?;
+        Some(if asynchronous {
+            format!(
+                "`{}AsyncSender::new(&conn.handle()).{function}(..).await`",
+                p.name
+            )
+        } else {
+            format!("`{}Sender::new(&mut conn).{function}(..)`", p.name)
+        })
+    };
+    if let Some(example) = server.first().and_then(call) {
+        docs.push(format!(
+            "- Call the server from the dialling side: {example}."
+        ));
+    }
+    if let Some(example) = client.first().and_then(call) {
+        docs.push(format!(
+            "- Call the client from the accepting side, on the connection [`accept`] returns or the peer a handler is given: {example}."
+        ));
+    }
+    let lockstep = lockstep_lines(req, schemas);
+    if !lockstep.is_empty() {
+        docs.push(String::new());
+        docs.extend(lockstep);
+    }
+    docs.push(String::new());
+    docs.push(
+        "[`Connection<T>`](Connection) names the connection over a transport `T`, written `Connection<Tcp>`; [`Format`] is the package's wire format."
+            .into(),
+    );
+
+    let covered = server
+        .iter()
+        .chain(&client)
+        .map(|p| (p.namespace.clone(), p.name.clone()))
+        .collect();
     // The package module declares none of the names it uses (`names`).
-    Some(names::resolve(&l.join("\n"), &HashSet::new()))
+    Some(PackageModule {
+        docs: doc_lines(&docs),
+        body: names::resolve(&l.join("\n"), &HashSet::new()),
+        covered,
+        reserved,
+    })
+}
+
+/// `lines` as `//!` comments, one per line, for the top of a file or crate,
+/// and a blank line after.
+fn doc_lines(lines: &[String]) -> String {
+    let mut docs: String = lines
+        .iter()
+        .map(|line| match line.is_empty() {
+            true => "//!\n".to_string(),
+            false => format!("//! {line}\n"),
+        })
+        .collect();
+    docs.push('\n');
+    docs
+}
+
+/// `contents` with `docs` (`//!` lines) at its top: after the comments that
+/// open a generated file, before its first item, where an inner doc comment
+/// has to be.
+fn with_crate_docs(contents: &str, docs: &str) -> String {
+    let mut at = 0;
+    for line in contents.split_inclusive('\n') {
+        let comment = line.starts_with("//") && !line.starts_with("//!");
+        if !(comment || line.trim().is_empty()) {
+            break;
+        }
+        at += line.len();
+    }
+    format!("{}{docs}{}", &contents[..at], &contents[at..])
+}
+
+/// The first function of the protocol `name` in the schema `namespace`, as
+/// an identifier: what a doc's example calls.
+fn first_function(
+    schemas: &[(String, Vec<FrozenUnit>)],
+    namespace: &str,
+    name: &str,
+) -> Option<String> {
+    schemas
+        .iter()
+        .filter(|(ns, _)| ns == namespace)
+        .flat_map(|(_, units)| units)
+        .find_map(|unit| match unit {
+            FrozenUnit::Protocol {
+                name: proto,
+                functions,
+                ..
+            } if proto == name => functions.iter().find_map(|f| match f {
+                FrozenUnit::Function { name, .. } => Some(ident(name)),
+                _ => None,
+            }),
+            _ => None,
+        })
+}
+
+/// What the docs say of the protocols of the package's own that aren't on a
+/// connection (the lockstep `Client` / `Server`): an introduction and a line
+/// per protocol. Empty when there are none.
+fn lockstep_lines(req: &GenerateRequest, schemas: &[(String, Vec<FrozenUnit>)]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (namespace, units) in schemas {
+        if connections::is_dependency(&req.dependencies, namespace) {
+            continue;
+        }
+        for unit in units {
+            let FrozenUnit::Protocol {
+                name, parameters, ..
+            } = unit
+            else {
+                continue;
+            };
+            if connections::on_connection_among(&req.schemas, &req.dependencies, parameters) {
+                continue;
+            }
+            let path = display_path(namespace, name);
+            let module = path.strip_suffix(name.as_str()).unwrap_or_default();
+            let call = first_function(&req.schemas, namespace, name)
+                .map_or_else(String::new, |function| format!(".{function}(..)"));
+            lines.push(format!(
+                "- `{path}`: implement the trait, serve it with `{module}{name}Dispatcher(provider).serve(&mut transport)`, and call it through `{module}{name}Client::connect(transport)?{call}`."
+            ));
+        }
+    }
+    if !lines.is_empty() {
+        lines.insert(
+            0,
+            "These protocols are served and called one request at a time, with no connection:"
+                .into(),
+        );
+        lines.insert(1, String::new());
+    }
+    lines
+}
+
+/// What the crate root says to use when the package has no connection of its
+/// own: the lockstep protocols it does have, why its protocols don't share a
+/// connection, or that it declares none.
+fn no_connection_docs(req: &GenerateRequest, schemas: &[(String, Vec<FrozenUnit>)]) -> String {
+    let mut docs: Vec<String> = Vec::new();
+    if let Err(disagreement) =
+        connections::package_connection_among(&req.schemas, &req.dependencies)
+    {
+        docs.push(format!(
+            "The package's protocols don't share one connection, so it has no `serve` or `connect` of its own: {}.",
+            disagreement.reason
+        ));
+        docs.push(String::new());
+        docs.push(
+            "Provide each protocol on a connection of your own with its dispatcher's `provide_on`, and call it through its sender."
+                .into(),
+        );
+    }
+    let lockstep = lockstep_lines(req, schemas);
+    let any_protocol = schemas
+        .iter()
+        .any(|(_, units)| units.iter().any(|u| matches!(u, FrozenUnit::Protocol { .. })));
+    if !lockstep.is_empty() {
+        if !docs.is_empty() {
+            docs.push(String::new());
+        }
+        docs.extend(lockstep);
+    } else if docs.is_empty() && any_protocol {
+        docs.push(
+            "The protocols here are a dependency's: they're generated as types, and this package neither serves nor dials them."
+                .into(),
+        );
+    } else if docs.is_empty() {
+        docs.push(
+            "This package declares no protocols: it holds types, so there is nothing to serve or dial."
+                .into(),
+        );
+    }
+    doc_lines(&docs)
 }
 
 /// A protocol's path as the generated code shows it, in Rust's own spelling:
@@ -1334,6 +1763,7 @@ fn comline2_items(
         ));
     }
     let bytes: Vec<String> = hello.iter().map(|b| format!("{b:#04x}")).collect();
+    l.push("#[doc(hidden)]".into());
     l.push("pub const HELLO: &[u8] = &[".into());
     for chunk in bytes.chunks(12) {
         l.push(format!("    {},", chunk.join(", ")));
@@ -1346,7 +1776,8 @@ fn comline2_items(
         "/// states: `scope = {}`, `newer_consumer = {}`, `same_version_differs = {}`, `exchange = {}`.",
         params.scope, params.newer_consumer, params.same_version_differs, params.exchange
     ));
-    l.push("pub fn handshake() -> comline_runtime::handshake::comline2::Comline2Handshake {".into());
+    l.push("#[doc(hidden)]".into());
+    l.push("pub fn handshake() -> Comline2Handshake {".into());
     l.push("    use comline_runtime::handshake::comline2 as c2;".into());
     l.push("    let hello = match c2::Message::decode(HELLO) {".into());
     l.push("        $Ok(c2::Message::Hello(hello)) => hello,".into());
@@ -1393,7 +1824,7 @@ fn comline2_items(
     l.push("/// the connection's extensions.".into());
     l.push("#[derive(Debug, Clone)]".into());
     l.push("pub struct Negotiation {".into());
-    l.push("    pub negotiated: comline_runtime::handshake::comline2::Negotiated,".into());
+    l.push("    pub negotiated: Negotiated,".into());
     l.push("    /// The last call that wasn't made because the peer can't take it.".into());
     l.push("    pub unavailable: $Option<Unavailable>,".into());
     l.push("}".into());
@@ -1408,7 +1839,7 @@ fn comline2_items(
     l.push("    pub function: &'static str,".into());
     l.push("    /// Why the peer refused the protocol, or `None` when the peer lacks the".into());
     l.push("    /// function (`newer_consumer = degrade`).".into());
-    l.push("    pub refused: $Option<comline_runtime::contract::Reason>,".into());
+    l.push("    pub refused: $Option<Reason>,".into());
     l.push("}".into());
     l.push(String::new());
     l.push("impl ::core::fmt::Display for Unavailable {".into());
@@ -1424,13 +1855,13 @@ fn comline2_items(
     l.push(String::new());
     let (bound, reach, hold) = if asynchronous {
         (
-            "comline_runtime::connection::AsyncPeer",
+            "AsyncPeer",
             "&P",
             "let extensions = peer.extensions();",
         )
     } else {
         (
-            "comline_runtime::contract::Peer",
+            "Peer",
             "&mut P",
             "let extensions = peer.extensions();",
         )
@@ -1445,7 +1876,7 @@ fn comline2_items(
     );
     l.push("/// opened it.".into());
     l.push(format!(
-        "pub fn negotiated<P: {bound}>(peer: {reach}) -> $Option<comline_runtime::handshake::comline2::Negotiated> {{"
+        "pub fn negotiated<P: {bound}>(peer: {reach}) -> $Option<Negotiated> {{"
     ));
     l.push(format!("    {hold}"));
     l.push("    extensions.get::<Negotiation>().map(|n| n.negotiated.clone())".into());
@@ -1480,7 +1911,7 @@ fn comline2_items(
     l.push("/// `accept` / `connect` has nothing to check against, and every call goes.".into());
     l.push("#[doc(hidden)]".into());
     l.push(format!(
-        "pub fn {check}<P: {bound}>(peer: {reach}, protocol: u16, function: u16, path: &'static str, name: &'static str) -> $Result<(), comline_runtime::contract::RuntimeError> {{"
+        "pub fn {check}<P: {bound}>(peer: {reach}, protocol: u16, function: u16, path: &'static str, name: &'static str) -> $Result<(), RuntimeError> {{"
     ));
     l.push(if asynchronous {
         "    let mut extensions = peer.extensions();".to_string()
@@ -1504,7 +1935,7 @@ fn comline2_items(
     l.push(
         "    // A protocol this end doesn't have isn't refused by the peer: it's unknown.".into(),
     );
-    l.push("    let refused = refused.or_else(|| (!n.negotiated.protocols.iter().any(|p| p.number == protocol)).then_some(comline_runtime::contract::Reason::UnknownProtocol));".into());
+    l.push("    let refused = refused.or_else(|| (!n.negotiated.protocols.iter().any(|p| p.number == protocol)).then_some(Reason::UnknownProtocol));".into());
     l.push(
         "    n.unavailable = $Some(Unavailable { protocol: path, function: name, refused });"
             .into(),
@@ -1630,8 +2061,12 @@ impl FnInfo {
 
 /// The `Framing` a protocol's generated `connect` / `serve` helpers wire up.
 struct FramingChoice {
-    /// Path to the framing type, e.g. `comline_runtime::framing::JsonRpcFraming`.
+    /// The framing type as the code names it: a mark (`names`) for one the
+    /// generator imports, e.g. `$JsonRpcFraming`.
     ty: String,
+    /// Its path, e.g. `comline_runtime::framing::JsonRpcFraming`: what a doc
+    /// says, which imports nothing.
+    path: String,
     /// `true` for anything but the datagram default — those helpers pass the
     /// framing explicitly (`Client::connect_with_framing` / `Server::with_framing`)
     /// and the `Client` alias carries it as its third type parameter.
@@ -1644,13 +2079,14 @@ struct FramingChoice {
 fn framing_for(name: &str, encodings: &Encodings) -> FramingChoice {
     use comline_core::schema::idl::annotations::{FRAMING_DATAGRAM, FRAMING_DATAGRAM2};
     FramingChoice {
-        ty: type_of(encodings, name).to_string(),
+        ty: names::mark(type_of(encodings, name)),
+        path: type_of(encodings, name).to_string(),
         explicit: name != FRAMING_DATAGRAM && name != FRAMING_DATAGRAM2,
     }
 }
 
 /// The runtime's `none` handshake, by path (only a `none` protocol uses it).
-const NO_HANDSHAKE: &str = "comline_runtime::handshake::NoHandshake";
+const NO_HANDSHAKE: &str = "$NoHandshake";
 
 /// Doc lines naming what an `@unverified` protocol gives up, and why, for
 /// its dispatcher and client. Empty for a protocol that gives nothing up.
@@ -1736,6 +2172,7 @@ fn protocol(
     file_bounds: &FileBounds,
     req: &GenerateRequest,
     package_path: &str,
+    package: Option<&PackageModule>,
 ) -> Result<String> {
     let framing = framing_choice(parameters, encodings);
     // On a connection: handlers take the peer, the dispatcher is provided
@@ -1746,18 +2183,24 @@ fn protocol(
     // `AsyncPeer`. Only a connection protocol has an async form.
     let asynchronous = connection && async_api;
     let custom = custom_handshake(parameters, encodings);
+    // The package's `Services` provides it on the connection, so the
+    // dispatcher is what a reader needn't see: it stays `pub`, for the one
+    // who provides a protocol by hand.
+    let covered = package.is_some_and(|p| {
+        connection && p.covered.contains(&(namespace.to_string(), proto.to_string()))
+    });
     // How the dispatcher's doc says to open the connection it's provided on:
     // the side that provides it accepts, or for a client-provided protocol,
     // dials.
     let open = match (framing.explicit, no_handshake_of(parameters), asynchronous) {
         (_, false, false) if custom.is_some() => format!(
             "`$Connection::accept_with(transport, format, {}, &mut {}, CONNECTION_IR_HASH)`",
-            framing.ty,
+            framing.path,
             custom.unwrap_or_default()
         ),
         (_, false, true) if custom.is_some() => format!(
             "`$AsyncConnection::accept_with(transport, format, {}, &mut {}, CONNECTION_IR_HASH)`",
-            framing.ty,
+            framing.path,
             custom.unwrap_or_default()
         ),
         (_, true, false) => "`$Connection::accept_with` and `NoHandshake` (`@handshake = \"none\"`)".to_string(),
@@ -1766,10 +2209,10 @@ fn protocol(
         (false, false, true) => "`$AsyncConnection::accept(transport, format, CONNECTION_IR_HASH)`".to_string(),
         (true, false, false) => format!(
             "`$Connection::accept_with(transport, format, {}, &mut ComlineHandshake, CONNECTION_IR_HASH)`",
-            framing.ty
+            framing.path
         ),
         (true, false, true) => {
-            format!("`$AsyncConnection::handshake(transport, format, {}, CONNECTION_IR_HASH)`", framing.ty)
+            format!("`$AsyncConnection::handshake(transport, format, {}, CONNECTION_IR_HASH)`", framing.path)
         }
     };
     let open = if connections::Provider::of(parameters) == connections::Provider::Client {
@@ -1883,7 +2326,7 @@ fn protocol(
         if let Some(ty) = &f.params_ty {
             let lt = if f.params_borrows { "<'a>" } else { "" };
             s.push_str(&format!(
-                "#[derive(Debug, Clone, $Serialize, $Deserialize)]\npub struct {ty}{lt} {{\n"
+                "#[doc(hidden)]\n#[derive(Debug, Clone, $Serialize, $Deserialize)]\npub struct {ty}{lt} {{\n"
             ));
             for arg in &f.args {
                 if arg.borrows() {
@@ -1994,7 +2437,7 @@ fn protocol(
 
     let calls_const = format!("{}_CALLS", screaming_snake(proto));
     s.push_str(&format!(
-        "pub const {calls_const}: &[&str] = &[{}];\n\n",
+        "#[doc(hidden)]\npub const {calls_const}: &[&str] = &[{}];\n\n",
         fns.iter()
             .map(|f| format!("\"{}\"", f.method))
             .collect::<Vec<_>>()
@@ -2020,6 +2463,7 @@ fn protocol(
             &unverified_doc,
             on_decode,
             by_id,
+            covered,
         ));
         let checks: Vec<Option<String>> = (0..fns.len())
             .map(|i| check_line(i, "self.0", true))
@@ -2029,6 +2473,9 @@ fn protocol(
     }
     let mut l: Vec<String> = Vec::new();
     l.extend(unverified_doc.iter().cloned());
+    if covered {
+        l.push("#[doc(hidden)]".into());
+    }
     l.push(format!("pub struct {proto}Dispatcher<S>(pub S);"));
     l.push(String::new());
     // `reply` is only touched by request/response arms; a protocol that is
@@ -2102,6 +2549,7 @@ fn protocol(
     l.push(format!("impl<S: {proto_trait}> {proto}Dispatcher<S> {{"));
     if connection {
         l.push("    /// This protocol's number on a connection.".into());
+        l.push("    #[doc(hidden)]".into());
         l.push(format!(
             "    pub const PROTOCOL: $ProtocolNumber = {number};"
         ));
@@ -2145,7 +2593,8 @@ fn protocol(
         ));
         l.push("    pub fn serve<T: $Transport>(self, transport: &mut T) -> $Result<(), $RuntimeError> {".into());
         l.push(format!(
-            "        self.serve_with_format(transport, {format}::default())"
+            "        self.serve_with_format(transport, {}::default())",
+            names::mark(format)
         ));
         l.push("    }".into());
         l.push(String::new());
@@ -2190,6 +2639,7 @@ fn protocol(
         l.push(String::new());
         l.push(format!("impl<'p, P: $Peer> {proto}Sender<'p, P> {{"));
         l.push("    /// This protocol's number on a connection.".into());
+        l.push("    #[doc(hidden)]".into());
         l.push(format!(
             "    pub const PROTOCOL: $ProtocolNumber = {number};"
         ));
@@ -2318,7 +2768,10 @@ fn protocol(
     if !connection {
         // The package's format, without naming it at every call.
         let format = format_of(parameters, encodings);
-        l.push(format!("impl<T: $Transport> {proto}Client<T, {format}> {{"));
+        l.push(format!(
+            "impl<T: $Transport> {proto}Client<T, {}> {{",
+            names::mark(format)
+        ));
         if no_handshake {
             l.push(
                 "    /// Bind to the provider. No handshake runs (`@handshake = \"none\"`).".into(),
@@ -2332,7 +2785,8 @@ fn protocol(
         ));
         l.push("    pub fn connect(transport: T) -> $Result<Self, $RuntimeError> {".into());
         l.push(format!(
-            "        Self::connect_with_format(transport, {format}::default())"
+            "        Self::connect_with_format(transport, {}::default())",
+            names::mark(format)
         ));
         l.push("    }".into());
         l.push("}".into());
@@ -2358,8 +2812,12 @@ fn async_dispatcher(
     unverified_doc: &[String],
     on_decode: ValidateOnDecode,
     by_id: bool,
+    hidden: bool,
 ) -> String {
     let mut l: Vec<String> = unverified_doc.to_vec();
+    if hidden {
+        l.push("#[doc(hidden)]".into());
+    }
     l.push(format!("pub struct {proto}AsyncDispatcher<S>(pub S);"));
     l.push(String::new());
     l.push(format!(
@@ -2392,6 +2850,7 @@ fn async_dispatcher(
         "impl<S: {proto_trait}> {proto}AsyncDispatcher<S> {{"
     ));
     l.push("    /// This protocol's number on a connection.".into());
+    l.push("    #[doc(hidden)]".into());
     l.push(format!(
         "    pub const PROTOCOL: $ProtocolNumber = {number};"
     ));
@@ -2435,6 +2894,7 @@ fn async_sender(
         "impl<'p, P: $AsyncPeer> {proto}AsyncSender<'p, P> {{"
     ));
     l.push("    /// This protocol's number on a connection.".into());
+    l.push("    #[doc(hidden)]".into());
     l.push(format!(
         "    pub const PROTOCOL: $ProtocolNumber = {number};"
     ));

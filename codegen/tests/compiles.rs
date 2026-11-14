@@ -7,6 +7,7 @@
 //! full runtime compile, so it is a touch slow.
 
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use comline_codegen::validation::ValidateOnDecode;
@@ -14,6 +15,8 @@ use comline_codegen::{GenerateRequest, Mode, PackageMeta, TargetLanguage};
 use comline_codegen_rust::generate_rust;
 use comline_core::schema::ir::frozen::types::{Literal, PrimitiveType, TypeRef};
 use comline_core::schema::ir::frozen::unit::{ConfigValue, FrozenArgument, FrozenUnit, Guarantee};
+
+mod common;
 
 /// The type a schema spells `written` - a primitive name, a named type, or
 /// either followed by `[]` / `[N]`.
@@ -2555,4 +2558,188 @@ fn datagram3_without_its_facts_is_refused() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("identifies the package by its `id`"), "{err}");
+}
+
+// ── entry points, plumbing and short types (comline-rust#129) ───────────────
+
+fn corpus_fixture(name: &str) -> comline_conformance::Fixture {
+    comline_conformance::corpus()
+        .into_iter()
+        .find(|f| f.name == name)
+        .unwrap_or_else(|| panic!("no fixture `{name}`"))
+}
+
+/// Write `req`'s output into a fresh directory under `shared`.
+fn write_generated_crate(shared: &Path, label: &str, req: &GenerateRequest) -> PathBuf {
+    let dir = shared.join(label);
+    let _ = fs::remove_dir_all(&dir);
+    for f in generate_rust(req).unwrap_or_else(|e| panic!("{label}: {e:#}")) {
+        let path = dir.join(&f.path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, &f.contents).unwrap();
+    }
+    dir
+}
+
+/// Build `dir`, and document it, with every warning an error: the imports
+/// the generated code adds must all be used, and every link in its docs must
+/// resolve. Both share `target`, so the runtime builds once.
+fn build_and_document(dir: &Path, target: &Path) {
+    let run = |args: &[&str], flags: (&str, &str)| {
+        let out = cargo_command()
+            .args(args)
+            .arg("--quiet")
+            .current_dir(dir)
+            .env("CARGO_TARGET_DIR", target)
+            .env(flags.0, flags.1)
+            .output()
+            .expect("run cargo");
+        assert!(
+            out.status.success(),
+            "`cargo {}` of {} failed:\n{}{}",
+            args.join(" "),
+            dir.display(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run(&["build"], ("RUSTFLAGS", "-D warnings"));
+    run(&["doc", "--no-deps"], ("RUSTDOCFLAGS", "-D warnings"));
+}
+
+/// What rustdoc shows of a generated crate: the entry points, and none of
+/// the wire plumbing - which is still `pub`, so a hand-written caller can
+/// reach it. Built at the floor too, where CI runs this file with 1.85.0.
+#[test]
+fn documented_crates_show_the_entry_points_and_hide_the_plumbing() {
+    let shared = std::env::temp_dir().join(format!("comline-rust-docs-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&shared);
+    let target = shared.join("target");
+    let package = |fx: &comline_conformance::Fixture, async_api| {
+        let mut req = common::request(fx, Mode::Lib, async_api);
+        req.package.name = "documented".into();
+        req
+    };
+
+    // `comline@2` on `datagram@3`, a nested protocol: every entry point.
+    let dir = write_generated_crate(&shared, "nested", &package(&corpus_fixture("nested_protocol"), false));
+    build_and_document(&dir, &target);
+    let doc = target.join("doc/documented");
+    let shown = |path: &str| doc.join(path).exists();
+    for entry in [
+        "index.html",
+        "fn.serve.html",
+        "fn.accept.html",
+        "fn.connect.html",
+        "struct.Services.html",
+        "type.Connection.html",
+        "type.Framing.html",
+        "type.Format.html",
+        "fn.negotiated.html",
+        "chat/admin/trait.Admin.html",
+        "chat/admin/struct.AdminSender.html",
+        "chat/admin/type.AdminGreetError.html",
+    ] {
+        assert!(shown(entry), "rustdoc shows {entry}");
+    }
+    for plumbing in [
+        "fn.handshake.html",
+        "constant.HELLO.html",
+        "fn.check_call.html",
+        "chat/admin/struct.AdminDispatcher.html",
+        "chat/admin/struct.AdminGreetParams.html",
+        "chat/admin/constant.ADMIN_CALLS.html",
+    ] {
+        assert!(!shown(plumbing), "rustdoc hides {plumbing}");
+    }
+    // The crate page opens with what to use.
+    let index = fs::read_to_string(doc.join("index.html")).unwrap();
+    assert!(index.contains("share one connection"), "{index}");
+    // (rustdoc escapes the `&`)
+    assert!(index.contains("AdminSender::new(&amp;mut conn).greet(..)"), "{index}");
+    // Still reachable by hand: `pub`, only out of the docs.
+    let source = fs::read_to_string(dir.join("src/chat/admin.rs")).unwrap();
+    assert!(source.contains("\npub struct AdminDispatcher<S>"));
+
+    // The other shapes build without a warning, and document without one.
+    let shapes = [
+        ("async", corpus_fixture("connections_async"), true),
+        ("jsonrpc", corpus_fixture("connections_jsonrpc"), false),
+        ("datagram2", corpus_fixture("connections"), false),
+        ("none", corpus_fixture("handshake_none"), false),
+        ("lockstep", common::lockstep(corpus_fixture("protocol")), false),
+        ("lockstep-jsonrpc", corpus_fixture("framing_jsonrpc"), false),
+        ("types", corpus_fixture("primitives"), false),
+    ];
+    for (label, fx, async_api) in shapes {
+        let dir = write_generated_crate(&shared, label, &package(&fx, async_api));
+        build_and_document(&dir, &target);
+    }
+    let _ = fs::remove_dir_all(&shared);
+}
+
+/// Protocols named like what the package module declares or imports
+/// (`Connection`, `Framing`, `Transport`, `Peer`, ...) build: a protocol's
+/// name is its trait's, and becomes a generic parameter of `Services`,
+/// which can't hide the types its signatures use.
+#[test]
+fn protocols_named_like_the_package_modules_types_build() {
+    use comline_core::schema::ir::frozen::unit::FrozenUnit;
+    const NAMES: &[&str] = &[
+        "Connection",
+        "Framing",
+        "Transport",
+        "AsyncTransport",
+        "Peer",
+        "AsyncPeer",
+        "RuntimeError",
+        "Reason",
+        "Negotiated",
+        "Negotiation",
+        "Comline2Handshake",
+        "Unavailable",
+        "Result",
+        "Services",
+    ];
+    let shared = std::env::temp_dir().join(format!("comline-rust-names-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&shared);
+    let target = shared.join("target");
+    // `comline@2` on `datagram@3`; the default `datagram@2` / `comline@1`;
+    // and each of them async.
+    for (label, name, async_api) in [
+        ("comline2", "handshake_comline2", false),
+        ("comline2-async", "handshake_comline2", true),
+        ("datagram2", "connections", false),
+        ("datagram2-async", "connections_async", true),
+        ("datagram3", "framing_datagram3", false),
+    ] {
+        let mut fx = corpus_fixture(name);
+        let units = &mut fx.schemas[0].1;
+        // `connections` has two protocols, one the client provides: keep
+        // that shape by renaming each protocol in turn.
+        let mut next = NAMES.iter();
+        for unit in units.iter_mut() {
+            if let FrozenUnit::Protocol { name, .. } = unit {
+                *name = next.next().unwrap().to_string();
+            }
+        }
+        // And one more protocol for each name left, as the first one.
+        let first = units
+            .iter()
+            .find(|u| matches!(u, FrozenUnit::Protocol { .. }))
+            .cloned()
+            .unwrap();
+        for extra in next {
+            let mut unit = first.clone();
+            if let FrozenUnit::Protocol { name, .. } = &mut unit {
+                *name = extra.to_string();
+            }
+            units.push(unit);
+        }
+        let mut req = common::request(&fx, Mode::Lib, async_api);
+        req.package.name = "named".into();
+        let dir = write_generated_crate(&shared, label, &req);
+        build_and_document(&dir, &target);
+    }
+    let _ = fs::remove_dir_all(&shared);
 }

@@ -65,8 +65,37 @@ const PATHS: &[(&str, &str)] = &[
     ("RuntimeError", "::comline_runtime::contract::RuntimeError"),
     ("WireFormat", "::comline_runtime::contract::WireFormat"),
     ("Server", "::comline_runtime::serve::Server"),
+    (
+        "Datagram3Framing",
+        "::comline_runtime::contract::Datagram3Framing",
+    ),
+    ("Json", "::comline_runtime::format::Json"),
+    (
+        "JsonRpcFraming",
+        "::comline_runtime::framing::JsonRpcFraming",
+    ),
+    ("NoHandshake", "::comline_runtime::handshake::NoHandshake"),
     ("Transport", "::comline_runtime::transport::Transport"),
 ];
+
+/// `path` (a runtime type, as `comline_runtime::framing::JsonRpcFraming`) as
+/// a mark when the generator knows it by name, so the module imports it;
+/// any other path, a third party's, as it is.
+pub fn mark(path: &str) -> String {
+    PATHS
+        .iter()
+        .find(|(_, full)| full.strip_prefix("::") == Some(path))
+        .map_or_else(|| path.to_string(), |(name, _)| format!("${name}"))
+}
+
+/// Whether `text` marks `name` (`$Json`, and not `$JsonRpcFraming`).
+pub fn marks(text: &str, name: &str) -> bool {
+    let mark = format!("${name}");
+    text.match_indices(&mark).any(|(at, _)| {
+        !text[at + mark.len()..]
+            .starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
 
 /// Whether `name` is a trait the generated code calls methods of, which
 /// has to be in scope even where the module declares a name like it.
