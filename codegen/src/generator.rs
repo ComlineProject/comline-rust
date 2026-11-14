@@ -1225,7 +1225,15 @@ fn package_module(
     if comline2 {
         contract.extend(["Reason"]);
         reserved.extend(
-            [peer_ty, "Reason", "Negotiated", "Negotiation", "Unavailable"].map(String::from),
+            [
+                peer_ty,
+                "Reason",
+                "Negotiated",
+                "Comline2Handshake",
+                "Negotiation",
+                "Unavailable",
+            ]
+            .map(String::from),
         );
         if asynchronous {
             imports.push("use comline_runtime::connection::AsyncPeer;".into());
@@ -1239,7 +1247,9 @@ fn package_module(
         _ => format!("use comline_runtime::contract::{{{}}};", contract.join(", ")),
     });
     if comline2 {
-        imports.push("use comline_runtime::handshake::comline2::Negotiated;".into());
+        imports.push(
+            "use comline_runtime::handshake::comline2::{Comline2Handshake, Negotiated};".into(),
+        );
     }
     imports.push(format!("use comline_runtime::transport::{transport_ty};"));
     if typed {
@@ -1767,7 +1777,7 @@ fn comline2_items(
         params.scope, params.newer_consumer, params.same_version_differs, params.exchange
     ));
     l.push("#[doc(hidden)]".into());
-    l.push("pub fn handshake() -> comline_runtime::handshake::comline2::Comline2Handshake {".into());
+    l.push("pub fn handshake() -> Comline2Handshake {".into());
     l.push("    use comline_runtime::handshake::comline2 as c2;".into());
     l.push("    let hello = match c2::Message::decode(HELLO) {".into());
     l.push("        $Ok(c2::Message::Hello(hello)) => hello,".into());

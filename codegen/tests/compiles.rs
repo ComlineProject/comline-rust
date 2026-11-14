@@ -2696,6 +2696,7 @@ fn protocols_named_like_the_package_modules_types_build() {
         "Reason",
         "Negotiated",
         "Negotiation",
+        "Comline2Handshake",
         "Unavailable",
         "Result",
         "Services",
