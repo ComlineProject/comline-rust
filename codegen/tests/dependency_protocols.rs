@@ -1,7 +1,8 @@
 //! A package that uses only a dependency's types generates, though the
 //! dependency declares a protocol (generation#143): the protocol is generated
 //! as a type, but it isn't on the package's connection, so nothing addresses
-//! it by wire numbers, checks it, or puts it in the Hello.
+//! it by wire numbers, checks it, or puts it in the Hello. Nor does it clash
+//! with the package's own protocols (generation#147).
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -12,7 +13,8 @@ use comline_codegen::validation::ValidateOnDecode;
 use comline_codegen::{connections, facts, GenerateRequest, Mode, PackageMeta, TargetLanguage};
 use comline_codegen_rust::generate_rust;
 use comline_conformance::{dependency_and_own_protocols, dependency_protocol, Fixture};
-use comline_core::schema::ir::frozen::unit::FrozenUnit;
+use comline_core::schema::ir::frozen::types::{PrimitiveType, TypeRef};
+use comline_core::schema::ir::frozen::unit::{ConfigValue, FrozenUnit};
 
 /// The request `comline generation` sends for `fx` in `mode`: with the
 /// package's dependencies, and the facts of its own schemas when a protocol
@@ -162,6 +164,84 @@ fn a_dependencys_protocol_is_off_the_package_connection_beside_the_packages_own(
     assert_eq!(addressed["Foo"], (0, false));
     let greeting = file(&files, "localdeps/greeting.rs").unwrap();
     assert!(greeting.contains("trait Foo"), "{greeting}");
+}
+
+/// A `jsonrpc` protocol with one function, called by that bare name, which
+/// the server side provides, or the client side when `client`.
+fn jsonrpc_protocol(name: &str, function: &str, client: bool) -> FrozenUnit {
+    let mut parameters = vec![FrozenUnit::Property {
+        name: "framing".to_string(),
+        value: ConfigValue::Str("jsonrpc".to_string()),
+    }];
+    if client {
+        parameters.push(FrozenUnit::Property {
+            name: "provider".to_string(),
+            value: ConfigValue::Name("Client".to_string()),
+        });
+    }
+    FrozenUnit::Protocol {
+        docstring: String::new(),
+        parameters,
+        name: name.to_string(),
+        functions: vec![FrozenUnit::Function {
+            docstring: String::new(),
+            parameters: vec![],
+            name: function.to_string(),
+            arguments: vec![],
+            _return: Some(TypeRef::Primitive(PrimitiveType::U32)),
+            throws: vec![],
+            span: (0, 0),
+        }],
+        span: (0, 0),
+    }
+}
+
+/// A dependency's `jsonrpc` protocol with a function the package's own has is
+/// no clash: bare method names only have to tell apart what is on one
+/// connection, and the dependency's isn't on the package's (generation#147).
+/// Two of the package's own with that function still are.
+#[test]
+fn a_dependencys_jsonrpc_function_name_is_no_clash_with_the_packages_own() {
+    // The package's `Chat` and its client's `Events` share a connection; the
+    // dependency's `Greeter` has `Chat`'s `send` too.
+    let fixture = |own: Vec<FrozenUnit>| {
+        let mut fx = dependency_protocol();
+        fx.name = "dependency_jsonrpc_and_own";
+        fx.schemas = vec![
+            ("api".to_string(), own),
+            (
+                "localdeps/x".to_string(),
+                vec![jsonrpc_protocol("Greeter", "send", false)],
+            ),
+        ];
+        fx
+    };
+    let chat = || jsonrpc_protocol("Chat", "send", false);
+    let events = || jsonrpc_protocol("Events", "notify", true);
+    for mode in [Mode::Code, Mode::Lib] {
+        let req = request(&fixture(vec![chat(), events()]), mode);
+        // A check that counts the dependency's protocol refuses it...
+        assert!(
+            connections::check(&req.schemas, &req.encodings).is_err(),
+            "{mode:?}: the fixture clashes when the dependency's protocol is counted"
+        );
+        // ...and generation doesn't.
+        let files = generate_rust(&req).unwrap_or_else(|e| panic!("{mode:?}: {e:#}"));
+        let (api, greeter) = match mode {
+            Mode::Code => ("api.rs", "localdeps/x.rs"),
+            Mode::Lib => ("src/api.rs", "src/localdeps/x.rs"),
+        };
+        let api = file(&files, api).unwrap_or_else(|| panic!("{mode:?}: {files:#?}"));
+        assert!(api.contains("trait Chat"), "{mode:?}: {api}");
+        let greeter = file(&files, greeter).unwrap_or_else(|| panic!("{mode:?}: {files:#?}"));
+        assert!(greeter.contains("trait Greeter"), "{mode:?}: {greeter}");
+
+        // Two of the package's own with that function still clash.
+        let admin = jsonrpc_protocol("Admin", "send", false);
+        let req = request(&fixture(vec![chat(), admin, events()]), mode);
+        let refused = generate_rust(&req).expect_err("two of the package's own clash");
+        assert!(format!("{refused:#}").contains("send"), "{refused:#}");
+    }
 }
 
 /// `request` on `comline-gen-rust`'s stdin, its stdout decoded.

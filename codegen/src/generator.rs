@@ -129,8 +129,10 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
         )?;
     }
     // JSON-RPC protocols sharing a connection whose bare method names one
-    // side couldn't tell apart.
-    connections::check(&req.schemas, &req.encodings)?;
+    // side couldn't tell apart. Only the protocols the package reaches take
+    // part: a dependency's that shares a method name with the package's own
+    // isn't on its connection.
+    connections::check_in(req)?;
 
     // What each value's validation runs, resolved against every schema in
     // the request - a validator or alias can come from one this crate
@@ -1288,6 +1290,16 @@ fn package_module(
     Some(names::resolve(&l.join("\n"), &HashSet::new()))
 }
 
+/// A protocol's path as the generated code shows it, in Rust's own spelling:
+/// `chat::admin::Admin`. A request's namespaces are `/`-joined (`chat/admin`),
+/// which in front of `::` would mix the two. Text only: nothing numbered or
+/// hashed is built from it.
+fn display_path(namespace: &str, name: &str) -> String {
+    let mut segments: Vec<&str> = comline_codegen::facts::namespace_segments(namespace).collect();
+    segments.push(name);
+    segments.join("::")
+}
+
 /// The package module's `comline@2` items: this end's Hello (the facts it
 /// was generated from), `handshake()` with the parameters the package states,
 /// and what senders check each call against.
@@ -1314,10 +1326,9 @@ fn comline2_items(
             .map(|(f, n)| format!("`{f}` {n}"))
             .collect();
         l.push(format!(
-            "/// - {} `{}::{}`, line {}: {}",
+            "/// - {} `{}`, line {}: {}",
             p.number,
-            p.namespace,
-            p.name,
+            display_path(&p.namespace, &p.name),
             p.line,
             functions.join(", ")
         ));
@@ -1365,7 +1376,7 @@ fn comline2_items(
     l.push("/// The package's protocols on the connection, by wire number.".into());
     let paths: Vec<String> = protocols
         .iter()
-        .map(|p| format!("({}, \"{}::{}\")", p.number, p.namespace, p.name))
+        .map(|p| format!("({}, \"{}\")", p.number, display_path(&p.namespace, &p.name)))
         .collect();
     l.push(format!(
         "const PROTOCOLS: &[(u16, &str)] = &[{}];",
@@ -1811,7 +1822,8 @@ fn protocol(
             "check_call"
         };
         Some(format!(
-            "        {package_path}::{helper}({peer}, Self::PROTOCOL, {function}, \"{namespace}::{proto}\", \"{name}\")?;"
+            "        {package_path}::{helper}({peer}, Self::PROTOCOL, {function}, \"{}\", \"{name}\")?;",
+            display_path(namespace, proto)
         ))
     };
     let mut fns: Vec<FnInfo> = functions
