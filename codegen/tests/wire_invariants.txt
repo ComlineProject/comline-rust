@@ -1,0 +1,434 @@
+== primitives (code)
+== primitives (lib)
+== optional_and_arrays (code)
+== optional_and_arrays (lib)
+== enum_basic (code)
+== enum_basic (lib)
+== type_refs (code)
+== type_refs (lib)
+== protocol (code)
+conformance.rs: IR_HASH = 0x8ee00745c73a32b2
+conformance.rs: const SERVICE_CALLS: &[&str] = &["lookup", "count", "notify"];
+conformance.rs: reply.err(0u16
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: Call::new(0, "lookup"
+conformance.rs: Envelope::Err { id: 0u16
+conformance.rs: Call::new(1, "count"
+conformance.rs: Call::new(2, "notify"
+CONNECTION_IR_HASH = 0x8ee00745c73a32b2
+== protocol (lib)
+src/conformance.rs: IR_HASH = 0x8ee00745c73a32b2
+src/conformance.rs: const SERVICE_CALLS: &[&str] = &["lookup", "count", "notify"];
+src/conformance.rs: reply.err(0u16
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: Call::new(0, "lookup"
+src/conformance.rs: Envelope::Err { id: 0u16
+src/conformance.rs: Call::new(1, "count"
+src/conformance.rs: Call::new(2, "notify"
+CONNECTION_IR_HASH = 0x8ee00745c73a32b2
+== error_shapes (code)
+conformance.rs: IR_HASH = 0x6fc29e1014b9b9c8
+conformance.rs: const MULTI_CALLS: &[&str] = &["send"];
+conformance.rs: reply.err(2u16
+conformance.rs: reply.err(1u16
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: Call::new(0, "send"
+conformance.rs: Envelope::Err { id: 2u16
+conformance.rs: Envelope::Err { id: 1u16
+conformance.rs: const QUIET_CALLS: &[&str] = &["ping", "hush"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+conformance.rs: Call::new(0, "ping"
+conformance.rs: Call::new(1, "hush"
+CONNECTION_IR_HASH = 0x6fc29e1014b9b9c8
+== error_shapes (lib)
+src/conformance.rs: IR_HASH = 0x6fc29e1014b9b9c8
+src/conformance.rs: const MULTI_CALLS: &[&str] = &["send"];
+src/conformance.rs: reply.err(2u16
+src/conformance.rs: reply.err(1u16
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: Call::new(0, "send"
+src/conformance.rs: Envelope::Err { id: 2u16
+src/conformance.rs: Envelope::Err { id: 1u16
+src/conformance.rs: const QUIET_CALLS: &[&str] = &["ping", "hush"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+src/conformance.rs: Call::new(0, "ping"
+src/conformance.rs: Call::new(1, "hush"
+CONNECTION_IR_HASH = 0x6fc29e1014b9b9c8
+== constant (code)
+== constant (lib)
+== shapes (code)
+== shapes (lib)
+== cross_schema (code)
+== cross_schema (lib)
+== import_alias (code)
+== import_alias (lib)
+== import_glob (code)
+== import_glob (lib)
+== nested_namespace (code)
+== nested_namespace (lib)
+== external_std (code)
+== external_std (lib)
+== validators (code)
+conformance.rs: IR_HASH = 0xeab4408b940579fb
+conformance.rs: const SOCIAL_CALLS: &[&str] = &["rename"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: Call::new(0, "rename"
+CONNECTION_IR_HASH = 0xf9d255a977b3b030
+== validators (lib)
+src/conformance.rs: IR_HASH = 0xeab4408b940579fb
+src/conformance.rs: const SOCIAL_CALLS: &[&str] = &["rename"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: Call::new(0, "rename"
+CONNECTION_IR_HASH = 0xf9d255a977b3b030
+== validators_on_decode (code)
+conformance.rs: IR_HASH = 0xeab4408b940579fb
+conformance.rs: const SOCIAL_CALLS: &[&str] = &["rename"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: Call::new(0, "rename"
+CONNECTION_IR_HASH = 0xf9d255a977b3b030
+== validators_on_decode (lib)
+src/conformance.rs: IR_HASH = 0xeab4408b940579fb
+src/conformance.rs: const SOCIAL_CALLS: &[&str] = &["rename"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: Call::new(0, "rename"
+CONNECTION_IR_HASH = 0xf9d255a977b3b030
+== framing_jsonrpc (code)
+conformance.rs: IR_HASH = 0x1a95418a1177cd91
+conformance.rs: const RPC_CALLS: &[&str] = &["ping"];
+conformance.rs: Call::new(0, "ping"
+== framing_jsonrpc (lib)
+src/conformance.rs: IR_HASH = 0x1a95418a1177cd91
+src/conformance.rs: const RPC_CALLS: &[&str] = &["ping"];
+src/conformance.rs: Call::new(0, "ping"
+== handshake_none (code)
+conformance.rs: IR_HASH = 0xb7e7d5c80c4d8287
+conformance.rs: const GATEWAY_CALLS: &[&str] = &["ping"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: Call::new(0, "ping"
+CONNECTION_IR_HASH = 0xb7e7d5c80c4d8287
+== handshake_none (lib)
+src/conformance.rs: IR_HASH = 0xb7e7d5c80c4d8287
+src/conformance.rs: const GATEWAY_CALLS: &[&str] = &["ping"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: Call::new(0, "ping"
+CONNECTION_IR_HASH = 0xb7e7d5c80c4d8287
+== framing_datagram3 (code)
+conformance.rs: IR_HASH = 0xbb9f4216f7365478
+conformance.rs: const COUNTER_CALLS: &[&str] = &["add", "reset"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: Call::new(1, "add"
+conformance.rs: Call::new(0, "reset"
+CONNECTION_IR_HASH = 0xbb9f4216f7365478
+== framing_datagram3 (lib)
+src/conformance.rs: IR_HASH = 0xbb9f4216f7365478
+src/conformance.rs: const COUNTER_CALLS: &[&str] = &["add", "reset"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: Call::new(1, "add"
+src/conformance.rs: Call::new(0, "reset"
+CONNECTION_IR_HASH = 0xbb9f4216f7365478
+== handshake_comline2 (code)
+conformance.rs: IR_HASH = 0x9328a48fb76a93df
+conformance.rs: const CHAT_CALLS: &[&str] = &["send", "leave"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: check_call(&mut *self.0, Self::PROTOCOL, 1, "conformance::Chat", "send"
+conformance.rs: Call::new(1, "send"
+conformance.rs: check_call(&mut *self.0, Self::PROTOCOL, 0, "conformance::Chat", "leave"
+conformance.rs: Call::new(0, "leave"
+connection.rs: HELLO = 0x43, 0x4f, 0x02, 0x01, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x00, 0x01, 0x00,0x00, 0x03, 0x00, 0x52, 0x18, 0x5f, 0xd6, 0x09, 0x92, 0xad, 0x43, 0x02,0x9c, 0xc2, 0x99, 0x62, 0xb3, 0xaf, 0xb4, 0x01, 0x4e, 0x6e, 0xde, 0x7c,0xc8, 0xf5, 0xaa, 0x52, 0xce, 0x16, 0x9f, 0x9e, 0x65, 0x67, 0x40, 0xe2,0x02, 0x58, 0x80, 0x9a, 0xaf, 0x4b, 0x47, 0xd5, 0x6c, 0x69, 0xb2, 0xc1,0xfc, 0x9d, 0x43, 0x30, 0xc1, 0x01, 0x00, 0x00, 0x01, 0x00, 0x5a, 0x5a,0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,0x5a, 0x5a, 0x02, 0x00, 0x01,
+connection.rs: const PROTOCOLS: &[(u16, &str)] = &[(0, "conformance::Chat")];
+connection.rs: check_call(protocol, function
+CONNECTION_IR_HASH = 0x9328a48fb76a93df
+== handshake_comline2 (lib)
+src/conformance.rs: IR_HASH = 0x9328a48fb76a93df
+src/conformance.rs: const CHAT_CALLS: &[&str] = &["send", "leave"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: check_call(&mut *self.0, Self::PROTOCOL, 1, "conformance::Chat", "send"
+src/conformance.rs: Call::new(1, "send"
+src/conformance.rs: check_call(&mut *self.0, Self::PROTOCOL, 0, "conformance::Chat", "leave"
+src/conformance.rs: Call::new(0, "leave"
+src/lib.rs: HELLO = 0x43, 0x4f, 0x02, 0x01, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x00, 0x01, 0x00,0x00, 0x03, 0x00, 0x52, 0x18, 0x5f, 0xd6, 0x09, 0x92, 0xad, 0x43, 0x02,0x9c, 0xc2, 0x99, 0x62, 0xb3, 0xaf, 0xb4, 0x01, 0x4e, 0x6e, 0xde, 0x7c,0xc8, 0xf5, 0xaa, 0x52, 0xce, 0x16, 0x9f, 0x9e, 0x65, 0x67, 0x40, 0xe2,0x02, 0x58, 0x80, 0x9a, 0xaf, 0x4b, 0x47, 0xd5, 0x6c, 0x69, 0xb2, 0xc1,0xfc, 0x9d, 0x43, 0x30, 0xc1, 0x01, 0x00, 0x00, 0x01, 0x00, 0x5a, 0x5a,0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,0x5a, 0x5a, 0x02, 0x00, 0x01,
+src/lib.rs: const PROTOCOLS: &[(u16, &str)] = &[(0, "conformance::Chat")];
+src/lib.rs: check_call(protocol, function
+CONNECTION_IR_HASH = 0x9328a48fb76a93df
+== connections (code)
+conformance.rs: IR_HASH = 0xb97e34b203ec1425
+conformance.rs: const CHAT_CALLS: &[&str] = &["send"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: Call::new(0, "send"
+conformance.rs: const EVENTS_CALLS: &[&str] = &["shown", "ping"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+conformance.rs: Call::new(0, "shown"
+conformance.rs: Call::new(1, "ping"
+CONNECTION_IR_HASH = 0xb97e34b203ec1425
+== connections (lib)
+src/conformance.rs: IR_HASH = 0xb97e34b203ec1425
+src/conformance.rs: const CHAT_CALLS: &[&str] = &["send"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: Call::new(0, "send"
+src/conformance.rs: const EVENTS_CALLS: &[&str] = &["shown", "ping"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+src/conformance.rs: Call::new(0, "shown"
+src/conformance.rs: Call::new(1, "ping"
+CONNECTION_IR_HASH = 0xb97e34b203ec1425
+== connections_async (code)
+conformance.rs: IR_HASH = 0xb97e34b203ec1425
+conformance.rs: const CHAT_CALLS: &[&str] = &["send"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: Call::new(0, "send"
+conformance.rs: const EVENTS_CALLS: &[&str] = &["shown", "ping"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+conformance.rs: Call::new(0, "shown"
+conformance.rs: Call::new(1, "ping"
+CONNECTION_IR_HASH = 0xb97e34b203ec1425
+== connections_async (lib)
+src/conformance.rs: IR_HASH = 0xb97e34b203ec1425
+src/conformance.rs: const CHAT_CALLS: &[&str] = &["send"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: Call::new(0, "send"
+src/conformance.rs: const EVENTS_CALLS: &[&str] = &["shown", "ping"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+src/conformance.rs: Call::new(0, "shown"
+src/conformance.rs: Call::new(1, "ping"
+CONNECTION_IR_HASH = 0xb97e34b203ec1425
+== connections_jsonrpc (code)
+conformance.rs: IR_HASH = 0x30c29bde2ae397d9
+conformance.rs: const CHAT_CALLS: &[&str] = &["send"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: Call::new(0, "send"
+conformance.rs: const EVENTS_CALLS: &[&str] = &["conformance.Events/shown", "conformance.Events/ping"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+conformance.rs: Call::new(0, "conformance.Events/shown"
+conformance.rs: Call::new(1, "conformance.Events/ping"
+CONNECTION_IR_HASH = 0x30c29bde2ae397d9
+== connections_jsonrpc (lib)
+src/conformance.rs: IR_HASH = 0x30c29bde2ae397d9
+src/conformance.rs: const CHAT_CALLS: &[&str] = &["send"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: Call::new(0, "send"
+src/conformance.rs: const EVENTS_CALLS: &[&str] = &["conformance.Events/shown", "conformance.Events/ping"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 1;
+src/conformance.rs: Call::new(0, "conformance.Events/shown"
+src/conformance.rs: Call::new(1, "conformance.Events/ping"
+CONNECTION_IR_HASH = 0x30c29bde2ae397d9
+== format_json (code)
+conformance.rs: IR_HASH = 0x8ee00745c73a32b2
+conformance.rs: const SERVICE_CALLS: &[&str] = &["lookup", "count", "notify"];
+conformance.rs: reply.err(0u16
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: Call::new(0, "lookup"
+conformance.rs: Envelope::Err { id: 0u16
+conformance.rs: Call::new(1, "count"
+conformance.rs: Call::new(2, "notify"
+CONNECTION_IR_HASH = 0x8ee00745c73a32b2
+== format_json (lib)
+src/conformance.rs: IR_HASH = 0x8ee00745c73a32b2
+src/conformance.rs: const SERVICE_CALLS: &[&str] = &["lookup", "count", "notify"];
+src/conformance.rs: reply.err(0u16
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: Call::new(0, "lookup"
+src/conformance.rs: Envelope::Err { id: 0u16
+src/conformance.rs: Call::new(1, "count"
+src/conformance.rs: Call::new(2, "notify"
+CONNECTION_IR_HASH = 0x8ee00745c73a32b2
+== format_msgpack (code)
+conformance.rs: IR_HASH = 0x8ee00745c73a32b2
+conformance.rs: const SERVICE_CALLS: &[&str] = &["lookup", "count", "notify"];
+conformance.rs: reply.err(0u16
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: Call::new(0, "lookup"
+conformance.rs: Envelope::Err { id: 0u16
+conformance.rs: Call::new(1, "count"
+conformance.rs: Call::new(2, "notify"
+CONNECTION_IR_HASH = 0x8ee00745c73a32b2
+== format_msgpack (lib)
+src/conformance.rs: IR_HASH = 0x8ee00745c73a32b2
+src/conformance.rs: const SERVICE_CALLS: &[&str] = &["lookup", "count", "notify"];
+src/conformance.rs: reply.err(0u16
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: Call::new(0, "lookup"
+src/conformance.rs: Envelope::Err { id: 0u16
+src/conformance.rs: Call::new(1, "count"
+src/conformance.rs: Call::new(2, "notify"
+CONNECTION_IR_HASH = 0x8ee00745c73a32b2
+== bounds (code)
+== bounds (lib)
+== chars (code)
+== chars (lib)
+== dependency_protocol (code)
+localdeps/greeting.rs: IR_HASH = 0x653ed335b8ab7ba0
+localdeps/greeting.rs: const FOO_CALLS: &[&str] = &["greet"];
+localdeps/greeting.rs: const PROTOCOL: ProtocolNumber = 0;
+localdeps/greeting.rs: const PROTOCOL: ProtocolNumber = 0;
+localdeps/greeting.rs: Call::new(0, "greet"
+CONNECTION_IR_HASH = 0xc1fed94bf808faea
+== dependency_protocol (lib)
+src/localdeps/greeting.rs: IR_HASH = 0x653ed335b8ab7ba0
+src/localdeps/greeting.rs: const FOO_CALLS: &[&str] = &["greet"];
+src/localdeps/greeting.rs: const PROTOCOL: ProtocolNumber = 0;
+src/localdeps/greeting.rs: const PROTOCOL: ProtocolNumber = 0;
+src/localdeps/greeting.rs: Call::new(0, "greet"
+CONNECTION_IR_HASH = 0xc1fed94bf808faea
+== dependency_and_own_protocols (code)
+api.rs: IR_HASH = 0x25f4c4d936e7aa90
+api.rs: const CHAT_CALLS: &[&str] = &["greet"];
+api.rs: const PROTOCOL: ProtocolNumber = 0;
+api.rs: const PROTOCOL: ProtocolNumber = 0;
+api.rs: check_call(&mut *self.0, Self::PROTOCOL, 0, "api::Chat", "greet"
+api.rs: Call::new(0, "greet"
+connection.rs: HELLO = 0x43, 0x4f, 0x02, 0x01, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x00, 0x01, 0x00,0x00, 0x03, 0x00, 0x52, 0x18, 0x5f, 0xd6, 0x09, 0x92, 0xad, 0x43, 0x02,0x9c, 0xc2, 0x99, 0x62, 0xb3, 0xaf, 0xb4, 0x01, 0x4e, 0x6e, 0xde, 0x7c,0xc8, 0xf5, 0xaa, 0x52, 0xce, 0x16, 0x9f, 0x9e, 0x65, 0x67, 0x40, 0xe2,0x02, 0x58, 0x80, 0x9a, 0xaf, 0x4b, 0x47, 0xd5, 0x6c, 0x69, 0xb2, 0xc1,0xfc, 0x9d, 0x43, 0x30, 0xc1, 0x01, 0x00, 0x00, 0x01, 0x00, 0x5a, 0x5a,0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,0x5a, 0x5a, 0x01, 0x00,
+connection.rs: const PROTOCOLS: &[(u16, &str)] = &[(0, "api::Chat")];
+connection.rs: check_call(protocol, function
+localdeps/greeting.rs: IR_HASH = 0x653ed335b8ab7ba0
+localdeps/greeting.rs: const FOO_CALLS: &[&str] = &["greet"];
+localdeps/greeting.rs: const PROTOCOL: ProtocolNumber = 0;
+localdeps/greeting.rs: const PROTOCOL: ProtocolNumber = 0;
+localdeps/greeting.rs: Call::new(0, "greet"
+CONNECTION_IR_HASH = 0x55e3b94344a9c775
+== dependency_and_own_protocols (lib)
+src/api.rs: IR_HASH = 0x25f4c4d936e7aa90
+src/api.rs: const CHAT_CALLS: &[&str] = &["greet"];
+src/api.rs: const PROTOCOL: ProtocolNumber = 0;
+src/api.rs: const PROTOCOL: ProtocolNumber = 0;
+src/api.rs: check_call(&mut *self.0, Self::PROTOCOL, 0, "api::Chat", "greet"
+src/api.rs: Call::new(0, "greet"
+src/lib.rs: HELLO = 0x43, 0x4f, 0x02, 0x01, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x00, 0x01, 0x00,0x00, 0x03, 0x00, 0x52, 0x18, 0x5f, 0xd6, 0x09, 0x92, 0xad, 0x43, 0x02,0x9c, 0xc2, 0x99, 0x62, 0xb3, 0xaf, 0xb4, 0x01, 0x4e, 0x6e, 0xde, 0x7c,0xc8, 0xf5, 0xaa, 0x52, 0xce, 0x16, 0x9f, 0x9e, 0x65, 0x67, 0x40, 0xe2,0x02, 0x58, 0x80, 0x9a, 0xaf, 0x4b, 0x47, 0xd5, 0x6c, 0x69, 0xb2, 0xc1,0xfc, 0x9d, 0x43, 0x30, 0xc1, 0x01, 0x00, 0x00, 0x01, 0x00, 0x5a, 0x5a,0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,0x5a, 0x5a, 0x01, 0x00,
+src/lib.rs: const PROTOCOLS: &[(u16, &str)] = &[(0, "api::Chat")];
+src/lib.rs: check_call(protocol, function
+src/localdeps/greeting.rs: IR_HASH = 0x653ed335b8ab7ba0
+src/localdeps/greeting.rs: const FOO_CALLS: &[&str] = &["greet"];
+src/localdeps/greeting.rs: const PROTOCOL: ProtocolNumber = 0;
+src/localdeps/greeting.rs: const PROTOCOL: ProtocolNumber = 0;
+src/localdeps/greeting.rs: Call::new(0, "greet"
+CONNECTION_IR_HASH = 0x55e3b94344a9c775
+== nested_protocol (code)
+chat/admin.rs: IR_HASH = 0xa6f61afefe65d74a
+chat/admin.rs: const ADMIN_CALLS: &[&str] = &["greet"];
+chat/admin.rs: const PROTOCOL: ProtocolNumber = 0;
+chat/admin.rs: const PROTOCOL: ProtocolNumber = 0;
+chat/admin.rs: check_call(&mut *self.0, Self::PROTOCOL, 0, "chat::admin::Admin", "greet"
+chat/admin.rs: Call::new(0, "greet"
+connection.rs: HELLO = 0x43, 0x4f, 0x02, 0x01, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x00, 0x01, 0x00,0x00, 0x03, 0x00, 0x52, 0x18, 0x5f, 0xd6, 0x09, 0x92, 0xad, 0x43, 0x02,0x9c, 0xc2, 0x99, 0x62, 0xb3, 0xaf, 0xb4, 0x01, 0x4e, 0x6e, 0xde, 0x7c,0xc8, 0xf5, 0xaa, 0x52, 0xce, 0x16, 0x9f, 0x9e, 0x65, 0x67, 0x40, 0xe2,0x02, 0x58, 0x80, 0x9a, 0xaf, 0x4b, 0x47, 0xd5, 0x6c, 0x69, 0xb2, 0xc1,0xfc, 0x9d, 0x43, 0x30, 0xc1, 0x01, 0x00, 0x00, 0x01, 0x00, 0x5a, 0x5a,0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,0x5a, 0x5a, 0x01, 0x00,
+connection.rs: const PROTOCOLS: &[(u16, &str)] = &[(0, "chat::admin::Admin")];
+connection.rs: check_call(protocol, function
+CONNECTION_IR_HASH = 0xa6f61afefe65d74a
+== nested_protocol (lib)
+src/chat/admin.rs: IR_HASH = 0xa6f61afefe65d74a
+src/chat/admin.rs: const ADMIN_CALLS: &[&str] = &["greet"];
+src/chat/admin.rs: const PROTOCOL: ProtocolNumber = 0;
+src/chat/admin.rs: const PROTOCOL: ProtocolNumber = 0;
+src/chat/admin.rs: check_call(&mut *self.0, Self::PROTOCOL, 0, "chat::admin::Admin", "greet"
+src/chat/admin.rs: Call::new(0, "greet"
+src/lib.rs: HELLO = 0x43, 0x4f, 0x02, 0x01, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x00, 0x01, 0x00,0x00, 0x03, 0x00, 0x52, 0x18, 0x5f, 0xd6, 0x09, 0x92, 0xad, 0x43, 0x02,0x9c, 0xc2, 0x99, 0x62, 0xb3, 0xaf, 0xb4, 0x01, 0x4e, 0x6e, 0xde, 0x7c,0xc8, 0xf5, 0xaa, 0x52, 0xce, 0x16, 0x9f, 0x9e, 0x65, 0x67, 0x40, 0xe2,0x02, 0x58, 0x80, 0x9a, 0xaf, 0x4b, 0x47, 0xd5, 0x6c, 0x69, 0xb2, 0xc1,0xfc, 0x9d, 0x43, 0x30, 0xc1, 0x01, 0x00, 0x00, 0x01, 0x00, 0x5a, 0x5a,0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,0x5a, 0x5a, 0x01, 0x00,
+src/lib.rs: const PROTOCOLS: &[(u16, &str)] = &[(0, "chat::admin::Admin")];
+src/lib.rs: check_call(protocol, function
+CONNECTION_IR_HASH = 0xa6f61afefe65d74a
+== protocol async (code)
+conformance.rs: IR_HASH = 0x8ee00745c73a32b2
+conformance.rs: const SERVICE_CALLS: &[&str] = &["lookup", "count", "notify"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: Call::new(0, "lookup"
+conformance.rs: Envelope::Err { id: 0u16
+conformance.rs: Call::new(1, "count"
+conformance.rs: Call::new(2, "notify"
+CONNECTION_IR_HASH = 0x8ee00745c73a32b2
+== protocol async (lib)
+src/conformance.rs: IR_HASH = 0x8ee00745c73a32b2
+src/conformance.rs: const SERVICE_CALLS: &[&str] = &["lookup", "count", "notify"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: Call::new(0, "lookup"
+src/conformance.rs: Envelope::Err { id: 0u16
+src/conformance.rs: Call::new(1, "count"
+src/conformance.rs: Call::new(2, "notify"
+CONNECTION_IR_HASH = 0x8ee00745c73a32b2
+== framing_datagram3 async (code)
+conformance.rs: IR_HASH = 0xbb9f4216f7365478
+conformance.rs: const COUNTER_CALLS: &[&str] = &["add", "reset"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: Call::new(1, "add"
+conformance.rs: Call::new(0, "reset"
+CONNECTION_IR_HASH = 0xbb9f4216f7365478
+== framing_datagram3 async (lib)
+src/conformance.rs: IR_HASH = 0xbb9f4216f7365478
+src/conformance.rs: const COUNTER_CALLS: &[&str] = &["add", "reset"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: Call::new(1, "add"
+src/conformance.rs: Call::new(0, "reset"
+CONNECTION_IR_HASH = 0xbb9f4216f7365478
+== handshake_comline2 async (code)
+conformance.rs: IR_HASH = 0x9328a48fb76a93df
+conformance.rs: const CHAT_CALLS: &[&str] = &["send", "leave"];
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+conformance.rs: check_call_async(self.0, Self::PROTOCOL, 1, "conformance::Chat", "send"
+conformance.rs: Call::new(1, "send"
+conformance.rs: check_call_async(self.0, Self::PROTOCOL, 0, "conformance::Chat", "leave"
+conformance.rs: Call::new(0, "leave"
+connection.rs: HELLO = 0x43, 0x4f, 0x02, 0x01, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x00, 0x01, 0x00,0x00, 0x03, 0x00, 0x52, 0x18, 0x5f, 0xd6, 0x09, 0x92, 0xad, 0x43, 0x02,0x9c, 0xc2, 0x99, 0x62, 0xb3, 0xaf, 0xb4, 0x01, 0x4e, 0x6e, 0xde, 0x7c,0xc8, 0xf5, 0xaa, 0x52, 0xce, 0x16, 0x9f, 0x9e, 0x65, 0x67, 0x40, 0xe2,0x02, 0x58, 0x80, 0x9a, 0xaf, 0x4b, 0x47, 0xd5, 0x6c, 0x69, 0xb2, 0xc1,0xfc, 0x9d, 0x43, 0x30, 0xc1, 0x01, 0x00, 0x00, 0x01, 0x00, 0x5a, 0x5a,0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,0x5a, 0x5a, 0x02, 0x00, 0x01,
+connection.rs: const PROTOCOLS: &[(u16, &str)] = &[(0, "conformance::Chat")];
+connection.rs: check_call(protocol, function
+CONNECTION_IR_HASH = 0x9328a48fb76a93df
+== handshake_comline2 async (lib)
+src/conformance.rs: IR_HASH = 0x9328a48fb76a93df
+src/conformance.rs: const CHAT_CALLS: &[&str] = &["send", "leave"];
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: const PROTOCOL: ProtocolNumber = 0;
+src/conformance.rs: check_call_async(self.0, Self::PROTOCOL, 1, "conformance::Chat", "send"
+src/conformance.rs: Call::new(1, "send"
+src/conformance.rs: check_call_async(self.0, Self::PROTOCOL, 0, "conformance::Chat", "leave"
+src/conformance.rs: Call::new(0, "leave"
+src/lib.rs: HELLO = 0x43, 0x4f, 0x02, 0x01, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x00, 0x01, 0x00,0x00, 0x03, 0x00, 0x52, 0x18, 0x5f, 0xd6, 0x09, 0x92, 0xad, 0x43, 0x02,0x9c, 0xc2, 0x99, 0x62, 0xb3, 0xaf, 0xb4, 0x01, 0x4e, 0x6e, 0xde, 0x7c,0xc8, 0xf5, 0xaa, 0x52, 0xce, 0x16, 0x9f, 0x9e, 0x65, 0x67, 0x40, 0xe2,0x02, 0x58, 0x80, 0x9a, 0xaf, 0x4b, 0x47, 0xd5, 0x6c, 0x69, 0xb2, 0xc1,0xfc, 0x9d, 0x43, 0x30, 0xc1, 0x01, 0x00, 0x00, 0x01, 0x00, 0x5a, 0x5a,0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,0x5a, 0x5a, 0x02, 0x00, 0x01,
+src/lib.rs: const PROTOCOLS: &[(u16, &str)] = &[(0, "conformance::Chat")];
+src/lib.rs: check_call(protocol, function
+CONNECTION_IR_HASH = 0x9328a48fb76a93df
+== lockstep (code)
+conformance.rs: IR_HASH = 0xe85cbed728fc0638
+conformance.rs: const SERVICE_CALLS: &[&str] = &["lookup", "count", "notify"];
+conformance.rs: reply.err(0u16
+conformance.rs: Call::new(0, "lookup"
+conformance.rs: Envelope::Err { id: 0u16
+conformance.rs: Call::new(1, "count"
+conformance.rs: Call::new(2, "notify"
+== lockstep (lib)
+src/conformance.rs: IR_HASH = 0xe85cbed728fc0638
+src/conformance.rs: const SERVICE_CALLS: &[&str] = &["lookup", "count", "notify"];
+src/conformance.rs: reply.err(0u16
+src/conformance.rs: Call::new(0, "lookup"
+src/conformance.rs: Envelope::Err { id: 0u16
+src/conformance.rs: Call::new(1, "count"
+src/conformance.rs: Call::new(2, "notify"
