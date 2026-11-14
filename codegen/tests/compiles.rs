@@ -2655,7 +2655,8 @@ fn documented_crates_show_the_entry_points_and_hide_the_plumbing() {
     // The crate page opens with what to use.
     let index = fs::read_to_string(doc.join("index.html")).unwrap();
     assert!(index.contains("share one connection"), "{index}");
-    assert!(index.contains("AdminSender::new(&mut conn).greet(..)"), "{index}");
+    // (rustdoc escapes the `&`)
+    assert!(index.contains("AdminSender::new(&amp;mut conn).greet(..)"), "{index}");
     // Still reachable by hand: `pub`, only out of the docs.
     let source = fs::read_to_string(dir.join("src/chat/admin.rs")).unwrap();
     assert!(source.contains("\npub struct AdminDispatcher<S>"));
