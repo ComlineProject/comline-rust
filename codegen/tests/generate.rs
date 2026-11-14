@@ -443,11 +443,11 @@ fn framing_annotation_selects_jsonrpc_for_the_connect_and_serve_helpers() {
     // the runtime reads the framing's name itself, so the trait isn't imported
     assert!(!src.contains("\n    Framing,\n"));
     // the client wraps a `Client` pinned to the JSON-RPC framing
-    assert!(src.contains(
-        "pub struct RpcClient<T, W>(pub Client<T, W, comline_runtime::framing::JsonRpcFraming>);"
-    ));
+    // (imported, not spelled out in every signature)
+    assert!(src.contains("use comline_runtime::framing::JsonRpcFraming;\n"), "{src}");
+    assert!(src.contains("pub struct RpcClient<T, W>(pub Client<T, W, JsonRpcFraming>);"));
     // connect / serve pass the framing explicitly
-    assert!(src.contains("let framing = comline_runtime::framing::JsonRpcFraming;"));
+    assert!(src.contains("let framing = JsonRpcFraming;"));
     assert!(src
         .contains("Ok(Self(Client::connect_with_framing(transport, format, framing, IR_HASH)?))"));
     assert!(src.contains("Server::with_framing(self, format, framing).serve(transport, IR_HASH)"));
@@ -1850,12 +1850,13 @@ fn handshake_none_runs_no_handshake_and_documents_what_is_given_up() {
 
     let src = generate(None);
     assert!(src.contains(
-        "Server::new(self, format).serve_with(transport, &mut comline_runtime::handshake::NoHandshake, IR_HASH)"
+        "Server::new(self, format).serve_with(transport, &mut NoHandshake, IR_HASH)"
     ));
     assert!(src.contains(
         "Ok(Self(Client::connect_with(transport, format, comline_runtime::contract::DatagramFraming, \
-         &mut comline_runtime::handshake::NoHandshake, IR_HASH)?))"
+         &mut NoHandshake, IR_HASH)?))"
     ));
+    assert!(src.contains("use comline_runtime::handshake::NoHandshake;\n"), "{src}");
     let doc = "/// **Unverified:** gives up schema agreement and encoding agreement.\n\
                /// Reason given: the 2009 gateway\n";
     assert!(src.contains(&format!("{doc}pub struct GateDispatcher<S>(pub S);")));
@@ -1863,10 +1864,10 @@ fn handshake_none_runs_no_handshake_and_documents_what_is_given_up() {
 
     let rpc = generate(Some("jsonrpc"));
     assert!(rpc.contains(
-        "Server::with_framing(self, format, framing).serve_with(transport, &mut comline_runtime::handshake::NoHandshake, IR_HASH)"
+        "Server::with_framing(self, format, framing).serve_with(transport, &mut NoHandshake, IR_HASH)"
     ));
     assert!(rpc.contains(
-        "Ok(Self(Client::connect_with(transport, format, framing, &mut comline_runtime::handshake::NoHandshake, IR_HASH)?))"
+        "Ok(Self(Client::connect_with(transport, format, framing, &mut NoHandshake, IR_HASH)?))"
     ));
 }
 
@@ -1943,8 +1944,22 @@ fn a_protocol_is_on_a_connection_by_default() {
         .contents;
     assert!(src.contains("pub struct RpcSender<'p, P: Peer>(pub &'p mut P);"));
     assert!(src.contains("pub const PROTOCOL: ProtocolNumber = 0;"));
-    assert!(src.contains("pub const CONNECTION_IR_HASH: u64"));
     assert!(!src.contains("RpcClient"));
+    // The package's module defines the connection's digest and format; the
+    // protocol's file refers to them.
+    assert!(
+        src.contains("pub use crate::connection::{CONNECTION_IR_HASH, Format};"),
+        "{src}"
+    );
+    assert!(!src.contains("pub const CONNECTION_IR_HASH: u64"), "{src}");
+    let files = generate_rust(&code_req(&schemas)).unwrap();
+    let package = &files
+        .iter()
+        .find(|f| f.path.ends_with("connection.rs"))
+        .unwrap()
+        .contents;
+    assert!(package.contains("pub const CONNECTION_IR_HASH: u64 = 0x"), "{package}");
+    assert!(package.contains("pub type Format = "), "{package}");
 }
 
 /// `async`: a connection protocol's handlers, dispatcher and sender are
