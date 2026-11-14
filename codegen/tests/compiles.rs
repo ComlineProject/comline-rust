@@ -354,6 +354,7 @@ fn build_generated_crate(label: &str, schemas: &[(String, Vec<FrozenUnit>)], ext
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
         facts: None,
+        dependencies: vec![],
     };
     check_generated_crate(label, &req, None);
 }
@@ -451,6 +452,47 @@ fn check_generated_crate(label: &str, req: &GenerateRequest, behaviour: Option<&
         "generated crate failed to compile; left at {} for inspection",
         dir.display()
     );
+}
+
+/// A dependency's protocol is generated as a type, and not put on the package
+/// connection (generation#143): the crate builds with it beside a protocol of
+/// the package's own, whose `Services` and Hello then carry that one alone, and
+/// without one.
+#[test]
+fn a_generated_crate_using_a_dependencys_protocol_builds() {
+    use comline_conformance::{dependency_and_own_protocols, dependency_protocol};
+    for fx in [dependency_protocol(), dependency_and_own_protocols()] {
+        let dependencies: Vec<String> = fx.dependencies.iter().map(|d| d.to_string()).collect();
+        let own: Vec<_> = fx
+            .schemas
+            .iter()
+            .filter(|(namespace, _)| !comline_codegen::connections::is_dependency(&dependencies, namespace))
+            .cloned()
+            .collect();
+        let mut req = GenerateRequest {
+            mode: Mode::Lib,
+            schemas: fx.schemas.clone(),
+            package: PackageMeta {
+                name: "comline-codegen-rust-compiletest".into(),
+                version: "0.0.0".into(),
+            },
+            target: TargetLanguage {
+                language: "rust".into(),
+                version: comline_codegen_rust::LANG_VERSION.into(),
+            },
+            wire_format: "packed@1".into(),
+            external_std: false,
+            validate_on_decode: Default::default(),
+            async_api: false,
+            encodings: comline_codegen::encodings::official_for("rust"),
+            facts: None,
+            dependencies,
+        };
+        if comline_codegen::facts::needed_in(&req) {
+            req.facts = Some(comline_conformance::facts_for(&own, "packed@1"));
+        }
+        check_generated_crate(fx.name, &req, None);
+    }
 }
 
 /// Constants of every shape the IDL allows, actually compiled. String
@@ -612,6 +654,7 @@ fn generated_validators_run() {
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
         facts: None,
+        dependencies: vec![],
     };
     check_generated_crate("validators", &req, Some(VALIDATED_BEHAVIOUR));
 }
@@ -737,6 +780,7 @@ fn generated_connection_protocols_call_both_ways() {
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
         facts: None,
+        dependencies: vec![],
     };
     let files = generate_rust(&req).unwrap();
     let link = &files
@@ -877,6 +921,7 @@ fn generated_jsonrpc_connection_protocols_call_both_ways() {
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
         facts: None,
+        dependencies: vec![],
     };
     let files = generate_rust(&req).unwrap();
     let link = &files
@@ -951,6 +996,7 @@ fn bare_jsonrpc_names_that_would_clash_on_a_connection_are_refused() {
             async_api: false,
             encodings: comline_codegen::encodings::official_for("rust"),
             facts: None,
+            dependencies: vec![],
         };
         generate_rust(&req).map(|_| ())
     };
@@ -991,6 +1037,7 @@ fn generated_async_connection_protocols_call_both_ways() {
         async_api: true,
         encodings: comline_codegen::encodings::official_for("rust"),
         facts: None,
+        dependencies: vec![],
     };
     let files = generate_rust(&req).unwrap();
     let manifest = &files
@@ -1128,6 +1175,7 @@ fn game_request(schemas: &[(String, Vec<FrozenUnit>)], async_api: bool) -> Gener
         async_api,
         encodings: comline_codegen::encodings::official_for("rust"),
         facts: None,
+        dependencies: vec![],
     }
 }
 
@@ -1430,6 +1478,7 @@ fn keyword_names_build_and_keep_their_wire_names() {
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
         facts: None,
+        dependencies: vec![],
     };
     check_generated_crate("keywords", &req, Some(KEYWORDS_BEHAVIOUR));
 }
@@ -1477,6 +1526,7 @@ fn a_third_party_framing_and_format_build() {
         async_api: false,
         encodings,
         facts: None,
+        dependencies: vec![],
     };
     build_against_acme_stub(
         "acme",
@@ -1631,6 +1681,7 @@ fn a_third_party_handshake_runs() {
         async_api: false,
         encodings,
         facts: None,
+        dependencies: vec![],
     };
     let files = generate_rust(&req).unwrap();
     let file = |end: &str| {
@@ -1706,6 +1757,7 @@ fn a_third_party_handshake_runs_on_an_async_connection() {
         async_api: true,
         encodings,
         facts: None,
+        dependencies: vec![],
     };
     let stub = format!("{HELLO_STUB}{HELLO_ASYNC_STUB}");
     build_against_acme_stub("hello-async", &req, &stub, Some(HELLO_ASYNC_BEHAVIOUR));
@@ -1936,6 +1988,7 @@ fn schema_names_the_generated_code_also_uses_build_async() {
         async_api: true,
         encodings: comline_codegen::encodings::official_for("rust"),
         facts: None,
+        dependencies: vec![],
     };
     check_generated_crate("collisions-async", &req, None);
 }
@@ -1997,6 +2050,7 @@ fn generated_bounds_are_checked_while_decoding_and_encoding() {
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
         facts: None,
+        dependencies: vec![],
     };
     check_generated_crate("bounds", &req, Some(BOUNDED_BEHAVIOUR));
 }
@@ -2233,6 +2287,7 @@ fn chat_request(
         async_api,
         encodings: comline_codegen::encodings::official_for("rust"),
         facts: Some(facts),
+        dependencies: vec![],
     }
 }
 

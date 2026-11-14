@@ -21,6 +21,7 @@ fn code_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenerateRequest {
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
         facts: None,
+        dependencies: vec![],
     }
 }
 
@@ -42,6 +43,7 @@ fn lib_req(schemas: &[(String, Vec<FrozenUnit>)]) -> GenerateRequest {
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
         facts: None,
+        dependencies: vec![],
     }
 }
 

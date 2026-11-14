@@ -55,6 +55,7 @@ fn request(fx: &Fixture, version: &str) -> GenerateRequest {
         async_api: fx.async_api,
         encodings: comline_codegen::encodings::official_for("rust"),
         facts: None,
+        dependencies: vec![],
     }
 }
 

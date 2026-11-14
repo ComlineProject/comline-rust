@@ -73,6 +73,7 @@ fn main() -> eyre::Result<()> {
         async_api: false,
         encodings: comline_codegen::encodings::official_for("rust"),
         facts: None,
+        dependencies: vec![],
     };
 
     let files = generate_rust(&req)?;
