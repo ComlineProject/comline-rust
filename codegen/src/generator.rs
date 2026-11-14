@@ -30,7 +30,7 @@ use crate::validate::{self, Member};
 use comline_codegen::collisions::{self, Derived};
 use comline_codegen::connections;
 use comline_codegen::encodings::type_of;
-use comline_codegen::facts::{PackageFacts, FRAMING_DATAGRAM3, HANDSHAKE_COMLINE2};
+use comline_codegen::facts::{FRAMING_DATAGRAM3, HANDSHAKE_COMLINE2};
 use comline_codegen::modules::{NamespaceTree, TreeLayout};
 use comline_codegen::naming::{pascal, screaming_snake};
 use comline_codegen::protocol::EncodingMapping;
@@ -125,7 +125,7 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
         collisions::check(
             namespace,
             units,
-            derived_names(units, &req.schemas, req.async_api, &req.encodings),
+            derived_names(units, &req.schemas, &req.dependencies, req.async_api, &req.encodings),
         )?;
     }
     // JSON-RPC protocols sharing a connection whose bare method names one
@@ -154,7 +154,7 @@ pub fn generate_rust(req: &GenerateRequest) -> Result<Vec<GeneratedFile>> {
             req.validate_on_decode,
             req.async_api,
             &req.encodings,
-            req.facts.as_ref(),
+            req,
             &package_path,
         )
         .map(|body| format!("{header}{body}"))
@@ -425,7 +425,7 @@ fn schema_source(
     on_decode: ValidateOnDecode,
     async_api: bool,
     encodings: &Encodings,
-    facts: Option<&PackageFacts>,
+    req: &GenerateRequest,
     package_path: &str,
 ) -> Result<String> {
     let has_protocol = units
@@ -435,7 +435,7 @@ fn schema_source(
     // `Server`, a `Connection`, or both.
     let on_connection = |u: &FrozenUnit| match u {
         FrozenUnit::Protocol { parameters, .. } => {
-            Some(connections::on_connection(schemas, parameters))
+            Some(connections::on_connection_among(schemas, &req.dependencies, parameters))
         }
         _ => None,
     };
@@ -473,7 +473,7 @@ fn schema_source(
 
     // The names this module declares, which the names its code uses from
     // elsewhere can't be imported under (`names`).
-    let taken = declared_names(units, schemas, async_api, encodings);
+    let taken = declared_names(units, schemas, &req.dependencies, async_api, encodings);
     let use_line = |path: &str, names: &[&str]| use_line(path, names, &taken, false);
 
     let mut output = String::new();
@@ -653,7 +653,7 @@ fn schema_source(
                     async_api,
                     encodings,
                     &file_bounds,
-                    facts,
+                    req,
                     package_path,
                 )?);
             }
@@ -700,6 +700,7 @@ fn use_line(path: &str, names: &[&str], taken: &HashSet<String>, wrap: bool) -> 
 fn declared_names(
     units: &[FrozenUnit],
     schemas: &[(String, Vec<FrozenUnit>)],
+    dependencies: &[String],
     async_api: bool,
     encodings: &Encodings,
 ) -> HashSet<String> {
@@ -717,7 +718,7 @@ fn declared_names(
         _ => None,
     });
     own.chain(
-        derived_names(units, schemas, async_api, encodings)
+        derived_names(units, schemas, dependencies, async_api, encodings)
             .into_iter()
             .map(|derived| derived.name),
     )
@@ -924,6 +925,7 @@ fn data_enum(name: &str, variants: &[FrozenUnit]) -> String {
 fn derived_names(
     units: &[FrozenUnit],
     schemas: &[(String, Vec<FrozenUnit>)],
+    dependencies: &[String],
     async_api: bool,
     encodings: &Encodings,
 ) -> Vec<Derived> {
@@ -943,7 +945,7 @@ fn derived_names(
             continue;
         };
         any_protocol = true;
-        let connection = connections::on_connection(schemas, parameters);
+        let connection = connections::on_connection_among(schemas, dependencies, parameters);
         any_connection |= connection;
         any_formatted |= !writes_json(parameters, encodings);
 
@@ -1029,7 +1031,7 @@ fn package_module(
     schemas: &[(String, Vec<FrozenUnit>)],
     format: &str,
 ) -> Option<String> {
-    let package = connections::package_connection(&req.schemas).ok()??;
+    let package = connections::package_connection_among(&req.schemas, &req.dependencies).ok()??;
     // Only what this crate emits: an external `std` provides nothing here.
     let emitted = |side: &[connections::Provided]| -> Vec<connections::Provided> {
         side.iter()
@@ -1721,13 +1723,13 @@ fn protocol(
     async_api: bool,
     encodings: &Encodings,
     file_bounds: &FileBounds,
-    facts: Option<&PackageFacts>,
+    req: &GenerateRequest,
     package_path: &str,
 ) -> Result<String> {
     let framing = framing_choice(parameters, encodings);
     // On a connection: handlers take the peer, the dispatcher is provided
     // on a `Connection`, and a sender calls through any `Peer`.
-    let connection = connections::on_connection(schemas, parameters);
+    let connection = connections::on_connection_among(schemas, &req.dependencies, parameters);
     // `async`: an async trait, an `AsyncDispatcher` provided on an
     // `AsyncConnection`, and an `AsyncSender` calling through any
     // `AsyncPeer`. Only a connection protocol has an async form.
@@ -1773,8 +1775,8 @@ fn protocol(
     let method_names = MethodNames::of_protocol(parameters);
     // On a connection: the number its frames carry, and each call's.
     let addressing = if connection {
-        Some(comline_codegen::facts::addressing(
-            facts, schemas, encodings, namespace, proto, parameters, functions,
+        Some(comline_codegen::facts::addressing_in(
+            req, namespace, proto, parameters, functions,
         )?)
     } else {
         None
