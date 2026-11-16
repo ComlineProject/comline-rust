@@ -727,6 +727,7 @@ fn schema_source(
     // The framings, format and handshake a body names by mark and no import
     // above covers.
     let extra: String = [
+        ("::core::future", "Future"),
         ("comline_runtime::contract", "Datagram3Framing"),
         ("comline_runtime::format", "Json"),
         ("comline_runtime::framing", "JsonRpcFraming"),
@@ -2418,7 +2419,7 @@ fn protocol(
                 format!("$Result<{}, $Fault<{}>>", f.ret, f.err_ty)
             };
             s.push_str(&format!(
-                "    fn {}(&self{args}) -> impl ::core::future::Future<Output = {output}> + Send;\n",
+                "    fn {}(&self{args}) -> impl $Future<Output = {output}> + Send;\n",
                 f.ident
             ));
         } else if f.one_way {

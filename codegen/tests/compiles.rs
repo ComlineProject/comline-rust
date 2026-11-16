@@ -1924,6 +1924,7 @@ fn colliding_schemas() -> Vec<(String, Vec<FrozenUnit>)> {
         "Vec",
         "Result",
         "Box",
+        "Future",
         "Serialize",
         "Deserialize",
         "Client",
@@ -2699,6 +2700,7 @@ fn protocols_named_like_the_package_modules_types_build() {
         "Comline2Handshake",
         "Unavailable",
         "Result",
+        "Future",
         "Services",
     ];
     let shared = std::env::temp_dir().join(format!("comline-rust-names-{}", std::process::id()));
