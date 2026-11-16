@@ -87,7 +87,9 @@ fn a_package_using_only_a_dependencys_types_generates() {
             "{mode:?}"
         );
         assert!(
-            files.iter().all(|f| !f.contents.contains("HELLO")),
+            files
+                .iter()
+                .all(|f| !f.contents.contains("HELLO") && !f.contents.contains("HEADER")),
             "{mode:?}"
         );
         assert!(

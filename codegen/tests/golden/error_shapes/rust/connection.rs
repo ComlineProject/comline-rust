@@ -5,6 +5,7 @@
 //! - Implement the trait of each protocol the server provides: `conformance::Multi`, `conformance::Quiet`.
 //! - Serve with [`serve`]`(transport, Services { multi: .., quiet: .. })`, which serves every call until the peer leaves. [`accept`] hands the connection back first, for a server that calls the client or serves one call at a time.
 //! - Dial with [`connect`]`(transport)`.
+//! - To provide only some of a side's protocols, start from `Services::new().with_multi(..)` and add each with its `with_` method, or write [`Absent`] in the fields left out. The connection then has a dispatcher for those only.
 //! - Call the server from the dialling side: `MultiSender::new(&mut conn).send(..)`.
 //!
 //! [`Connection<T>`](Connection) names the connection over a transport `T`, written `Connection<Tcp>`; [`Format`] is the package's wire format.
@@ -23,18 +24,95 @@ pub const CONNECTION_IR_HASH: u64 = 0x6fc29e1014b9b9c8;
 /// return, written `Connection<Tcp>`: [`Format`] over the default framing.
 pub type Connection<T> = comline_runtime::connection::Connection<T, Format>;
 
-/// What the accepting side provides: one field per protocol, so leaving one out
-/// doesn't compile.
+/// A protocol left out of [`Services`] or [`ClientServices`]: it isn't provided,
+/// and the connection has no dispatcher for it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Absent;
+
+/// What provides `conformance::Multi` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].
+#[doc(hidden)]
+pub trait ProvideConformanceMulti {
+    fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError>;
+}
+
+impl ProvideConformanceMulti for Absent {
+    fn provide<T: Transport>(self, _conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+}
+
+impl<P: crate::conformance::Multi + 'static> ProvideConformanceMulti for P {
+    fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        crate::conformance::MultiDispatcher(self).provide_on(conn)
+    }
+}
+
+/// What provides `conformance::Quiet` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].
+#[doc(hidden)]
+pub trait ProvideConformanceQuiet {
+    fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError>;
+}
+
+impl ProvideConformanceQuiet for Absent {
+    fn provide<T: Transport>(self, _conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+}
+
+impl<P: crate::conformance::Quiet + 'static> ProvideConformanceQuiet for P {
+    fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        crate::conformance::QuietDispatcher(self).provide_on(conn)
+    }
+}
+
+/// What the accepting side provides: one field per protocol. Every field is a
+/// protocol's implementation, or [`Absent`] to leave the protocol out;
+/// `Services::new()` has them all absent, and `with_<field>` provides one.
 pub struct Services<Multi, Quiet> {
     pub multi: Multi,
     pub quiet: Quiet,
 }
 
-impl<Multi: crate::conformance::Multi + 'static, Quiet: crate::conformance::Quiet + 'static> Services<Multi, Quiet> {
-    /// Provide every protocol on `conn`: the peer's calls to them come here.
-    pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) {
-        crate::conformance::MultiDispatcher(self.multi).provide_on(conn);
-        crate::conformance::QuietDispatcher(self.quiet).provide_on(conn);
+impl Services<Absent, Absent> {
+    /// Nothing provided yet.
+    pub fn new() -> Self {
+        Services {
+            multi: Absent,
+            quiet: Absent,
+        }
+    }
+}
+
+impl Default for Services<Absent, Absent> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<Multi, Quiet> Services<Multi, Quiet> {
+    /// Provide `conformance::Multi` with `provider`, in place of what was there.
+    pub fn with_multi<P: crate::conformance::Multi + 'static>(self, provider: P) -> Services<P, Quiet> {
+        Services {
+            multi: provider,
+            quiet: self.quiet,
+        }
+    }
+    /// Provide `conformance::Quiet` with `provider`, in place of what was there.
+    pub fn with_quiet<P: crate::conformance::Quiet + 'static>(self, provider: P) -> Services<Multi, P> {
+        Services {
+            multi: self.multi,
+            quiet: provider,
+        }
+    }
+}
+
+impl<Multi: ProvideConformanceMulti, Quiet: ProvideConformanceQuiet> Services<Multi, Quiet> {
+    /// Provide every protocol given on `conn`: the peer's calls to them come here.
+    /// The protocols left [`Absent`] aren't provided.
+    pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        ProvideConformanceMulti::provide(self.multi, conn)?;
+        ProvideConformanceQuiet::provide(self.quiet, conn)?;
+        Ok(())
     }
 }
 
@@ -42,14 +120,14 @@ impl<Multi: crate::conformance::Multi + 'static, Quiet: crate::conformance::Quie
 /// every protocol in `services` on it. The connection comes back not yet
 /// served, for a server that calls the client first, or serves one call at
 /// a time.
-pub fn accept<T: Transport, Multi: crate::conformance::Multi + 'static, Quiet: crate::conformance::Quiet + 'static>(transport: T, services: Services<Multi, Quiet>) -> Result<Connection<T>, RuntimeError> {
+pub fn accept<T: Transport, Multi: ProvideConformanceMulti, Quiet: ProvideConformanceQuiet>(transport: T, services: Services<Multi, Quiet>) -> Result<Connection<T>, RuntimeError> {
     let mut conn = comline_runtime::connection::Connection::accept(transport, Format::default(), CONNECTION_IR_HASH)?;
-    services.provide_on(&mut conn);
+    services.provide_on(&mut conn)?;
     Ok(conn)
 }
 
 /// [`accept`], then serve every call until the peer leaves.
-pub fn serve<T: Transport, Multi: crate::conformance::Multi + 'static, Quiet: crate::conformance::Quiet + 'static>(transport: T, services: Services<Multi, Quiet>) -> Result<(), RuntimeError> {
+pub fn serve<T: Transport, Multi: ProvideConformanceMulti, Quiet: ProvideConformanceQuiet>(transport: T, services: Services<Multi, Quiet>) -> Result<(), RuntimeError> {
     accept(transport, services)?.serve()
 }
 
