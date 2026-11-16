@@ -94,10 +94,15 @@ impl<S: Gateway> GatewayDispatcher<S> {
 
     /// Provide this protocol on `conn`: the peer's calls to it come here.
     /// Open `conn` with `Connection::accept_with` and `NoHandshake` (`@handshake = "none"`), or let the package's `serve` / `connect` do it.
+    ///
+    /// Fails with `RuntimeError::Unavailable` when the connection ran a `comline@2`
+    /// handshake that didn't accept this protocol: the Hello didn't list it, or the
+    /// peer refused it. A connection opened without one accepts it.
     pub fn provide_on<T: Transport, W: WireFormat, F: ConnectionFraming>(
         self,
         conn: &mut Connection<T, W, F>,
-    ) where
+    ) -> Result<(), RuntimeError>
+    where
         S: 'static,
     {
         conn.provide(Self::PROTOCOL, self)

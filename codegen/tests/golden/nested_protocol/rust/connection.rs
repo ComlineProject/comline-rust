@@ -5,12 +5,13 @@
 //! - Implement the trait of each protocol the server provides: `chat::admin::Admin`.
 //! - Serve with [`serve`]`(transport, Services { admin: .. })`, which serves every call until the peer leaves. [`accept`] hands the connection back first, for a server that calls the client or serves one call at a time.
 //! - Dial with [`connect`]`(transport)`.
+//! - To provide only some of a side's protocols, start from `Services::new().with_admin(..)` and add each with its `with_` method, or write [`Absent`] in the fields left out. The `comline@2` Hello then lists what is provided and every protocol of the other side this end calls, and a protocol it doesn't list isn't on the connection.
 //! - Call the server from the dialling side: `AdminSender::new(&mut conn).greet(..)`.
 //!
 //! [`Connection<T>`](Connection) names the connection over a transport `T`, written `Connection<Tcp>`; [`Format`] is the package's wire format.
 
 use comline_runtime::contract::{Peer, Reason, RuntimeError};
-use comline_runtime::handshake::comline2::{Comline2Handshake, Negotiated};
+use comline_runtime::handshake::comline2::{self as c2, Comline2Handshake, Negotiated};
 use comline_runtime::transport::Transport;
 
 /// The package's wire format (`wire.format`).
@@ -27,39 +28,45 @@ pub type Framing = comline_runtime::contract::Datagram3Framing;
 /// return, written `Connection<Tcp>`: [`Format`] over [`Framing`].
 pub type Connection<T> = comline_runtime::connection::Connection<T, Format, Framing>;
 
-/// This end's `comline@2` Hello: version 0.1.0 of package `0123456789abcdef0123456789abcdef`, as its
-/// history records it. Its protocols, by wire number:
-///
-/// - 0 `chat::admin::Admin`, line 0.1.0: `greet` 0
+/// What this end's `comline@2` Hello holds whichever protocols it lists: version 0.1.0 of
+/// package `0123456789abcdef0123456789abcdef`, as its history records it, and the connection's encodings.
+/// [`handshake`] adds the protocols this end provides and calls, one `P_` entry each.
 #[doc(hidden)]
-pub const HELLO: &[u8] = &[
-    0x43, 0x4f, 0x02, 0x01, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
-    0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x00, 0x01, 0x00,
-    0x00, 0x03, 0x00, 0x52, 0x18, 0x5f, 0xd6, 0x09, 0x92, 0xad, 0x43, 0x02,
-    0x9c, 0xc2, 0x99, 0x62, 0xb3, 0xaf, 0xb4, 0x01, 0x4e, 0x6e, 0xde, 0x7c,
-    0xc8, 0xf5, 0xaa, 0x52, 0xce, 0x16, 0x9f, 0x9e, 0x65, 0x67, 0x40, 0xe2,
-    0x02, 0x58, 0x80, 0x9a, 0xaf, 0x4b, 0x47, 0xd5, 0x6c, 0x69, 0xb2, 0xc1,
-    0xfc, 0x9d, 0x43, 0x30, 0xc1, 0x01, 0x00, 0x00, 0x01, 0x00, 0x5a, 0x5a,
-    0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,
-    0x5a, 0x5a, 0x01, 0x00,
-];
+pub const HEADER: c2::HelloHeader<'static> = c2::HelloHeader {
+    exchange: c2::Exchange::Offer,
+    package_id: c2::Hash128([0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]),
+    version: c2::Release::new(0, 1, 0),
+    pre: "",
+    encodings: &[
+        c2::Encoding { kind: c2::EncodingKind::Format, param_hash: c2::Hash128([0x52, 0x18, 0x5f, 0xd6, 0x09, 0x92, 0xad, 0x43, 0x02, 0x9c, 0xc2, 0x99, 0x62, 0xb3, 0xaf, 0xb4]) },
+        c2::Encoding { kind: c2::EncodingKind::Framing, param_hash: c2::Hash128([0x4e, 0x6e, 0xde, 0x7c, 0xc8, 0xf5, 0xaa, 0x52, 0xce, 0x16, 0x9f, 0x9e, 0x65, 0x67, 0x40, 0xe2]) },
+        c2::Encoding { kind: c2::EncodingKind::Handshake, param_hash: c2::Hash128([0x58, 0x80, 0x9a, 0xaf, 0x4b, 0x47, 0xd5, 0x6c, 0x69, 0xb2, 0xc1, 0xfc, 0x9d, 0x43, 0x30, 0xc1]) },
+    ],
+};
 
-/// The `comline@2` handshake, with [`HELLO`] and the parameters the package
-/// states: `scope = protocol`, `newer_consumer = degrade`, `same_version_differs = refuse`, `exchange = offer`.
+/// `chat::admin::Admin`, wire number 0, line 0.1.0: `greet` 0
 #[doc(hidden)]
-pub fn handshake() -> Comline2Handshake {
-    use comline_runtime::handshake::comline2 as c2;
-    let hello = match c2::Message::decode(HELLO) {
-        Ok(c2::Message::Hello(hello)) => hello,
-        _ => unreachable!("HELLO is a Hello message"),
-    };
+pub const P_CHAT_ADMIN_ADMIN: c2::ProtocolEntry<'static> = c2::ProtocolEntry {
+    number: 0,
+    line: c2::Release::new(0, 1, 0),
+    shape_hash: c2::Hash128([0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a]),
+    functions: &[0],
+};
+
+/// The `comline@2` handshake, with the parameters the package states:
+/// `scope = protocol`, `newer_consumer = degrade`, `same_version_differs = refuse`, `exchange = offer`.
+/// Its Hello lists the protocols `provided` and `called` and no others: the
+/// peer refuses a listed protocol it doesn't have, and a protocol left out is
+/// neither provided nor called on the connection.
+#[doc(hidden)]
+pub fn handshake(provided: &[c2::ProtocolEntry<'_>], called: &[c2::ProtocolEntry<'_>]) -> Comline2Handshake {
     let params = c2::Params {
         scope: c2::Scope::Protocol,
         newer_consumer: c2::NewerConsumer::Degrade,
         same_version_differs: c2::SameVersionDiffers::Refuse,
         exchange: c2::Exchange::Offer,
     };
-    c2::Comline2Handshake::new(params, hello)
+    c2::Comline2Handshake::new(params, c2::Hello::build(&HEADER, provided, called))
 }
 
 /// The package's protocols on the connection, by wire number.
@@ -149,16 +156,77 @@ pub fn check_call<P: Peer>(peer: &mut P, protocol: u16, function: u16, path: &'s
     Err(error)
 }
 
-/// What the accepting side provides: one field per protocol, so leaving one out
-/// doesn't compile.
+/// A protocol left out of [`Services`] or [`ClientServices`]: it isn't provided,
+/// and the `comline@2` Hello doesn't list it unless this end calls it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Absent;
+
+/// What provides `chat::admin::Admin` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].
+#[doc(hidden)]
+pub trait ProvideChatAdminAdmin {
+    /// Its entry in the Hello, when something provides it.
+    const ENTRY: Option<c2::ProtocolEntry<'static>>;
+    fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError>;
+}
+
+impl ProvideChatAdminAdmin for Absent {
+    const ENTRY: Option<c2::ProtocolEntry<'static>> = None;
+    fn provide<T: Transport>(self, _conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+}
+
+impl<P: crate::chat::admin::Admin + 'static> ProvideChatAdminAdmin for P {
+    const ENTRY: Option<c2::ProtocolEntry<'static>> = Some(P_CHAT_ADMIN_ADMIN);
+    fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        crate::chat::admin::AdminDispatcher(self).provide_on(conn)
+    }
+}
+
+/// What the accepting side provides: one field per protocol. Every field is a
+/// protocol's implementation, or [`Absent`] to leave the protocol out;
+/// `Services::new()` has them all absent, and `with_<field>` provides one.
 pub struct Services<Admin> {
     pub admin: Admin,
 }
 
-impl<Admin: crate::chat::admin::Admin + 'static> Services<Admin> {
-    /// Provide every protocol on `conn`: the peer's calls to them come here.
-    pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) {
-        crate::chat::admin::AdminDispatcher(self.admin).provide_on(conn);
+impl Services<Absent> {
+    /// Nothing provided yet.
+    pub fn new() -> Self {
+        Services {
+            admin: Absent,
+        }
+    }
+}
+
+impl Default for Services<Absent> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<Admin> Services<Admin> {
+    /// Provide `chat::admin::Admin` with `provider`, in place of what was there.
+    pub fn with_admin<P: crate::chat::admin::Admin + 'static>(self, provider: P) -> Services<P> {
+        Services {
+            admin: provider,
+        }
+    }
+}
+
+impl<Admin: ProvideChatAdminAdmin> Services<Admin> {
+    /// Provide every protocol given on `conn`: the peer's calls to them come here.
+    /// The protocols left [`Absent`] aren't provided. Fails with
+    /// `RuntimeError::Unavailable` for a protocol the handshake didn't accept.
+    pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        ProvideChatAdminAdmin::provide(self.admin, conn)?;
+        Ok(())
+    }
+
+    /// The Hello entries of the protocols given.
+    #[doc(hidden)]
+    pub fn entries(&self) -> Vec<c2::ProtocolEntry<'static>> {
+        [<Admin as ProvideChatAdminAdmin>::ENTRY].into_iter().flatten().collect()
     }
 }
 
@@ -166,23 +234,23 @@ impl<Admin: crate::chat::admin::Admin + 'static> Services<Admin> {
 /// every protocol in `services` on it. The connection comes back not yet
 /// served, for a server that calls the client first, or serves one call at
 /// a time.
-pub fn accept<T: Transport, Admin: crate::chat::admin::Admin + 'static>(transport: T, services: Services<Admin>) -> Result<Connection<T>, RuntimeError> {
-    let mut handshake = handshake();
+pub fn accept<T: Transport, Admin: ProvideChatAdminAdmin>(transport: T, services: Services<Admin>) -> Result<Connection<T>, RuntimeError> {
+    let mut handshake = handshake(&services.entries(), &[]);
     let mut conn = comline_runtime::connection::Connection::accept_with(transport, Format::default(), comline_runtime::contract::Datagram3Framing, &mut handshake, CONNECTION_IR_HASH)?;
     Peer::extensions(&mut conn).insert(Negotiation { negotiated: handshake.negotiated().cloned().unwrap_or_else(|| unreachable!("a handshake that succeeded agreed something")), unavailable: None });
-    services.provide_on(&mut conn);
+    services.provide_on(&mut conn)?;
     Ok(conn)
 }
 
 /// [`accept`], then serve every call until the peer leaves.
-pub fn serve<T: Transport, Admin: crate::chat::admin::Admin + 'static>(transport: T, services: Services<Admin>) -> Result<(), RuntimeError> {
+pub fn serve<T: Transport, Admin: ProvideChatAdminAdmin>(transport: T, services: Services<Admin>) -> Result<(), RuntimeError> {
     accept(transport, services)?.serve()
 }
 
 /// Dial over `transport`: run the handshake. Call the server's protocols
 /// through their senders.
 pub fn connect<T: Transport>(transport: T) -> Result<Connection<T>, RuntimeError> {
-    let mut handshake = handshake();
+    let mut handshake = handshake(&[], &[P_CHAT_ADMIN_ADMIN]);
     let mut conn = comline_runtime::connection::Connection::connect_with(transport, Format::default(), comline_runtime::contract::Datagram3Framing, &mut handshake, CONNECTION_IR_HASH)?;
     Peer::extensions(&mut conn).insert(Negotiation { negotiated: handshake.negotiated().cloned().unwrap_or_else(|| unreachable!("a handshake that succeeded agreed something")), unavailable: None });
     Ok(conn)

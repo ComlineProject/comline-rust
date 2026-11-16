@@ -6,6 +6,7 @@
 //! - Implement the trait of each protocol the client provides: `conformance::Events`.
 //! - Serve with [`serve`]`(transport, Services { chat: .. })`, which serves every call until the peer leaves. [`accept`] hands the connection back first, for a server that calls the client or serves one call at a time.
 //! - Dial with [`connect`]`(transport, ClientServices { events: .. })`.
+//! - To provide only some of a side's protocols, start from `Services::new().with_chat(..)` or `ClientServices::new().with_events(..)` and add each with its `with_` method, or write [`Absent`] in the fields left out. The connection then has a dispatcher for those only.
 //! - Call the server from the dialling side: `ChatSender::new(&mut conn).send(..)`.
 //! - Call the client from the accepting side, on the connection [`accept`] returns or the peer a handler is given: `EventsSender::new(&mut conn).shown(..)`.
 //!
@@ -28,29 +29,124 @@ pub type Framing = comline_runtime::framing::JsonRpcFraming;
 /// return, written `Connection<Tcp>`: JSON over [`Framing`].
 pub type Connection<T> = comline_runtime::connection::Connection<T, comline_runtime::format::Json, Framing>;
 
-/// What the accepting side provides: one field per protocol, so leaving one out
-/// doesn't compile.
+/// A protocol left out of [`Services`] or [`ClientServices`]: it isn't provided,
+/// and the connection has no dispatcher for it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Absent;
+
+/// What provides `conformance::Chat` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].
+#[doc(hidden)]
+pub trait ProvideConformanceChat {
+    fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError>;
+}
+
+impl ProvideConformanceChat for Absent {
+    fn provide<T: Transport>(self, _conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+}
+
+impl<P: crate::conformance::Chat + 'static> ProvideConformanceChat for P {
+    fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        crate::conformance::ChatDispatcher(self).provide_on(conn)
+    }
+}
+
+/// What provides `conformance::Events` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].
+#[doc(hidden)]
+pub trait ProvideConformanceEvents {
+    fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError>;
+}
+
+impl ProvideConformanceEvents for Absent {
+    fn provide<T: Transport>(self, _conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+}
+
+impl<P: crate::conformance::Events + 'static> ProvideConformanceEvents for P {
+    fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        crate::conformance::EventsDispatcher(self).provide_on(conn)
+    }
+}
+
+/// What the accepting side provides: one field per protocol. Every field is a
+/// protocol's implementation, or [`Absent`] to leave the protocol out;
+/// `Services::new()` has them all absent, and `with_<field>` provides one.
 pub struct Services<Chat> {
     pub chat: Chat,
 }
 
-impl<Chat: crate::conformance::Chat + 'static> Services<Chat> {
-    /// Provide every protocol on `conn`: the peer's calls to them come here.
-    pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) {
-        crate::conformance::ChatDispatcher(self.chat).provide_on(conn);
+impl Services<Absent> {
+    /// Nothing provided yet.
+    pub fn new() -> Self {
+        Services {
+            chat: Absent,
+        }
     }
 }
 
-/// What the dialling side provides: one field per protocol, so leaving one out
-/// doesn't compile.
+impl Default for Services<Absent> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<Chat> Services<Chat> {
+    /// Provide `conformance::Chat` with `provider`, in place of what was there.
+    pub fn with_chat<P: crate::conformance::Chat + 'static>(self, provider: P) -> Services<P> {
+        Services {
+            chat: provider,
+        }
+    }
+}
+
+impl<Chat: ProvideConformanceChat> Services<Chat> {
+    /// Provide every protocol given on `conn`: the peer's calls to them come here.
+    /// The protocols left [`Absent`] aren't provided.
+    pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        ProvideConformanceChat::provide(self.chat, conn)?;
+        Ok(())
+    }
+}
+
+/// What the dialling side provides: one field per protocol. Every field is a
+/// protocol's implementation, or [`Absent`] to leave the protocol out;
+/// `ClientServices::new()` has them all absent, and `with_<field>` provides one.
 pub struct ClientServices<Events> {
     pub events: Events,
 }
 
-impl<Events: crate::conformance::Events + 'static> ClientServices<Events> {
-    /// Provide every protocol on `conn`: the peer's calls to them come here.
-    pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) {
-        crate::conformance::EventsDispatcher(self.events).provide_on(conn);
+impl ClientServices<Absent> {
+    /// Nothing provided yet.
+    pub fn new() -> Self {
+        ClientServices {
+            events: Absent,
+        }
+    }
+}
+
+impl Default for ClientServices<Absent> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<Events> ClientServices<Events> {
+    /// Provide `conformance::Events` with `provider`, in place of what was there.
+    pub fn with_events<P: crate::conformance::Events + 'static>(self, provider: P) -> ClientServices<P> {
+        ClientServices {
+            events: provider,
+        }
+    }
+}
+
+impl<Events: ProvideConformanceEvents> ClientServices<Events> {
+    /// Provide every protocol given on `conn`: the peer's calls to them come here.
+    /// The protocols left [`Absent`] aren't provided.
+    pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        ProvideConformanceEvents::provide(self.events, conn)?;
+        Ok(())
     }
 }
 
@@ -58,22 +154,22 @@ impl<Events: crate::conformance::Events + 'static> ClientServices<Events> {
 /// every protocol in `services` on it. The connection comes back not yet
 /// served, for a server that calls the client first, or serves one call at
 /// a time.
-pub fn accept<T: Transport, Chat: crate::conformance::Chat + 'static>(transport: T, services: Services<Chat>) -> Result<Connection<T>, RuntimeError> {
+pub fn accept<T: Transport, Chat: ProvideConformanceChat>(transport: T, services: Services<Chat>) -> Result<Connection<T>, RuntimeError> {
     let mut conn = comline_runtime::connection::Connection::accept_with(transport, comline_runtime::format::Json::default(), comline_runtime::framing::JsonRpcFraming, &mut comline_runtime::handshake::ComlineHandshake, CONNECTION_IR_HASH)?;
-    services.provide_on(&mut conn);
+    services.provide_on(&mut conn)?;
     Ok(conn)
 }
 
 /// [`accept`], then serve every call until the peer leaves.
-pub fn serve<T: Transport, Chat: crate::conformance::Chat + 'static>(transport: T, services: Services<Chat>) -> Result<(), RuntimeError> {
+pub fn serve<T: Transport, Chat: ProvideConformanceChat>(transport: T, services: Services<Chat>) -> Result<(), RuntimeError> {
     accept(transport, services)?.serve()
 }
 
 /// Dial over `transport`: run the handshake, then provide every protocol in
 /// `services`, which the server calls. Call the server's protocols through
 /// their senders.
-pub fn connect<T: Transport, Events: crate::conformance::Events + 'static>(transport: T, services: ClientServices<Events>) -> Result<Connection<T>, RuntimeError> {
+pub fn connect<T: Transport, Events: ProvideConformanceEvents>(transport: T, services: ClientServices<Events>) -> Result<Connection<T>, RuntimeError> {
     let mut conn = comline_runtime::connection::Connection::connect_with(transport, comline_runtime::format::Json::default(), comline_runtime::framing::JsonRpcFraming, &mut comline_runtime::handshake::ComlineHandshake, CONNECTION_IR_HASH)?;
-    services.provide_on(&mut conn);
+    services.provide_on(&mut conn)?;
     Ok(conn)
 }
