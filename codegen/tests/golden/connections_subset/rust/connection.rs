@@ -208,6 +208,9 @@ impl ProvideConformanceChat for Absent {
 impl<P: crate::conformance::Chat + 'static> ProvideConformanceChat for P {
     const ENTRY: Option<c2::ProtocolEntry<'static>> = Some(P_CONFORMANCE_CHAT);
     fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        if negotiated(&mut *conn).is_some_and(|n| !n.accepts(P_CONFORMANCE_CHAT.number)) {
+            return Ok(());
+        }
         crate::conformance::ChatDispatcher(self).provide_on(conn)
     }
 }
@@ -230,6 +233,9 @@ impl ProvideConformanceAdminAdmin for Absent {
 impl<P: crate::conformance::admin::Admin + 'static> ProvideConformanceAdminAdmin for P {
     const ENTRY: Option<c2::ProtocolEntry<'static>> = Some(P_CONFORMANCE_ADMIN_ADMIN);
     fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        if negotiated(&mut *conn).is_some_and(|n| !n.accepts(P_CONFORMANCE_ADMIN_ADMIN.number)) {
+            return Ok(());
+        }
         crate::conformance::admin::AdminDispatcher(self).provide_on(conn)
     }
 }
@@ -252,6 +258,9 @@ impl ProvideConformanceEvents for Absent {
 impl<P: crate::conformance::Events + 'static> ProvideConformanceEvents for P {
     const ENTRY: Option<c2::ProtocolEntry<'static>> = Some(P_CONFORMANCE_EVENTS);
     fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        if negotiated(&mut *conn).is_some_and(|n| !n.accepts(P_CONFORMANCE_EVENTS.number)) {
+            return Ok(());
+        }
         crate::conformance::EventsDispatcher(self).provide_on(conn)
     }
 }
@@ -274,6 +283,9 @@ impl ProvideConformanceAdminAlerts for Absent {
 impl<P: crate::conformance::admin::Alerts + 'static> ProvideConformanceAdminAlerts for P {
     const ENTRY: Option<c2::ProtocolEntry<'static>> = Some(P_CONFORMANCE_ADMIN_ALERTS);
     fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        if negotiated(&mut *conn).is_some_and(|n| !n.accepts(P_CONFORMANCE_ADMIN_ALERTS.number)) {
+            return Ok(());
+        }
         crate::conformance::admin::AlertsDispatcher(self).provide_on(conn)
     }
 }
@@ -321,8 +333,8 @@ impl<Chat, Admin> Services<Chat, Admin> {
 
 impl<Chat: ProvideConformanceChat, Admin: ProvideConformanceAdminAdmin> Services<Chat, Admin> {
     /// Provide every protocol given on `conn`: the peer's calls to them come here.
-    /// The protocols left [`Absent`] aren't provided. Fails with
-    /// `RuntimeError::Unavailable` for a protocol the handshake didn't accept.
+    /// The protocols left [`Absent`] aren't provided, and neither is one the
+    /// `comline@2` handshake didn't accept (the peer refused it): it is skipped.
     pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
         ProvideConformanceChat::provide(self.chat, conn)?;
         ProvideConformanceAdminAdmin::provide(self.admin, conn)?;
@@ -379,8 +391,8 @@ impl<Events, Alerts> ClientServices<Events, Alerts> {
 
 impl<Events: ProvideConformanceEvents, Alerts: ProvideConformanceAdminAlerts> ClientServices<Events, Alerts> {
     /// Provide every protocol given on `conn`: the peer's calls to them come here.
-    /// The protocols left [`Absent`] aren't provided. Fails with
-    /// `RuntimeError::Unavailable` for a protocol the handshake didn't accept.
+    /// The protocols left [`Absent`] aren't provided, and neither is one the
+    /// `comline@2` handshake didn't accept (the peer refused it): it is skipped.
     pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
         ProvideConformanceEvents::provide(self.events, conn)?;
         ProvideConformanceAdminAlerts::provide(self.alerts, conn)?;

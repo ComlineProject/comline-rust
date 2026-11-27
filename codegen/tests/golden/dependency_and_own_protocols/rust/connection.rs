@@ -179,6 +179,9 @@ impl ProvideApiChat for Absent {
 impl<P: crate::api::Chat + 'static> ProvideApiChat for P {
     const ENTRY: Option<c2::ProtocolEntry<'static>> = Some(P_API_CHAT);
     fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        if negotiated(&mut *conn).is_some_and(|n| !n.accepts(P_API_CHAT.number)) {
+            return Ok(());
+        }
         crate::api::ChatDispatcher(self).provide_on(conn)
     }
 }
@@ -216,8 +219,8 @@ impl<Chat> Services<Chat> {
 
 impl<Chat: ProvideApiChat> Services<Chat> {
     /// Provide every protocol given on `conn`: the peer's calls to them come here.
-    /// The protocols left [`Absent`] aren't provided. Fails with
-    /// `RuntimeError::Unavailable` for a protocol the handshake didn't accept.
+    /// The protocols left [`Absent`] aren't provided, and neither is one the
+    /// `comline@2` handshake didn't accept (the peer refused it): it is skipped.
     pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
         ProvideApiChat::provide(self.chat, conn)?;
         Ok(())

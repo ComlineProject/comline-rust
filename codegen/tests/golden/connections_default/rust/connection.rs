@@ -190,6 +190,9 @@ impl ProvideConformanceChat for Absent {
 impl<P: crate::conformance::Chat + 'static> ProvideConformanceChat for P {
     const ENTRY: Option<c2::ProtocolEntry<'static>> = Some(P_CONFORMANCE_CHAT);
     fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        if negotiated(&mut *conn).is_some_and(|n| !n.accepts(P_CONFORMANCE_CHAT.number)) {
+            return Ok(());
+        }
         crate::conformance::ChatDispatcher(self).provide_on(conn)
     }
 }
@@ -212,6 +215,9 @@ impl ProvideConformanceEvents for Absent {
 impl<P: crate::conformance::Events + 'static> ProvideConformanceEvents for P {
     const ENTRY: Option<c2::ProtocolEntry<'static>> = Some(P_CONFORMANCE_EVENTS);
     fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        if negotiated(&mut *conn).is_some_and(|n| !n.accepts(P_CONFORMANCE_EVENTS.number)) {
+            return Ok(());
+        }
         crate::conformance::EventsDispatcher(self).provide_on(conn)
     }
 }
@@ -249,8 +255,8 @@ impl<Chat> Services<Chat> {
 
 impl<Chat: ProvideConformanceChat> Services<Chat> {
     /// Provide every protocol given on `conn`: the peer's calls to them come here.
-    /// The protocols left [`Absent`] aren't provided. Fails with
-    /// `RuntimeError::Unavailable` for a protocol the handshake didn't accept.
+    /// The protocols left [`Absent`] aren't provided, and neither is one the
+    /// `comline@2` handshake didn't accept (the peer refused it): it is skipped.
     pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
         ProvideConformanceChat::provide(self.chat, conn)?;
         Ok(())
@@ -296,8 +302,8 @@ impl<Events> ClientServices<Events> {
 
 impl<Events: ProvideConformanceEvents> ClientServices<Events> {
     /// Provide every protocol given on `conn`: the peer's calls to them come here.
-    /// The protocols left [`Absent`] aren't provided. Fails with
-    /// `RuntimeError::Unavailable` for a protocol the handshake didn't accept.
+    /// The protocols left [`Absent`] aren't provided, and neither is one the
+    /// `comline@2` handshake didn't accept (the peer refused it): it is skipped.
     pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
         ProvideConformanceEvents::provide(self.events, conn)?;
         Ok(())

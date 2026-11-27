@@ -2882,6 +2882,37 @@ fn providing_every_protocol_is_the_struct_literal() {
     drop(conn);
     let _ = server.join().unwrap();
 }
+
+/// A client written before `Admin` existed lists `Chat` alone, so the server's
+/// `Admin` is refused (`unknown_protocol`): the connection still comes up, `Chat`
+/// works, the refused protocol isn't registered, and the client's call to it
+/// fails locally.
+#[test]
+fn a_protocol_the_peer_refused_is_skipped_not_an_error() {
+    use comline_runtime::connection::Connection;
+    use comline_runtime::contract::Datagram3Framing;
+    use subsettest::{handshake, negotiated, Format, Negotiation, CONNECTION_IR_HASH};
+    use subsettest::{P_ADMIN_ADMIN, P_CONFORMANCE_CHAT};
+
+    let (a, b) = duplex();
+    let server = thread::spawn(move || {
+        let mut conn = accept(b, Services { chat: ChatImpl, admin: AdminImpl }).unwrap();
+        let agreed = negotiated(&mut conn).unwrap();
+        assert!(agreed.accepts(P_CONFORMANCE_CHAT.number));
+        assert!(!agreed.accepts(P_ADMIN_ADMIN.number));
+        conn.serve()
+    });
+    let mut handshake = handshake(&[], &[P_CONFORMANCE_CHAT]);
+    let mut conn =
+        Connection::connect_with(a, Format::default(), Datagram3Framing, &mut handshake, CONNECTION_IR_HASH).unwrap();
+    let agreed = handshake.negotiated().cloned().unwrap();
+    Peer::extensions(&mut conn).insert(Negotiation { negotiated: agreed, unavailable: None });
+    assert_eq!(ChatSender::new(&mut conn).send(4).unwrap(), 5);
+    let err = AdminSender::new(&mut conn).kick(1).unwrap_err();
+    assert_eq!(err, RuntimeError::Unavailable);
+    drop(conn);
+    let _ = server.join().unwrap();
+}
 "##;
 
 /// [`SUBSET_BEHAVIOUR`], async.
@@ -2997,6 +3028,39 @@ async fn providing_every_protocol_is_the_struct_literal() {
     let to_server = client.handle();
     let client = tokio::spawn(client.run());
     assert_eq!(ChatAsyncSender::new(&to_server).send(2).await.unwrap(), 3);
+    to_server.close();
+    client.await.unwrap().unwrap();
+    let _ = server.await.unwrap();
+}
+
+/// [`a_protocol_the_peer_refused_is_skipped_not_an_error`], async.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_protocol_the_peer_refused_is_skipped_not_an_error() {
+    use comline_runtime::connection::AsyncConnection;
+    use comline_runtime::contract::Datagram3Framing;
+    use subsettest::{handshake, negotiated, Format, Negotiation, CONNECTION_IR_HASH};
+    use subsettest::{P_ADMIN_ADMIN, P_CONFORMANCE_CHAT};
+
+    let (dialler, acceptor) = async_duplex();
+    let server = tokio::spawn(async move {
+        let conn = accept(acceptor, Services { chat: ChatImpl, admin: AdminImpl }).await.unwrap();
+        let agreed = negotiated(&conn.handle()).unwrap();
+        assert!(agreed.accepts(P_CONFORMANCE_CHAT.number));
+        assert!(!agreed.accepts(P_ADMIN_ADMIN.number));
+        conn.run().await
+    });
+    let mut handshake = handshake(&[], &[P_CONFORMANCE_CHAT]);
+    let client =
+        AsyncConnection::connect_with(dialler, Format::default(), Datagram3Framing, &mut handshake, CONNECTION_IR_HASH)
+            .await
+            .unwrap();
+    let to_server = client.handle();
+    let agreed = handshake.negotiated().cloned().unwrap();
+    AsyncPeer::extensions(&to_server).insert(Negotiation { negotiated: agreed, unavailable: None });
+    let client = tokio::spawn(client.run());
+    assert_eq!(ChatAsyncSender::new(&to_server).send(4).await.unwrap(), 5);
+    let err = AdminAsyncSender::new(&to_server).kick(1).unwrap_err();
+    assert_eq!(err, RuntimeError::Unavailable);
     to_server.close();
     client.await.unwrap().unwrap();
     let _ = server.await.unwrap();

@@ -1419,6 +1419,22 @@ fn package_module(
         l.push(format!(
             "    fn provide<T: {transport_ty}>(self, conn: &mut Connection<T>) -> $Result<(), RuntimeError> {{"
         ));
+        if comline2 {
+            // A protocol the peer refused isn't registered: nothing will call
+            // it, and `provide` would fail. With no Hello there's nothing to
+            // check against.
+            let agreed = if asynchronous {
+                "negotiated(&conn.handle())"
+            } else {
+                "negotiated(&mut *conn)"
+            };
+            l.push(format!(
+                "        if {agreed}.is_some_and(|n| !n.accepts({}.number)) {{",
+                entry_const(&p.namespace, &p.name)
+            ));
+            l.push("            return $Ok(());".into());
+            l.push("        }".into());
+        }
         l.push(format!("        {path}{dispatcher}(self).provide_on(conn)"));
         l.push("    }".into());
         l.push("}".into());
@@ -1516,9 +1532,9 @@ fn package_module(
                 .into(),
         );
         if comline2 {
-            l.push("    /// The protocols left [`Absent`] aren't provided. Fails with".into());
+            l.push("    /// The protocols left [`Absent`] aren't provided, and neither is one the".into());
             l.push(
-                "    /// `RuntimeError::Unavailable` for a protocol the handshake didn't accept."
+                "    /// `comline@2` handshake didn't accept (the peer refused it): it is skipped."
                     .into(),
             );
         } else {

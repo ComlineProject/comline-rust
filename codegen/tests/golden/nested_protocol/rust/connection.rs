@@ -179,6 +179,9 @@ impl ProvideChatAdminAdmin for Absent {
 impl<P: crate::chat::admin::Admin + 'static> ProvideChatAdminAdmin for P {
     const ENTRY: Option<c2::ProtocolEntry<'static>> = Some(P_CHAT_ADMIN_ADMIN);
     fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        if negotiated(&mut *conn).is_some_and(|n| !n.accepts(P_CHAT_ADMIN_ADMIN.number)) {
+            return Ok(());
+        }
         crate::chat::admin::AdminDispatcher(self).provide_on(conn)
     }
 }
@@ -216,8 +219,8 @@ impl<Admin> Services<Admin> {
 
 impl<Admin: ProvideChatAdminAdmin> Services<Admin> {
     /// Provide every protocol given on `conn`: the peer's calls to them come here.
-    /// The protocols left [`Absent`] aren't provided. Fails with
-    /// `RuntimeError::Unavailable` for a protocol the handshake didn't accept.
+    /// The protocols left [`Absent`] aren't provided, and neither is one the
+    /// `comline@2` handshake didn't accept (the peer refused it): it is skipped.
     pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
         ProvideChatAdminAdmin::provide(self.admin, conn)?;
         Ok(())
