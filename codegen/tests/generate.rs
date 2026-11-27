@@ -1553,7 +1553,8 @@ fn a_union_is_refused_with_a_clear_error() {
     let err = generate_rust(&code_req(&schemas)).unwrap_err().to_string();
     assert_eq!(
         err,
-        "the rust generator doesn't support unions (unions): Rust has no anonymous sum type to render one as\n  \
+        "the rust generator doesn't support unions (unions): Rust has no anonymous sum type to render one as \
+         - comline-rust#51 tracks it\n  \
          - schema 'api', struct 'S', field 'either'"
     );
 }
