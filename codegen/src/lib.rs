@@ -59,7 +59,8 @@ pub const SUPPORT: SupportTable = &[
         Support::unsupported(
             "a fixed array over 32 elements renders only as a struct or error field's own, \
              non-optional type (serde's derive stops at 32)",
-        ),
+        )
+        .tracked("comline-rust#146"),
     ),
     (
         Feature::Unions,
