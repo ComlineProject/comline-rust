@@ -27,12 +27,12 @@ pub type Framing = comline_runtime::contract::Datagram3Framing;
 /// return, written `Connection<Tcp>`: [`Format`] over [`Framing`].
 pub type Connection<T> = comline_runtime::connection::Connection<T, Format, Framing>;
 
-/// A protocol left out of [`Services`] or [`ClientServices`]: it isn't provided,
+/// A protocol left out of [`Services`]: it isn't provided,
 /// and the connection has no dispatcher for it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Absent;
 
-/// What provides `conformance::Counter` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].
+/// What provides `conformance::Counter` in [`Services`]: its trait's implementor, or [`Absent`].
 #[doc(hidden)]
 pub trait ProvideConformanceCounter {
     fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError>;

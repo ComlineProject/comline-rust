@@ -1350,9 +1350,21 @@ fn package_module(
 
     // The name `Absent` stands for a protocol left out, in the fields a
     // subset doesn't give.
-    l.push(
-        "/// A protocol left out of [`Services`] or [`ClientServices`]: it isn't provided,".into(),
-    );
+    // Only the types this package has: a link to one it lacks doesn't resolve.
+    let sides_of = |servers: bool, clients: bool| -> String {
+        let mut named = Vec::new();
+        if servers {
+            named.push("[`Services`]");
+        }
+        if clients {
+            named.push("[`ClientServices`]");
+        }
+        named.join(" or ")
+    };
+    l.push(format!(
+        "/// A protocol left out of {}: it isn't provided,",
+        sides_of(!server.is_empty(), !client.is_empty())
+    ));
     if comline2 {
         l.push("/// and the `comline@2` Hello doesn't list it unless this end calls it.".into());
     } else {
@@ -1371,8 +1383,9 @@ fn package_module(
         written.push(slot.clone());
         let path = format!("crate::{}::{}", segments(&p.namespace), ident(&p.name));
         l.push(format!(
-            "/// What provides `{}` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].",
-            display_path(&p.namespace, &p.name)
+            "/// What provides `{}` in {}: its trait's implementor, or [`Absent`].",
+            display_path(&p.namespace, &p.name),
+            sides_of(server.contains(p), client.contains(p))
         ));
         l.push("#[doc(hidden)]".into());
         l.push(format!("pub trait {slot} {{"));

@@ -31,7 +31,7 @@ pub type Connection<T> = comline_runtime::connection::Connection<T, Format>;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Absent;
 
-/// What provides `conformance::Chat` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].
+/// What provides `conformance::Chat` in [`Services`]: its trait's implementor, or [`Absent`].
 #[doc(hidden)]
 pub trait ProvideConformanceChat {
     fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError>;
@@ -49,7 +49,7 @@ impl<P: crate::conformance::Chat + 'static> ProvideConformanceChat for P {
     }
 }
 
-/// What provides `conformance::Events` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].
+/// What provides `conformance::Events` in [`ClientServices`]: its trait's implementor, or [`Absent`].
 #[doc(hidden)]
 pub trait ProvideConformanceEvents {
     fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError>;

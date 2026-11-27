@@ -2756,7 +2756,15 @@ fn protocols_named_like_the_package_modules_types_build() {
 /// `connections_subset`: two applications in one package, `Chat` and `Admin`
 /// the server's, `Events` and `Alerts` the client's, on `comline@2`.
 fn subset_request(async_api: bool) -> GenerateRequest {
-    let mut req = common::request(&corpus_fixture("connections_subset"), Mode::Lib, async_api);
+    // `lib` mode can't have a schema and a namespace of deeper schemas of the
+    // same name, so the second application is a sibling of the first.
+    let mut fx = corpus_fixture("connections_subset");
+    for (namespace, _) in &mut fx.schemas {
+        if namespace == "conformance/admin" {
+            *namespace = "admin".into();
+        }
+    }
+    let mut req = common::request(&fx, Mode::Lib, async_api);
     req.package.name = "subsettest".into();
     req
 }
@@ -2786,7 +2794,7 @@ use std::thread;
 
 use comline_runtime::contract::{CallError, Fault, Peer, Reason, RuntimeError};
 use comline_runtime::transport::duplex;
-use subsettest::conformance::admin::{Admin, AdminSender, Alerts, AlertsSender};
+use subsettest::admin::{Admin, AdminSender, Alerts, AlertsSender};
 use subsettest::conformance::{Chat, ChatSendError, ChatSender, Events, EventsShownError};
 use subsettest::{accept, connect, serve, unavailable, Absent, ClientServices, Services};
 
@@ -2827,7 +2835,7 @@ fn a_protocol_left_out_is_not_on_the_connection() {
         let why = unavailable(&mut conn).unwrap();
         assert_eq!(
             (why.protocol, why.function, why.refused),
-            ("conformance::admin::Alerts", "raised", Some(Reason::UnknownProtocol))
+            ("admin::Alerts", "raised", Some(Reason::UnknownProtocol))
         );
         conn.serve()
     });
@@ -2839,7 +2847,7 @@ fn a_protocol_left_out_is_not_on_the_connection() {
     let why = unavailable(&mut conn).unwrap();
     assert_eq!(
         (why.protocol, why.function, why.refused),
-        ("conformance::admin::Admin", "kick", Some(Reason::UnknownProtocol))
+        ("admin::Admin", "kick", Some(Reason::UnknownProtocol))
     );
     drop(conn);
     let _ = server.join().unwrap();
@@ -2890,7 +2898,7 @@ const ASYNC_SUBSET_BEHAVIOUR: &str = r##"
 use comline_runtime::connection::AsyncPeer;
 use comline_runtime::contract::{CallError, Fault, Reason, RuntimeError};
 use comline_runtime::transport::async_duplex;
-use subsettest::conformance::admin::{Admin, AdminAsyncSender, Alerts, AlertsAsyncSender};
+use subsettest::admin::{Admin, AdminAsyncSender, Alerts, AlertsAsyncSender};
 use subsettest::conformance::{Chat, ChatAsyncSender, ChatSendError, Events, EventsShownError};
 use subsettest::{accept, connect, serve, unavailable, Absent, ClientServices, Services};
 
@@ -2932,7 +2940,7 @@ async fn a_protocol_left_out_is_not_on_the_connection() {
         let why = unavailable(&to_client).unwrap();
         assert_eq!(
             (why.protocol, why.function, why.refused),
-            ("conformance::admin::Alerts", "raised", Some(Reason::UnknownProtocol))
+            ("admin::Alerts", "raised", Some(Reason::UnknownProtocol))
         );
         conn.run().await
     });
@@ -2947,7 +2955,7 @@ async fn a_protocol_left_out_is_not_on_the_connection() {
     let why = unavailable(&to_server).unwrap();
     assert_eq!(
         (why.protocol, why.function, why.refused),
-        ("conformance::admin::Admin", "kick", Some(Reason::UnknownProtocol))
+        ("admin::Admin", "kick", Some(Reason::UnknownProtocol))
     );
 
     to_server.close();

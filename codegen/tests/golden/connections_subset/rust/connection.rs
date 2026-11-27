@@ -190,7 +190,7 @@ pub fn check_call<P: Peer>(peer: &mut P, protocol: u16, function: u16, path: &'s
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Absent;
 
-/// What provides `conformance::Chat` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].
+/// What provides `conformance::Chat` in [`Services`]: its trait's implementor, or [`Absent`].
 #[doc(hidden)]
 pub trait ProvideConformanceChat {
     /// Its entry in the Hello, when something provides it.
@@ -212,7 +212,7 @@ impl<P: crate::conformance::Chat + 'static> ProvideConformanceChat for P {
     }
 }
 
-/// What provides `conformance::admin::Admin` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].
+/// What provides `conformance::admin::Admin` in [`Services`]: its trait's implementor, or [`Absent`].
 #[doc(hidden)]
 pub trait ProvideConformanceAdminAdmin {
     /// Its entry in the Hello, when something provides it.
@@ -234,7 +234,7 @@ impl<P: crate::conformance::admin::Admin + 'static> ProvideConformanceAdminAdmin
     }
 }
 
-/// What provides `conformance::Events` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].
+/// What provides `conformance::Events` in [`ClientServices`]: its trait's implementor, or [`Absent`].
 #[doc(hidden)]
 pub trait ProvideConformanceEvents {
     /// Its entry in the Hello, when something provides it.
@@ -256,7 +256,7 @@ impl<P: crate::conformance::Events + 'static> ProvideConformanceEvents for P {
     }
 }
 
-/// What provides `conformance::admin::Alerts` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].
+/// What provides `conformance::admin::Alerts` in [`ClientServices`]: its trait's implementor, or [`Absent`].
 #[doc(hidden)]
 pub trait ProvideConformanceAdminAlerts {
     /// Its entry in the Hello, when something provides it.

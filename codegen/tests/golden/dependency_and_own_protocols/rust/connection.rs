@@ -156,12 +156,12 @@ pub fn check_call<P: Peer>(peer: &mut P, protocol: u16, function: u16, path: &'s
     Err(error)
 }
 
-/// A protocol left out of [`Services`] or [`ClientServices`]: it isn't provided,
+/// A protocol left out of [`Services`]: it isn't provided,
 /// and the `comline@2` Hello doesn't list it unless this end calls it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Absent;
 
-/// What provides `api::Chat` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].
+/// What provides `api::Chat` in [`Services`]: its trait's implementor, or [`Absent`].
 #[doc(hidden)]
 pub trait ProvideApiChat {
     /// Its entry in the Hello, when something provides it.

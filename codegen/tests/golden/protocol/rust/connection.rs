@@ -24,12 +24,12 @@ pub const CONNECTION_IR_HASH: u64 = 0x8ee00745c73a32b2;
 /// return, written `Connection<Tcp>`: [`Format`] over the default framing.
 pub type Connection<T> = comline_runtime::connection::Connection<T, Format>;
 
-/// A protocol left out of [`Services`] or [`ClientServices`]: it isn't provided,
+/// A protocol left out of [`Services`]: it isn't provided,
 /// and the connection has no dispatcher for it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Absent;
 
-/// What provides `conformance::Service` in [`Services`] or [`ClientServices`]: its trait's implementor, or [`Absent`].
+/// What provides `conformance::Service` in [`Services`]: its trait's implementor, or [`Absent`].
 #[doc(hidden)]
 pub trait ProvideConformanceService {
     fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError>;
