@@ -46,7 +46,7 @@ pub const HEADER: c2::HelloHeader<'static> = c2::HelloHeader {
     ],
 };
 
-/// `conformance::Chat`, wire number 0, line 0.1.0: `send` 1, `leave` 0
+/// `conformance::Chat`, line 0.1.0, wire number 0: `send` 1, `leave` 0
 #[doc(hidden)]
 pub const P_CONFORMANCE_CHAT: c2::ProtocolEntry<'static> = c2::ProtocolEntry {
     number: 0,
@@ -55,7 +55,7 @@ pub const P_CONFORMANCE_CHAT: c2::ProtocolEntry<'static> = c2::ProtocolEntry {
     functions: &[0, 1],
 };
 
-/// `conformance::Events`, wire number 1, line 0.1.0: `shown` 0
+/// `conformance::Events`, line 0.1.0, wire number 1: `shown` 0
 #[doc(hidden)]
 pub const P_CONFORMANCE_EVENTS: c2::ProtocolEntry<'static> = c2::ProtocolEntry {
     number: 1,
@@ -64,7 +64,7 @@ pub const P_CONFORMANCE_EVENTS: c2::ProtocolEntry<'static> = c2::ProtocolEntry {
     functions: &[0],
 };
 
-/// `conformance::admin::Admin`, wire number 2, line 0.1.0: `kick` 1, `ban` 0
+/// `conformance::admin::Admin`, line 0.1.0, wire number 2: `kick` 1, `ban` 0
 #[doc(hidden)]
 pub const P_CONFORMANCE_ADMIN_ADMIN: c2::ProtocolEntry<'static> = c2::ProtocolEntry {
     number: 2,
@@ -73,7 +73,7 @@ pub const P_CONFORMANCE_ADMIN_ADMIN: c2::ProtocolEntry<'static> = c2::ProtocolEn
     functions: &[0, 1],
 };
 
-/// `conformance::admin::Alerts`, wire number 3, line 0.1.0: `raised` 0
+/// `conformance::admin::Alerts`, line 0.1.0, wire number 3: `raised` 0
 #[doc(hidden)]
 pub const P_CONFORMANCE_ADMIN_ALERTS: c2::ProtocolEntry<'static> = c2::ProtocolEntry {
     number: 3,

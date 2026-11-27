@@ -2014,10 +2014,10 @@ fn comline2_items(
             .map(|(f, n)| format!("`{f}` {n}"))
             .collect();
         l.push(format!(
-            "/// `{}`, wire number {}, line {}: {}",
+            "/// `{}`, line {}, wire number {}: {}",
             display_path(&p.namespace, &p.name),
-            p.number,
             p.line,
+            p.number,
             functions.join(", ")
         ));
         l.push("#[doc(hidden)]".into());

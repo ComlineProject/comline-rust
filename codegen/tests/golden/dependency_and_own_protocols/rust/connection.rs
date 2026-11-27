@@ -44,7 +44,7 @@ pub const HEADER: c2::HelloHeader<'static> = c2::HelloHeader {
     ],
 };
 
-/// `api::Chat`, wire number 0, line 0.1.0: `greet` 0
+/// `api::Chat`, line 0.1.0, wire number 0: `greet` 0
 #[doc(hidden)]
 pub const P_API_CHAT: c2::ProtocolEntry<'static> = c2::ProtocolEntry {
     number: 0,

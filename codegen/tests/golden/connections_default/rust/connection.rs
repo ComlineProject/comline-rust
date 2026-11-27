@@ -46,7 +46,7 @@ pub const HEADER: c2::HelloHeader<'static> = c2::HelloHeader {
     ],
 };
 
-/// `conformance::Chat`, wire number 0, line 0.1.0: `send` 0
+/// `conformance::Chat`, line 0.1.0, wire number 0: `send` 0
 #[doc(hidden)]
 pub const P_CONFORMANCE_CHAT: c2::ProtocolEntry<'static> = c2::ProtocolEntry {
     number: 0,
@@ -55,7 +55,7 @@ pub const P_CONFORMANCE_CHAT: c2::ProtocolEntry<'static> = c2::ProtocolEntry {
     functions: &[0],
 };
 
-/// `conformance::Events`, wire number 1, line 0.1.0: `shown` 1, `ping` 0
+/// `conformance::Events`, line 0.1.0, wire number 1: `shown` 1, `ping` 0
 #[doc(hidden)]
 pub const P_CONFORMANCE_EVENTS: c2::ProtocolEntry<'static> = c2::ProtocolEntry {
     number: 1,

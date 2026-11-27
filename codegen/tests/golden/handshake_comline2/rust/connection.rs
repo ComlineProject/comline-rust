@@ -44,7 +44,7 @@ pub const HEADER: c2::HelloHeader<'static> = c2::HelloHeader {
     ],
 };
 
-/// `conformance::Chat`, wire number 0, line 0.1.0: `send` 1, `leave` 0
+/// `conformance::Chat`, line 0.1.0, wire number 0: `send` 1, `leave` 0
 #[doc(hidden)]
 pub const P_CONFORMANCE_CHAT: c2::ProtocolEntry<'static> = c2::ProtocolEntry {
     number: 0,

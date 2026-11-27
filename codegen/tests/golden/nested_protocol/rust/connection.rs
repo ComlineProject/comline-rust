@@ -44,7 +44,7 @@ pub const HEADER: c2::HelloHeader<'static> = c2::HelloHeader {
     ],
 };
 
-/// `chat::admin::Admin`, wire number 0, line 0.1.0: `greet` 0
+/// `chat::admin::Admin`, line 0.1.0, wire number 0: `greet` 0
 #[doc(hidden)]
 pub const P_CHAT_ADMIN_ADMIN: c2::ProtocolEntry<'static> = c2::ProtocolEntry {
     number: 0,
