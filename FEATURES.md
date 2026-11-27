@@ -15,22 +15,22 @@ What the rust generator implements, and the conformance fixtures that prove it. 
 | unions <br><sub>`unions`</sub> | ❌ unsupported: Rust has no anonymous sum type to render one as <br><sub>proven by `unions`</sub> |
 | type aliases <br><sub>`type-aliases`</sub> | ✅ supported <br><sub>proven by `validators`, `validators_on_decode`, `bounds`</sub> |
 | constants <br><sub>`constants`</sub> | ✅ supported <br><sub>proven by `constant`, `shapes`, `validators` +1 more</sub> |
-| protocols <br><sub>`protocols`</sub> | ✅ supported <br><sub>proven by `protocol`, `error_shapes`, `validators` +15 more</sub> |
+| protocols <br><sub>`protocols`</sub> | ✅ supported <br><sub>proven by `protocol`, `error_shapes`, `validators` +16 more</sub> |
 | errors <br><sub>`errors`</sub> | ✅ supported <br><sub>proven by `protocol`, `error_shapes`, `lockstep` +2 more</sub> |
 | functions that throw <br><sub>`throws`</sub> | ✅ supported <br><sub>proven by `protocol`, `error_shapes`, `lockstep` +2 more</sub> |
 | validators <br><sub>`validators`</sub> | ✅ supported <br><sub>proven by `validators`, `validators_on_decode`</sub> |
 | imports between schemas <br><sub>`imports`</sub> | ✅ supported <br><sub>proven by `cross_schema`, `import_alias`, `import_glob` +6 more</sub> |
-| nested namespaces <br><sub>`nested-namespaces`</sub> | ✅ supported <br><sub>proven by `nested_namespace`, `external_std`, `validators` +4 more</sub> |
+| nested namespaces <br><sub>`nested-namespaces`</sub> | ✅ supported <br><sub>proven by `nested_namespace`, `external_std`, `validators` +5 more</sub> |
 | `lib` mode <br><sub>`lib-mode`</sub> | ✅ supported <br><sub>proven by `nested_namespace`, `external_std`</sub> |
 | `external_std` <br><sub>`external-std`</sub> | ✅ supported <br><sub>proven by `external_std`</sub> |
 | `validate_on_decode` <br><sub>`validate-on-decode`</sub> | ✅ supported <br><sub>proven by `validators_on_decode`</sub> |
 | JSON-RPC framing <br><sub>`framing-jsonrpc`</sub> | ✅ supported <br><sub>proven by `framing_jsonrpc`, `connections_jsonrpc`</sub> |
 | no handshake <br><sub>`handshake-none`</sub> | ✅ supported <br><sub>proven by `handshake_none`</sub> |
-| `datagram@3` framing <br><sub>`framing-datagram3`</sub> | ✅ supported <br><sub>proven by `framing_datagram3`, `handshake_comline2`, `connections_default` +3 more</sub> |
-| `comline@2` handshake <br><sub>`handshake-comline2`</sub> | ✅ supported <br><sub>proven by `handshake_comline2`, `connections_default`, `dependency_protocol` +2 more</sub> |
-| connections <br><sub>`connections`</sub> | ✅ supported <br><sub>proven by `protocol`, `error_shapes`, `validators` +13 more</sub> |
+| `datagram@3` framing <br><sub>`framing-datagram3`</sub> | ✅ supported <br><sub>proven by `framing_datagram3`, `handshake_comline2`, `connections_default` +4 more</sub> |
+| `comline@2` handshake <br><sub>`handshake-comline2`</sub> | ✅ supported <br><sub>proven by `handshake_comline2`, `connections_default`, `dependency_protocol` +3 more</sub> |
+| connections <br><sub>`connections`</sub> | ✅ supported <br><sub>proven by `protocol`, `error_shapes`, `validators` +14 more</sub> |
 | `async` <br><sub>`async`</sub> | ✅ supported <br><sub>proven by `connections_async`</sub> |
-| the `packed@1` format <br><sub>`format-packed`</sub> | ✅ supported <br><sub>proven by `protocol`, `error_shapes`, `validators` +11 more</sub> |
+| the `packed@1` format <br><sub>`format-packed`</sub> | ✅ supported <br><sub>proven by `protocol`, `error_shapes`, `validators` +12 more</sub> |
 | the `json@1` format <br><sub>`format-json`</sub> | ✅ supported <br><sub>proven by `format_json`</sub> |
 | the `msgpack@1` format <br><sub>`format-msgpack`</sub> | ✅ supported <br><sub>proven by `format_msgpack`</sub> |
 | bounds <br><sub>`bounds`</sub> | ✅ supported <br><sub>proven by `bounds`</sub> |

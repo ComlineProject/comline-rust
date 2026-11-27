@@ -2335,7 +2335,10 @@ fn check_comline2_crates(label: &str, async_api: bool, behaviour: &str) {
         }
     }
     let lib = fs::read_to_string(dir.join("new/src/lib.rs")).unwrap();
-    assert!(lib.contains("pub const HELLO: &[u8] = &["), "{lib}");
+    assert!(
+        lib.contains("pub const HEADER: c2::HelloHeader<'static>"),
+        "{lib}"
+    );
     assert!(lib.contains("Datagram3Framing"), "{lib}");
     let chat = fs::read_to_string(dir.join("new/src/chat.rs")).unwrap();
     // `whisper` is called by its wire number, 2, though it's declared second.
@@ -2632,6 +2635,7 @@ fn documented_crates_show_the_entry_points_and_hide_the_plumbing() {
         "fn.accept.html",
         "fn.connect.html",
         "struct.Services.html",
+        "struct.Absent.html",
         "type.Connection.html",
         "type.Framing.html",
         "type.Format.html",
@@ -2644,7 +2648,9 @@ fn documented_crates_show_the_entry_points_and_hide_the_plumbing() {
     }
     for plumbing in [
         "fn.handshake.html",
-        "constant.HELLO.html",
+        "constant.HEADER.html",
+        "constant.P_CHAT_ADMIN_ADMIN.html",
+        "trait.ProvideChatAdminAdmin.html",
         "fn.check_call.html",
         "chat/admin/struct.AdminDispatcher.html",
         "chat/admin/struct.AdminGreetParams.html",
@@ -2698,6 +2704,7 @@ fn protocols_named_like_the_package_modules_types_build() {
         "Negotiation",
         "Comline2Handshake",
         "Unavailable",
+        "Absent",
         "Result",
         "Services",
     ];
@@ -2743,3 +2750,319 @@ fn protocols_named_like_the_package_modules_types_build() {
     }
     let _ = fs::remove_dir_all(&shared);
 }
+
+// ── a side that provides a subset (comline-rust#133) ────────────────────────
+
+/// `connections_subset`: two applications in one package, `Chat` and `Admin`
+/// the server's, `Events` and `Alerts` the client's, on `comline@2`.
+fn subset_request(async_api: bool) -> GenerateRequest {
+    // `lib` mode can't have a schema and a namespace of deeper schemas of the
+    // same name, so the second application is a sibling of the first.
+    let mut fx = corpus_fixture("connections_subset");
+    for (namespace, _) in &mut fx.schemas {
+        if namespace == "conformance/admin" {
+            *namespace = "admin".into();
+        }
+    }
+    let mut req = common::request(&fx, Mode::Lib, async_api);
+    req.package.name = "subsettest".into();
+    req
+}
+
+/// `Services` and `ClientServices` take a subset: the Hello lists only what a
+/// side provides and calls, so a protocol left out is neither served nor
+/// reachable, and says so; and the all-provided literal is what it was.
+#[test]
+fn a_side_provides_a_subset_and_its_hello_lists_that() {
+    let req = subset_request(false);
+    let files = generate_rust(&req).unwrap();
+    let lib = &files
+        .iter()
+        .find(|f| f.path.ends_with("src/lib.rs"))
+        .unwrap()
+        .contents;
+    assert!(lib.contains("pub struct Services<Chat, Admin> {"), "{lib}");
+    assert!(
+        lib.contains("pub struct ClientServices<Events, Alerts> {"),
+        "{lib}"
+    );
+    check_generated_crate("subset", &req, Some(SUBSET_BEHAVIOUR));
+}
+
+const SUBSET_BEHAVIOUR: &str = r##"
+use std::thread;
+
+use comline_runtime::contract::{CallError, Fault, Peer, Reason, RuntimeError};
+use comline_runtime::transport::duplex;
+use subsettest::admin::{Admin, AdminSender, Alerts, AlertsSender};
+use subsettest::conformance::{Chat, ChatSendError, ChatSender, Events, EventsShownError};
+use subsettest::{accept, connect, serve, unavailable, Absent, ClientServices, Services};
+
+struct ChatImpl;
+impl Chat for ChatImpl {
+    fn send(&self, _peer: &mut impl Peer, n: u32) -> Result<u32, Fault<ChatSendError>> {
+        Ok(n + 1)
+    }
+    fn leave(&self, _peer: &mut impl Peer) {}
+}
+
+struct AdminImpl;
+impl Admin for AdminImpl {
+    fn kick(&self, _peer: &mut impl Peer, _user: u32) {}
+    fn ban(&self, _peer: &mut impl Peer, _user: u32) {}
+}
+
+struct EventsImpl;
+impl Events for EventsImpl {
+    fn shown(&self, _peer: &mut impl Peer, n: u32) -> Result<bool, Fault<EventsShownError>> {
+        Ok(n > 0)
+    }
+}
+
+struct AlertsImpl;
+impl Alerts for AlertsImpl {
+    fn raised(&self, _peer: &mut impl Peer, _code: u32) {}
+}
+
+#[test]
+fn a_protocol_left_out_is_not_on_the_connection() {
+    let (a, b) = duplex();
+    let server = thread::spawn(move || {
+        let mut conn = accept(b, Services::new().with_chat(ChatImpl)).unwrap();
+        // The client left `Alerts` out of what it provides: the call isn't made.
+        let err = AlertsSender::new(&mut conn).raised(1).unwrap_err();
+        assert_eq!(err, RuntimeError::Unavailable);
+        let why = unavailable(&mut conn).unwrap();
+        assert_eq!(
+            (why.protocol, why.function, why.refused),
+            ("admin::Alerts", "raised", Some(Reason::UnknownProtocol))
+        );
+        conn.serve()
+    });
+    let mut conn = connect(a, ClientServices::new().with_events(EventsImpl)).unwrap();
+    assert_eq!(ChatSender::new(&mut conn).send(4).unwrap(), 5);
+    // And the server left `Admin` out of what it provides.
+    let err = AdminSender::new(&mut conn).kick(1).unwrap_err();
+    assert_eq!(err, RuntimeError::Unavailable);
+    let why = unavailable(&mut conn).unwrap();
+    assert_eq!(
+        (why.protocol, why.function, why.refused),
+        ("admin::Admin", "kick", Some(Reason::UnknownProtocol))
+    );
+    drop(conn);
+    let _ = server.join().unwrap();
+}
+
+#[test]
+fn a_side_that_provides_nothing_lists_only_what_it_calls() {
+    let (a, b) = duplex();
+    let server = thread::spawn(move || serve(b, Services::new()));
+    let mut conn = connect(a, ClientServices { events: EventsImpl, alerts: AlertsImpl }).unwrap();
+    let err = ChatSender::new(&mut conn).send(1).unwrap_err();
+    assert!(matches!(err, CallError::Runtime(RuntimeError::Unavailable)), "{err:?}");
+    drop(conn);
+    let _ = server.join().unwrap();
+}
+
+#[test]
+fn providing_every_protocol_is_the_struct_literal() {
+    let (a, b) = duplex();
+    let server = thread::spawn(move || serve(b, Services { chat: ChatImpl, admin: AdminImpl }));
+    let mut conn = connect(a, ClientServices { events: EventsImpl, alerts: AlertsImpl }).unwrap();
+    assert_eq!(ChatSender::new(&mut conn).send(1).unwrap(), 2);
+    AdminSender::new(&mut conn).kick(7).unwrap();
+    drop(conn);
+    let _ = server.join().unwrap();
+
+    // A subset is the same literal with `Absent` in the fields left out.
+    let (a, b) = duplex();
+    let server = thread::spawn(move || serve(b, Services { chat: ChatImpl, admin: Absent }));
+    let mut conn = connect(a, ClientServices { events: Absent, alerts: Absent }).unwrap();
+    assert_eq!(ChatSender::new(&mut conn).send(2).unwrap(), 3);
+    drop(conn);
+    let _ = server.join().unwrap();
+}
+
+/// A client written before `Admin` existed lists `Chat` alone, so the server's
+/// `Admin` is refused (`unknown_protocol`): the connection still comes up, `Chat`
+/// works, the refused protocol isn't registered, and the client's call to it
+/// fails locally.
+#[test]
+fn a_protocol_the_peer_refused_is_skipped_not_an_error() {
+    use comline_runtime::connection::Connection;
+    use comline_runtime::contract::Datagram3Framing;
+    use subsettest::{handshake, negotiated, Format, Negotiation, CONNECTION_IR_HASH};
+    use subsettest::{P_ADMIN_ADMIN, P_CONFORMANCE_CHAT};
+
+    let (a, b) = duplex();
+    let server = thread::spawn(move || {
+        let mut conn = accept(b, Services { chat: ChatImpl, admin: AdminImpl }).unwrap();
+        let agreed = negotiated(&mut conn).unwrap();
+        assert!(agreed.accepts(P_CONFORMANCE_CHAT.number));
+        assert!(!agreed.accepts(P_ADMIN_ADMIN.number));
+        conn.serve()
+    });
+    let mut handshake = handshake(&[], &[P_CONFORMANCE_CHAT]);
+    let mut conn =
+        Connection::connect_with(a, Format::default(), Datagram3Framing, &mut handshake, CONNECTION_IR_HASH).unwrap();
+    let agreed = handshake.negotiated().cloned().unwrap();
+    Peer::extensions(&mut conn).insert(Negotiation { negotiated: agreed, unavailable: None });
+    assert_eq!(ChatSender::new(&mut conn).send(4).unwrap(), 5);
+    let err = AdminSender::new(&mut conn).kick(1).unwrap_err();
+    assert_eq!(err, RuntimeError::Unavailable);
+    drop(conn);
+    let _ = server.join().unwrap();
+}
+"##;
+
+/// [`SUBSET_BEHAVIOUR`], async.
+#[test]
+fn an_async_side_provides_a_subset_and_its_hello_lists_that() {
+    check_generated_crate(
+        "async-subset",
+        &subset_request(true),
+        Some(ASYNC_SUBSET_BEHAVIOUR),
+    );
+}
+
+const ASYNC_SUBSET_BEHAVIOUR: &str = r##"
+use comline_runtime::connection::AsyncPeer;
+use comline_runtime::contract::{CallError, Fault, Reason, RuntimeError};
+use comline_runtime::transport::async_duplex;
+use subsettest::admin::{Admin, AdminAsyncSender, Alerts, AlertsAsyncSender};
+use subsettest::conformance::{Chat, ChatAsyncSender, ChatSendError, Events, EventsShownError};
+use subsettest::{accept, connect, serve, unavailable, Absent, ClientServices, Services};
+
+struct ChatImpl;
+impl Chat for ChatImpl {
+    async fn send(&self, _peer: &impl AsyncPeer, n: u32) -> Result<u32, Fault<ChatSendError>> {
+        Ok(n + 1)
+    }
+    async fn leave(&self, _peer: &impl AsyncPeer) {}
+}
+
+struct AdminImpl;
+impl Admin for AdminImpl {
+    async fn kick(&self, _peer: &impl AsyncPeer, _user: u32) {}
+    async fn ban(&self, _peer: &impl AsyncPeer, _user: u32) {}
+}
+
+struct EventsImpl;
+impl Events for EventsImpl {
+    async fn shown(&self, _peer: &impl AsyncPeer, n: u32) -> Result<bool, Fault<EventsShownError>> {
+        Ok(n > 0)
+    }
+}
+
+struct AlertsImpl;
+impl Alerts for AlertsImpl {
+    async fn raised(&self, _peer: &impl AsyncPeer, _code: u32) {}
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_protocol_left_out_is_not_on_the_connection() {
+    let (dialler, acceptor) = async_duplex();
+    let server = tokio::spawn(async move {
+        let conn = accept(acceptor, Services::new().with_chat(ChatImpl)).await.unwrap();
+        let to_client = conn.handle();
+        // The client left `Alerts` out of what it provides: the call isn't made.
+        let err = AlertsAsyncSender::new(&to_client).raised(1).unwrap_err();
+        assert_eq!(err, RuntimeError::Unavailable);
+        let why = unavailable(&to_client).unwrap();
+        assert_eq!(
+            (why.protocol, why.function, why.refused),
+            ("admin::Alerts", "raised", Some(Reason::UnknownProtocol))
+        );
+        conn.run().await
+    });
+    let client = connect(dialler, ClientServices::new().with_events(EventsImpl)).await.unwrap();
+    let to_server = client.handle();
+    let client = tokio::spawn(client.run());
+
+    assert_eq!(ChatAsyncSender::new(&to_server).send(4).await.unwrap(), 5);
+    // And the server left `Admin` out of what it provides.
+    let err = AdminAsyncSender::new(&to_server).kick(1).unwrap_err();
+    assert_eq!(err, RuntimeError::Unavailable);
+    let why = unavailable(&to_server).unwrap();
+    assert_eq!(
+        (why.protocol, why.function, why.refused),
+        ("admin::Admin", "kick", Some(Reason::UnknownProtocol))
+    );
+
+    to_server.close();
+    client.await.unwrap().unwrap();
+    let _ = server.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_side_that_provides_nothing_lists_only_what_it_calls() {
+    let (dialler, acceptor) = async_duplex();
+    let server = tokio::spawn(serve(acceptor, Services::new()));
+    let client = connect(dialler, ClientServices { events: EventsImpl, alerts: AlertsImpl }).await.unwrap();
+    let to_server = client.handle();
+    let client = tokio::spawn(client.run());
+    let err = ChatAsyncSender::new(&to_server).send(1).await.unwrap_err();
+    assert!(matches!(err, CallError::Runtime(RuntimeError::Unavailable)), "{err:?}");
+    to_server.close();
+    client.await.unwrap().unwrap();
+    let _ = server.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn providing_every_protocol_is_the_struct_literal() {
+    let (dialler, acceptor) = async_duplex();
+    let server = tokio::spawn(serve(acceptor, Services { chat: ChatImpl, admin: AdminImpl }));
+    let client = connect(dialler, ClientServices { events: EventsImpl, alerts: AlertsImpl }).await.unwrap();
+    let to_server = client.handle();
+    let client = tokio::spawn(client.run());
+    assert_eq!(ChatAsyncSender::new(&to_server).send(1).await.unwrap(), 2);
+    AdminAsyncSender::new(&to_server).kick(7).unwrap();
+    to_server.close();
+    client.await.unwrap().unwrap();
+    let _ = server.await.unwrap();
+
+    // A subset is the same literal with `Absent` in the fields left out.
+    let (dialler, acceptor) = async_duplex();
+    let server = tokio::spawn(serve(acceptor, Services { chat: ChatImpl, admin: Absent }));
+    let client = connect(dialler, ClientServices { events: Absent, alerts: Absent }).await.unwrap();
+    let to_server = client.handle();
+    let client = tokio::spawn(client.run());
+    assert_eq!(ChatAsyncSender::new(&to_server).send(2).await.unwrap(), 3);
+    to_server.close();
+    client.await.unwrap().unwrap();
+    let _ = server.await.unwrap();
+}
+
+/// [`a_protocol_the_peer_refused_is_skipped_not_an_error`], async.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_protocol_the_peer_refused_is_skipped_not_an_error() {
+    use comline_runtime::connection::AsyncConnection;
+    use comline_runtime::contract::Datagram3Framing;
+    use subsettest::{handshake, negotiated, Format, Negotiation, CONNECTION_IR_HASH};
+    use subsettest::{P_ADMIN_ADMIN, P_CONFORMANCE_CHAT};
+
+    let (dialler, acceptor) = async_duplex();
+    let server = tokio::spawn(async move {
+        let conn = accept(acceptor, Services { chat: ChatImpl, admin: AdminImpl }).await.unwrap();
+        let agreed = negotiated(&conn.handle()).unwrap();
+        assert!(agreed.accepts(P_CONFORMANCE_CHAT.number));
+        assert!(!agreed.accepts(P_ADMIN_ADMIN.number));
+        conn.run().await
+    });
+    let mut handshake = handshake(&[], &[P_CONFORMANCE_CHAT]);
+    let client =
+        AsyncConnection::connect_with(dialler, Format::default(), Datagram3Framing, &mut handshake, CONNECTION_IR_HASH)
+            .await
+            .unwrap();
+    let to_server = client.handle();
+    let agreed = handshake.negotiated().cloned().unwrap();
+    AsyncPeer::extensions(&to_server).insert(Negotiation { negotiated: agreed, unavailable: None });
+    let client = tokio::spawn(client.run());
+    assert_eq!(ChatAsyncSender::new(&to_server).send(4).await.unwrap(), 5);
+    let err = AdminAsyncSender::new(&to_server).kick(1).unwrap_err();
+    assert_eq!(err, RuntimeError::Unavailable);
+    to_server.close();
+    client.await.unwrap().unwrap();
+    let _ = server.await.unwrap();
+}
+"##;

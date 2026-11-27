@@ -5,6 +5,7 @@
 //! - Implement the trait of each protocol the server provides: `conformance::Counter`.
 //! - Serve with [`serve`]`(transport, Services { counter: .. })`, which serves every call until the peer leaves. [`accept`] hands the connection back first, for a server that calls the client or serves one call at a time.
 //! - Dial with [`connect`]`(transport)`.
+//! - To provide only some of a side's protocols, start from `Services::new().with_counter(..)` and add each with its `with_` method, or write [`Absent`] in the fields left out. The connection then has a dispatcher for those only.
 //! - Call the server from the dialling side: `CounterSender::new(&mut conn).add(..)`.
 //!
 //! [`Connection<T>`](Connection) names the connection over a transport `T`, written `Connection<Tcp>`; [`Format`] is the package's wire format.
@@ -26,16 +27,66 @@ pub type Framing = comline_runtime::contract::Datagram3Framing;
 /// return, written `Connection<Tcp>`: [`Format`] over [`Framing`].
 pub type Connection<T> = comline_runtime::connection::Connection<T, Format, Framing>;
 
-/// What the accepting side provides: one field per protocol, so leaving one out
-/// doesn't compile.
+/// A protocol left out of [`Services`]: it isn't provided,
+/// and the connection has no dispatcher for it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Absent;
+
+/// What provides `conformance::Counter` in [`Services`]: its trait's implementor, or [`Absent`].
+#[doc(hidden)]
+pub trait ProvideConformanceCounter {
+    fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError>;
+}
+
+impl ProvideConformanceCounter for Absent {
+    fn provide<T: Transport>(self, _conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+}
+
+impl<P: crate::conformance::Counter + 'static> ProvideConformanceCounter for P {
+    fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        crate::conformance::CounterDispatcher(self).provide_on(conn)
+    }
+}
+
+/// What the accepting side provides: one field per protocol. Every field is a
+/// protocol's implementation, or [`Absent`] to leave the protocol out;
+/// `Services::new()` has them all absent, and `with_<field>` provides one.
 pub struct Services<Counter> {
     pub counter: Counter,
 }
 
-impl<Counter: crate::conformance::Counter + 'static> Services<Counter> {
-    /// Provide every protocol on `conn`: the peer's calls to them come here.
-    pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) {
-        crate::conformance::CounterDispatcher(self.counter).provide_on(conn);
+impl Services<Absent> {
+    /// Nothing provided yet.
+    pub fn new() -> Self {
+        Services {
+            counter: Absent,
+        }
+    }
+}
+
+impl Default for Services<Absent> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<Counter> Services<Counter> {
+    /// Provide `conformance::Counter` with `provider`, in place of what was there.
+    pub fn with_counter<P: crate::conformance::Counter + 'static>(self, provider: P) -> Services<P> {
+        Services {
+            counter: provider,
+        }
+    }
+}
+
+impl<Counter: ProvideConformanceCounter> Services<Counter> {
+    /// Provide every protocol given on `conn`: the peer's calls to them come here.
+    /// The protocols left [`Absent`] aren't provided.
+    pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        ProvideConformanceCounter::provide(self.counter, conn)?;
+        Ok(())
     }
 }
 
@@ -43,14 +94,14 @@ impl<Counter: crate::conformance::Counter + 'static> Services<Counter> {
 /// every protocol in `services` on it. The connection comes back not yet
 /// served, for a server that calls the client first, or serves one call at
 /// a time.
-pub fn accept<T: Transport, Counter: crate::conformance::Counter + 'static>(transport: T, services: Services<Counter>) -> Result<Connection<T>, RuntimeError> {
+pub fn accept<T: Transport, Counter: ProvideConformanceCounter>(transport: T, services: Services<Counter>) -> Result<Connection<T>, RuntimeError> {
     let mut conn = comline_runtime::connection::Connection::accept_with(transport, Format::default(), comline_runtime::contract::Datagram3Framing, &mut comline_runtime::handshake::ComlineHandshake, CONNECTION_IR_HASH)?;
-    services.provide_on(&mut conn);
+    services.provide_on(&mut conn)?;
     Ok(conn)
 }
 
 /// [`accept`], then serve every call until the peer leaves.
-pub fn serve<T: Transport, Counter: crate::conformance::Counter + 'static>(transport: T, services: Services<Counter>) -> Result<(), RuntimeError> {
+pub fn serve<T: Transport, Counter: ProvideConformanceCounter>(transport: T, services: Services<Counter>) -> Result<(), RuntimeError> {
     accept(transport, services)?.serve()
 }
 

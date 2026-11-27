@@ -5,6 +5,7 @@
 //! - Implement the trait of each protocol the server provides: `conformance::Gateway`.
 //! - Serve with [`serve`]`(transport, Services { gateway: .. })`, which serves every call until the peer leaves. [`accept`] hands the connection back first, for a server that calls the client or serves one call at a time.
 //! - Dial with [`connect`]`(transport)`.
+//! - To provide only some of a side's protocols, start from `Services::new().with_gateway(..)` and add each with its `with_` method, or write [`Absent`] in the fields left out. The connection then has a dispatcher for those only.
 //! - Call the server from the dialling side: `GatewaySender::new(&mut conn).ping(..)`.
 //!
 //! [`Connection<T>`](Connection) names the connection over a transport `T`, written `Connection<Tcp>`; [`Format`] is the package's wire format.
@@ -23,16 +24,66 @@ pub const CONNECTION_IR_HASH: u64 = 0xb7e7d5c80c4d8287;
 /// return, written `Connection<Tcp>`: [`Format`] over the default framing.
 pub type Connection<T> = comline_runtime::connection::Connection<T, Format>;
 
-/// What the accepting side provides: one field per protocol, so leaving one out
-/// doesn't compile.
+/// A protocol left out of [`Services`]: it isn't provided,
+/// and the connection has no dispatcher for it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Absent;
+
+/// What provides `conformance::Gateway` in [`Services`]: its trait's implementor, or [`Absent`].
+#[doc(hidden)]
+pub trait ProvideConformanceGateway {
+    fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError>;
+}
+
+impl ProvideConformanceGateway for Absent {
+    fn provide<T: Transport>(self, _conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+}
+
+impl<P: crate::conformance::Gateway + 'static> ProvideConformanceGateway for P {
+    fn provide<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        crate::conformance::GatewayDispatcher(self).provide_on(conn)
+    }
+}
+
+/// What the accepting side provides: one field per protocol. Every field is a
+/// protocol's implementation, or [`Absent`] to leave the protocol out;
+/// `Services::new()` has them all absent, and `with_<field>` provides one.
 pub struct Services<Gateway> {
     pub gateway: Gateway,
 }
 
-impl<Gateway: crate::conformance::Gateway + 'static> Services<Gateway> {
-    /// Provide every protocol on `conn`: the peer's calls to them come here.
-    pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) {
-        crate::conformance::GatewayDispatcher(self.gateway).provide_on(conn);
+impl Services<Absent> {
+    /// Nothing provided yet.
+    pub fn new() -> Self {
+        Services {
+            gateway: Absent,
+        }
+    }
+}
+
+impl Default for Services<Absent> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<Gateway> Services<Gateway> {
+    /// Provide `conformance::Gateway` with `provider`, in place of what was there.
+    pub fn with_gateway<P: crate::conformance::Gateway + 'static>(self, provider: P) -> Services<P> {
+        Services {
+            gateway: provider,
+        }
+    }
+}
+
+impl<Gateway: ProvideConformanceGateway> Services<Gateway> {
+    /// Provide every protocol given on `conn`: the peer's calls to them come here.
+    /// The protocols left [`Absent`] aren't provided.
+    pub fn provide_on<T: Transport>(self, conn: &mut Connection<T>) -> Result<(), RuntimeError> {
+        ProvideConformanceGateway::provide(self.gateway, conn)?;
+        Ok(())
     }
 }
 
@@ -40,14 +91,14 @@ impl<Gateway: crate::conformance::Gateway + 'static> Services<Gateway> {
 /// every protocol in `services` on it. The connection comes back not yet
 /// served, for a server that calls the client first, or serves one call at
 /// a time.
-pub fn accept<T: Transport, Gateway: crate::conformance::Gateway + 'static>(transport: T, services: Services<Gateway>) -> Result<Connection<T>, RuntimeError> {
+pub fn accept<T: Transport, Gateway: ProvideConformanceGateway>(transport: T, services: Services<Gateway>) -> Result<Connection<T>, RuntimeError> {
     let mut conn = comline_runtime::connection::Connection::new_unverified(transport, Format::default());
-    services.provide_on(&mut conn);
+    services.provide_on(&mut conn)?;
     Ok(conn)
 }
 
 /// [`accept`], then serve every call until the peer leaves.
-pub fn serve<T: Transport, Gateway: crate::conformance::Gateway + 'static>(transport: T, services: Services<Gateway>) -> Result<(), RuntimeError> {
+pub fn serve<T: Transport, Gateway: ProvideConformanceGateway>(transport: T, services: Services<Gateway>) -> Result<(), RuntimeError> {
     accept(transport, services)?.serve()
 }
 

@@ -78,7 +78,7 @@ fn uses_async_driver(source: &str) -> bool {
 /// by git rev (no crates.io yet); see design/runtime-repo-structure.md.
 const RUNTIME_GIT: &str = "https://github.com/ComlineProject/runtime";
 /// The first with `datagram@3` and `comline@2`, core's defaults.
-const RUNTIME_REV: &str = "3b9cc9dc53a83fb2830d91b267bd5f477f0a1e51";
+const RUNTIME_REV: &str = "e7362217e95f8d22bbce181746562054974e659a";
 
 /// `comline_std` — std's own pre-generated bindings, referenced instead of
 /// inlined when `external_std` is on. Same git-pin shape as
@@ -1230,6 +1230,7 @@ fn package_module(
                 "Reason",
                 "Negotiated",
                 "Comline2Handshake",
+                "c2",
                 "Negotiation",
                 "Unavailable",
             ]
@@ -1248,7 +1249,7 @@ fn package_module(
     });
     if comline2 {
         imports.push(
-            "use comline_runtime::handshake::comline2::{Comline2Handshake, Negotiated};".into(),
+            "use comline_runtime::handshake::comline2::{self as c2, Comline2Handshake, Negotiated};".into(),
         );
     }
     imports.push(format!("use comline_runtime::transport::{transport_ty};"));
@@ -1301,6 +1302,30 @@ fn package_module(
         comline2_items(req, &package, asynchronous, &mut l).ok()?;
     }
 
+    // What may stand for each protocol in `Services` / `ClientServices`: a
+    // trait per protocol, which anything implementing the protocol's trait
+    // satisfies, and `Absent` does to leave it out.
+    let slot_of = |p: &connections::Provided| -> String {
+        let mut name = String::from("Provide");
+        for segment in comline_codegen::facts::namespace_segments(&p.namespace) {
+            name.push_str(&pascal(segment));
+        }
+        name.push_str(&p.name);
+        name
+    };
+    let slots: Vec<String> = {
+        let mut seen: Vec<String> = Vec::new();
+        for p in server.iter().chain(&client) {
+            let slot = slot_of(p);
+            if !seen.contains(&slot) {
+                seen.push(slot);
+            }
+        }
+        seen
+    };
+    reserved.push("Absent".into());
+    reserved.extend(slots.iter().cloned());
+
     // Generic names that nothing else in the module can mean: a protocol
     // is named after its trait, and one named `Transport` or `Connection`
     // would otherwise hide the item the signatures below use.
@@ -1323,6 +1348,99 @@ fn package_module(
         name
     };
 
+    // The name `Absent` stands for a protocol left out, in the fields a
+    // subset doesn't give.
+    // Only the types this package has: a link to one it lacks doesn't resolve.
+    let sides_of = |servers: bool, clients: bool| -> String {
+        let mut named = Vec::new();
+        if servers {
+            named.push("[`Services`]");
+        }
+        if clients {
+            named.push("[`ClientServices`]");
+        }
+        named.join(" or ")
+    };
+    l.push(format!(
+        "/// A protocol left out of {}: it isn't provided,",
+        sides_of(!server.is_empty(), !client.is_empty())
+    ));
+    if comline2 {
+        l.push("/// and the `comline@2` Hello doesn't list it unless this end calls it.".into());
+    } else {
+        l.push("/// and the connection has no dispatcher for it.".into());
+    }
+    l.push("#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]".into());
+    l.push("pub struct Absent;".into());
+    l.push(String::new());
+    // One trait per protocol, with the two ways to fill its slot.
+    let mut written: Vec<String> = Vec::new();
+    for p in server.iter().chain(&client) {
+        let slot = slot_of(p);
+        if written.contains(&slot) {
+            continue;
+        }
+        written.push(slot.clone());
+        let path = format!("crate::{}::{}", segments(&p.namespace), ident(&p.name));
+        l.push(format!(
+            "/// What provides `{}` in {}: its trait's implementor, or [`Absent`].",
+            display_path(&p.namespace, &p.name),
+            sides_of(server.contains(p), client.contains(p))
+        ));
+        l.push("#[doc(hidden)]".into());
+        l.push(format!("pub trait {slot} {{"));
+        if comline2 {
+            l.push("    /// Its entry in the Hello, when something provides it.".into());
+            l.push("    const ENTRY: $Option<c2::ProtocolEntry<'static>>;".into());
+        }
+        l.push(format!(
+            "    fn provide<T: {transport_ty}>(self, conn: &mut Connection<T>) -> $Result<(), RuntimeError>;"
+        ));
+        l.push("}".into());
+        l.push(String::new());
+        l.push(format!("impl {slot} for Absent {{"));
+        if comline2 {
+            l.push("    const ENTRY: $Option<c2::ProtocolEntry<'static>> = $None;".into());
+        }
+        l.push(format!(
+            "    fn provide<T: {transport_ty}>(self, _conn: &mut Connection<T>) -> $Result<(), RuntimeError> {{"
+        ));
+        l.push("        $Ok(())".into());
+        l.push("    }".into());
+        l.push("}".into());
+        l.push(String::new());
+        l.push(format!("impl<P: {path}{bound}> {slot} for P {{"));
+        if comline2 {
+            l.push(format!(
+                "    const ENTRY: $Option<c2::ProtocolEntry<'static>> = $Some({});",
+                entry_const(&p.namespace, &p.name)
+            ));
+        }
+        l.push(format!(
+            "    fn provide<T: {transport_ty}>(self, conn: &mut Connection<T>) -> $Result<(), RuntimeError> {{"
+        ));
+        if comline2 {
+            // A protocol the peer refused isn't registered: nothing will call
+            // it, and `provide` would fail. With no Hello there's nothing to
+            // check against.
+            let agreed = if asynchronous {
+                "negotiated(&conn.handle())"
+            } else {
+                "negotiated(&mut *conn)"
+            };
+            l.push(format!(
+                "        if {agreed}.is_some_and(|n| !n.accepts({}.number)) {{",
+                entry_const(&p.namespace, &p.name)
+            ));
+            l.push("            return $Ok(());".into());
+            l.push("        }".into());
+        }
+        l.push(format!("        {path}{dispatcher}(self).provide_on(conn)"));
+        l.push("    }".into());
+        l.push("}".into());
+        l.push(String::new());
+    }
+
     // `Services<A, B>`, its generics, their bounds and the struct itself.
     struct Side {
         ty: &'static str,
@@ -1330,63 +1448,134 @@ fn package_module(
         bounds: String,
     }
     let mut declared: Vec<&'static str> = Vec::new();
-    let mut side =
-        |ty: &'static str, provided: &[connections::Provided], who: &str| -> Option<Side> {
-            if provided.is_empty() {
-                return None;
-            }
-            declared.push(ty);
-            let names: Vec<String> = provided.iter().map(|p| generic(&p.field)).collect();
-            let bounds: Vec<String> = provided
-                .iter()
-                .zip(&names)
-                .map(|(p, g)| {
-                    format!(
-                        "{g}: crate::{}::{}{bound}",
-                        segments(&p.namespace),
-                        ident(&p.name)
-                    )
-                })
-                .collect();
+    let mut side = |ty: &'static str,
+                    provided: &[connections::Provided],
+                    who: &str|
+     -> Option<Side> {
+        if provided.is_empty() {
+            return None;
+        }
+        declared.push(ty);
+        let names: Vec<String> = provided.iter().map(|p| generic(&p.field)).collect();
+        let bounds: Vec<String> = provided
+            .iter()
+            .zip(&names)
+            .map(|(p, g)| format!("{g}: {}", slot_of(p)))
+            .collect();
+        let generics = names.join(", ");
+        let absent = vec!["Absent"; provided.len()].join(", ");
+        l.push(format!(
+            "/// What {who} provides: one field per protocol. Every field is a"
+        ));
+        l.push("/// protocol's implementation, or [`Absent`] to leave the protocol out;".into());
+        l.push(format!(
+            "/// `{ty}::new()` has them all absent, and `with_<field>` provides one."
+        ));
+        l.push(format!("pub struct {ty}<{generics}> {{"));
+        for (p, g) in provided.iter().zip(&names) {
+            l.push(format!("    pub {}: {g},", ident(&p.field)));
+        }
+        l.push("}".into());
+        l.push(String::new());
+        l.push(format!("impl {ty}<{absent}> {{"));
+        l.push("    /// Nothing provided yet.".into());
+        l.push("    pub fn new() -> Self {".into());
+        l.push(format!("        {ty} {{"));
+        for p in provided {
+            l.push(format!("            {}: Absent,", ident(&p.field)));
+        }
+        l.push("        }".into());
+        l.push("    }".into());
+        l.push("}".into());
+        l.push(String::new());
+        l.push(format!("impl Default for {ty}<{absent}> {{"));
+        l.push("    fn default() -> Self {".into());
+        l.push("        Self::new()".into());
+        l.push("    }".into());
+        l.push("}".into());
+        l.push(String::new());
+        l.push(format!("impl<{generics}> {ty}<{generics}> {{"));
+        for (i, p) in provided.iter().enumerate() {
+            let mut into = names.clone();
+            into[i] = "P".into();
             l.push(format!(
-                "/// What {who} provides: one field per protocol, so leaving one out"
+                "    /// Provide `{}` with `provider`, in place of what was there.",
+                display_path(&p.namespace, &p.name)
             ));
-            l.push("/// doesn't compile.".into());
-            l.push(format!("pub struct {ty}<{}> {{", names.join(", ")));
-            for (p, g) in provided.iter().zip(&names) {
-                l.push(format!("    pub {}: {g},", ident(&p.field)));
-            }
-            l.push("}".into());
-            l.push(String::new());
             l.push(format!(
-                "impl<{}> {ty}<{}> {{",
-                bounds.join(", "),
-                names.join(", ")
+                "    pub fn with_{}<P: crate::{}::{}{bound}>(self, provider: P) -> {ty}<{}> {{",
+                p.field,
+                segments(&p.namespace),
+                ident(&p.name),
+                into.join(", ")
             ));
+            l.push(format!("        {ty} {{"));
+            for (j, q) in provided.iter().enumerate() {
+                if i == j {
+                    l.push(format!("            {}: provider,", ident(&q.field)));
+                } else {
+                    l.push(format!(
+                        "            {}: self.{},",
+                        ident(&q.field),
+                        ident(&q.field)
+                    ));
+                }
+            }
+            l.push("        }".into());
+            l.push("    }".into());
+        }
+        l.push("}".into());
+        l.push(String::new());
+        l.push(format!("impl<{}> {ty}<{generics}> {{", bounds.join(", ")));
+        l.push(
+            "    /// Provide every protocol given on `conn`: the peer's calls to them come here."
+                .into(),
+        );
+        if comline2 {
+            l.push("    /// The protocols left [`Absent`] aren't provided, and neither is one the".into());
             l.push(
-                "    /// Provide every protocol on `conn`: the peer's calls to them come here."
+                "    /// `comline@2` handshake didn't accept (the peer refused it): it is skipped."
                     .into(),
             );
-            l.push(format!(
-                "    pub fn provide_on<T: {transport_ty}>(self, conn: &mut Connection<T>) {{"
+        } else {
+            l.push("    /// The protocols left [`Absent`] aren't provided.".into());
+        }
+        l.push(format!(
+                "    pub fn provide_on<T: {transport_ty}>(self, conn: &mut Connection<T>) -> $Result<(), RuntimeError> {{"
             ));
-            for p in provided {
-                l.push(format!(
-                    "        crate::{}::{}{dispatcher}(self.{}).provide_on(conn);",
-                    segments(&p.namespace),
-                    ident(&p.name),
-                    ident(&p.field)
-                ));
-            }
-            l.push("    }".into());
-            l.push("}".into());
+        for p in provided {
+            l.push(format!(
+                "        {}::provide(self.{}, conn)?;",
+                slot_of(p),
+                ident(&p.field)
+            ));
+        }
+        l.push("        $Ok(())".into());
+        l.push("    }".into());
+        if comline2 {
             l.push(String::new());
-            Some(Side {
-                ty,
-                generics: names.join(", "),
-                bounds: bounds.join(", "),
-            })
-        };
+            l.push("    /// The Hello entries of the protocols given.".into());
+            l.push("    #[doc(hidden)]".into());
+            l.push("    pub fn entries(&self) -> $Vec<c2::ProtocolEntry<'static>> {".into());
+            let entries: Vec<String> = provided
+                .iter()
+                .zip(&names)
+                .map(|(p, g)| format!("<{g} as {}>::ENTRY", slot_of(p)))
+                .collect();
+            l.push(format!(
+                "        [{}].into_iter().flatten().collect()",
+                entries.join(", ")
+            ));
+            l.push("    }".into());
+        }
+        l.push("}".into());
+        l.push(String::new());
+        Some(Side {
+            ty,
+            generics,
+            bounds: bounds.join(", "),
+        })
+    };
     let server_side = side("Services", &server, "the accepting side");
     let client_side = side("ClientServices", &client, "the dialling side");
     reserved.extend(declared.into_iter().map(String::from));
@@ -1403,9 +1592,26 @@ fn package_module(
             ),
         }
     };
-    let body = |l: &mut Vec<String>, side: &Option<Side>, open: String| {
+    // `called`: what the other side provides, which this end lists in its
+    // Hello to call.
+    let body = |l: &mut Vec<String>,
+                side: &Option<Side>,
+                open: String,
+                called: &[connections::Provided]| {
         if comline2 {
-            l.push("    let mut handshake = handshake();".into());
+            let provided = if side.is_some() {
+                "&services.entries()"
+            } else {
+                "&[]"
+            };
+            let called: Vec<String> = called
+                .iter()
+                .map(|p| entry_const(&p.namespace, &p.name))
+                .collect();
+            l.push(format!(
+                "    let mut handshake = handshake({provided}, &[{}]);",
+                called.join(", ")
+            ));
             // An async connection's extensions are reached through a handle.
             let binding = if asynchronous && side.is_none() {
                 "conn"
@@ -1426,11 +1632,11 @@ fn package_module(
                 ));
             }
             if side.is_some() {
-                l.push("    services.provide_on(&mut conn);".into());
+                l.push("    services.provide_on(&mut conn)?;".into());
             }
         } else if side.is_some() {
             l.push(format!("    let mut conn = {open};"));
-            l.push("    services.provide_on(&mut conn);".into());
+            l.push("    services.provide_on(&mut conn)?;".into());
         } else {
             l.push(format!("    let conn = {open};"));
         }
@@ -1451,7 +1657,7 @@ fn package_module(
         l.push("/// a time.".into());
     }
     l.push(signature("accept", &server_side, "Connection<T>"));
-    body(&mut l, &server_side, open("accept"));
+    body(&mut l, &server_side, open("accept"), &client);
 
     l.push("/// [`accept`], then serve every call until the peer leaves.".into());
     l.push(signature("serve", &server_side, "()"));
@@ -1481,7 +1687,7 @@ fn package_module(
         l.push("/// through their senders.".into());
     }
     l.push(signature("connect", &client_side, "Connection<T>"));
-    body(&mut l, &client_side, open("connect"));
+    body(&mut l, &client_side, open("connect"), &server);
 
     // What the package's user is pointed at, first.
     let mut docs: Vec<String> = vec![
@@ -1540,6 +1746,28 @@ fn package_module(
         ));
         docs.push(format!("- Dial with [`connect`]`({connect_args})`."));
     }
+    // A side provides a subset of its protocols as well as all of them.
+    let subset_of = |ty: &str, provided: &[connections::Provided]| {
+        provided
+            .first()
+            .map(|p| format!("`{ty}::new().with_{}(..)`", p.field))
+    };
+    let subset: Vec<String> = [
+        subset_of("Services", &server),
+        subset_of("ClientServices", &client),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    docs.push(format!(
+        "- To provide only some of a side's protocols, start from {} and add each with its `with_` method, or write [`Absent`] in the fields left out. {}",
+        subset.join(" or "),
+        if comline2 {
+            "The `comline@2` Hello then lists what is provided and every protocol of the other side this end calls, and a protocol it doesn't list isn't on the connection."
+        } else {
+            "The connection then has a dispatcher for those only."
+        }
+    ));
     let call = |p: &connections::Provided| -> Option<String> {
         let function = first_function(&req.schemas, &p.namespace, &p.name)?;
         Some(if asynchronous {
@@ -1729,60 +1957,109 @@ fn display_path(namespace: &str, name: &str) -> String {
     segments.join("::")
 }
 
-/// The package module's `comline@2` items: this end's Hello (the facts it
-/// was generated from), `handshake()` with the parameters the package states,
-/// and what senders check each call against.
+/// The name of a protocol's [`ProtocolEntry`](comline_codegen::facts::HelloEntry)
+/// constant in the package module: `P_` and the protocol's path, upper case.
+fn entry_const(namespace: &str, name: &str) -> String {
+    let mut path: Vec<String> = comline_codegen::facts::namespace_segments(namespace)
+        .map(screaming_snake)
+        .collect();
+    path.push(screaming_snake(name));
+    format!("P_{}", path.join("_"))
+}
+
+/// The package module's `comline@2` items: this end's Hello as the facts it
+/// is built from (the header, and one entry per protocol), `handshake()`
+/// which builds it from the protocols provided and called, and what senders
+/// check each call against.
 fn comline2_items(
     req: &GenerateRequest,
     package: &connections::PackageConnection,
     asynchronous: bool,
     l: &mut Vec<String>,
 ) -> Result<()> {
-    let (hello, protocols) = comline_codegen::facts::hello(req, package)?;
+    let parts = comline_codegen::facts::hello_parts(req, package)?;
     let params = comline_codegen::facts::Comline2Params::of(&package.handshake_value);
-    let facts = req.facts.as_ref().expect("hello() had facts");
+    let facts = req.facts.as_ref().expect("hello_parts() had facts");
+    let hash = |bytes: &[u8; 16]| -> String {
+        let bytes: Vec<String> = bytes.iter().map(|b| format!("{b:#04x}")).collect();
+        format!("c2::Hash128([{}])", bytes.join(", "))
+    };
+    let release = |(major, minor, patch): (u32, u32, u32)| {
+        format!("c2::Release::new({major}, {minor}, {patch})")
+    };
     l.push(format!(
-        "/// This end's `comline@2` Hello: version {} of package `{}`, as its",
-        facts.version,
+        "/// What this end's `comline@2` Hello holds whichever protocols it lists: version {} of",
+        facts.version
+    ));
+    l.push(format!(
+        "/// package `{}`, as its history records it, and the connection's encodings.",
         facts.id.as_deref().unwrap_or_default()
     ));
-    l.push("/// history records it. Its protocols, by wire number:".into());
-    l.push("///".into());
-    for p in &protocols {
+    l.push(
+        "/// [`handshake`] adds the protocols this end provides and calls, one `P_` entry each."
+            .into(),
+    );
+    l.push("#[doc(hidden)]".into());
+    l.push("pub const HEADER: c2::HelloHeader<'static> = c2::HelloHeader {".into());
+    l.push(format!(
+        "    exchange: c2::Exchange::{},",
+        pascal(&parts.exchange)
+    ));
+    l.push(format!("    package_id: {},", hash(&parts.package)));
+    l.push(format!("    version: {},", release(parts.version)));
+    l.push(format!("    pre: {:?},", parts.pre));
+    l.push("    encodings: &[".into());
+    for encoding in &parts.encodings {
+        let kind = match encoding.kind {
+            0 => "Format",
+            1 => "Framing",
+            _ => "Handshake",
+        };
+        l.push(format!(
+            "        c2::Encoding {{ kind: c2::EncodingKind::{kind}, param_hash: {} }},",
+            hash(&encoding.hash)
+        ));
+    }
+    l.push("    ],".into());
+    l.push("};".into());
+    l.push(String::new());
+    for p in &parts.protocols {
         let functions: Vec<String> = p
             .functions
             .iter()
             .map(|(f, n)| format!("`{f}` {n}"))
             .collect();
         l.push(format!(
-            "/// - {} `{}`, line {}: {}",
-            p.number,
+            "/// `{}`, line {}, wire number {}: {}",
             display_path(&p.namespace, &p.name),
             p.line,
+            p.number,
             functions.join(", ")
         ));
+        l.push("#[doc(hidden)]".into());
+        l.push(format!(
+            "pub const {}: c2::ProtocolEntry<'static> = c2::ProtocolEntry {{",
+            entry_const(&p.namespace, &p.name)
+        ));
+        l.push(format!("    number: {},", p.number));
+        l.push(format!("    line: {},", release(p.release)));
+        l.push(format!("    shape_hash: {},", hash(&p.shape_hash)));
+        let numbers: Vec<String> = p.function_numbers().iter().map(u16::to_string).collect();
+        l.push(format!("    functions: &[{}],", numbers.join(", ")));
+        l.push("};".into());
+        l.push(String::new());
     }
-    let bytes: Vec<String> = hello.iter().map(|b| format!("{b:#04x}")).collect();
-    l.push("#[doc(hidden)]".into());
-    l.push("pub const HELLO: &[u8] = &[".into());
-    for chunk in bytes.chunks(12) {
-        l.push(format!("    {},", chunk.join(", ")));
-    }
-    l.push("];".into());
-    l.push(String::new());
     let variant = |v: &str| pascal(v);
-    l.push("/// The `comline@2` handshake, with [`HELLO`] and the parameters the package".into());
+    l.push("/// The `comline@2` handshake, with the parameters the package states:".into());
     l.push(format!(
-        "/// states: `scope = {}`, `newer_consumer = {}`, `same_version_differs = {}`, `exchange = {}`.",
+        "/// `scope = {}`, `newer_consumer = {}`, `same_version_differs = {}`, `exchange = {}`.",
         params.scope, params.newer_consumer, params.same_version_differs, params.exchange
     ));
+    l.push("/// Its Hello lists the protocols `provided` and `called` and no others: the".into());
+    l.push("/// peer refuses a listed protocol it doesn't have, and a protocol left out is".into());
+    l.push("/// neither provided nor called on the connection.".into());
     l.push("#[doc(hidden)]".into());
-    l.push("pub fn handshake() -> Comline2Handshake {".into());
-    l.push("    use comline_runtime::handshake::comline2 as c2;".into());
-    l.push("    let hello = match c2::Message::decode(HELLO) {".into());
-    l.push("        $Ok(c2::Message::Hello(hello)) => hello,".into());
-    l.push("        _ => unreachable!(\"HELLO is a Hello message\"),".into());
-    l.push("    };".into());
+    l.push("pub fn handshake(provided: &[c2::ProtocolEntry<'_>], called: &[c2::ProtocolEntry<'_>]) -> Comline2Handshake {".into());
     l.push("    let params = c2::Params {".into());
     l.push(format!(
         "        scope: c2::Scope::{},",
@@ -1801,13 +2078,23 @@ fn comline2_items(
         variant(&params.exchange)
     ));
     l.push("    };".into());
-    l.push("    c2::Comline2Handshake::new(params, hello)".into());
+    l.push(
+        "    c2::Comline2Handshake::new(params, c2::Hello::build(&HEADER, provided, called))"
+            .into(),
+    );
     l.push("}".into());
     l.push(String::new());
     l.push("/// The package's protocols on the connection, by wire number.".into());
-    let paths: Vec<String> = protocols
+    let paths: Vec<String> = parts
+        .protocols
         .iter()
-        .map(|p| format!("({}, \"{}\")", p.number, display_path(&p.namespace, &p.name)))
+        .map(|p| {
+            format!(
+                "({}, \"{}\")",
+                p.number,
+                display_path(&p.namespace, &p.name)
+            )
+        })
         .collect();
     l.push(format!(
         "const PROTOCOLS: &[(u16, &str)] = &[{}];",
@@ -2155,6 +2442,14 @@ fn format_of<'a>(parameters: &[FrozenUnit], encodings: &'a Encodings) -> &'a str
         "Format"
     }
 }
+
+/// What a dispatcher's `provide_on` documents about its `Result`: the same on
+/// every connection, blocking or async.
+const PROVIDE_ERRORS: [&str; 3] = [
+    "    /// Fails with `RuntimeError::Unavailable` when the connection ran a `comline@2`",
+    "    /// handshake that didn't accept this protocol: the Hello didn't list it, or the",
+    "    /// peer refused it. A connection opened without one accepts it.",
+];
 
 #[allow(clippy::too_many_arguments)]
 fn protocol(
@@ -2556,12 +2851,15 @@ fn protocol(
         l.push(String::new());
         l.push("    /// Provide this protocol on `conn`: the peer's calls to it come here.".into());
         l.push(format!("    /// Open `conn` with {open}."));
+        l.push("    ///".into());
+        l.extend(PROVIDE_ERRORS.map(String::from));
         l.push(
             "    pub fn provide_on<T: $Transport, W: $WireFormat, F: $ConnectionFraming>(".into(),
         );
         l.push("        self,".into());
         l.push("        conn: &mut $Connection<T, W, F>,".into());
-        l.push("    ) where".into());
+        l.push("    ) -> $Result<(), $RuntimeError>".into());
+        l.push("    where".into());
         l.push("        S: 'static,".into());
         l.push("    {".into());
         l.push("        conn.provide(Self::PROTOCOL, self)".into());
@@ -2857,7 +3155,12 @@ fn async_dispatcher(
     l.push(String::new());
     l.push("    /// Provide this protocol on `conn`: the peer's calls to it come here.".into());
     l.push(format!("    /// Open `conn` with {open}."));
-    l.push("    pub fn provide_on<T, W, F>(self, conn: &mut $AsyncConnection<T, W, F>)".into());
+    l.push("    ///".into());
+    l.extend(PROVIDE_ERRORS.map(String::from));
+    l.push("    pub fn provide_on<T, W, F>(".into());
+    l.push("        self,".into());
+    l.push("        conn: &mut $AsyncConnection<T, W, F>,".into());
+    l.push("    ) -> $Result<(), $RuntimeError>".into());
     l.push("    where".into());
     l.push("        T: $AsyncTransport,".into());
     l.push("        W: $WireFormat + Send + Sync + 'static,".into());

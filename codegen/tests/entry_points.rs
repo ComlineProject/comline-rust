@@ -179,7 +179,13 @@ fn the_wire_plumbing_is_hidden_and_the_entry_points_are_not() {
         ),
         "{admin}"
     );
-    for item in ["pub const HELLO", "pub fn handshake()", "pub fn check_call"] {
+    for item in [
+        "pub const HEADER",
+        "pub const P_CHAT_ADMIN_ADMIN",
+        "pub trait ProvideChatAdminAdmin",
+        "pub fn handshake(",
+        "pub fn check_call",
+    ] {
         assert!(hidden(connection, item), "{item} is plumbing\n{connection}");
     }
     // What a user touches stays in the docs.
@@ -189,6 +195,7 @@ fn the_wire_plumbing_is_hidden_and_the_entry_points_are_not() {
         (admin, "pub struct Notice"),
         (admin, "pub type AdminGreetError"),
         (connection, "pub struct Services<"),
+        (connection, "pub struct Absent"),
         (connection, "pub fn serve<"),
         (connection, "pub fn accept<"),
         (connection, "pub fn connect<"),
