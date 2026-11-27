@@ -64,7 +64,8 @@ pub const SUPPORT: SupportTable = &[
     ),
     (
         Feature::Unions,
-        Support::unsupported("Rust has no anonymous sum type to render one as"),
+        Support::unsupported("Rust has no anonymous sum type to render one as")
+            .tracked("comline-rust#51"),
     ),
     (Feature::TypeAliases, Support::supported()),
     (Feature::Constants, Support::supported()),
