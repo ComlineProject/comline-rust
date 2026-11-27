@@ -11,7 +11,7 @@ What the rust generator implements, and the conformance fixtures that prove it. 
 | optional fields <br><sub>`optional-fields`</sub> | ✅ supported <br><sub>proven by `optional_and_arrays`, `type_refs`, `shapes` +4 more</sub> |
 | arrays <br><sub>`arrays`</sub> | ✅ supported <br><sub>proven by `optional_and_arrays`, `type_refs`, `shapes` +5 more</sub> |
 | fixed-length arrays <br><sub>`fixed-arrays`</sub> | ✅ supported <br><sub>proven by `shapes`</sub> |
-| fixed arrays over 32 elements, nested <br><sub>`large-fixed-arrays-nested`</sub> | ❌ unsupported: a fixed array over 32 elements renders only as a struct or error field's own, non-optional type (serde's derive stops at 32) <br><sub>proven by `large_fixed_arrays_nested`</sub> |
+| fixed arrays over 32 elements, nested <br><sub>`large-fixed-arrays-nested`</sub> | ❌ unsupported: a fixed array over 32 elements renders only as a struct or error field's own, non-optional type (serde's derive stops at 32) (comline-rust#146) <br><sub>proven by `large_fixed_arrays_nested`</sub> |
 | unions <br><sub>`unions`</sub> | ❌ unsupported: Rust has no anonymous sum type to render one as <br><sub>proven by `unions`</sub> |
 | type aliases <br><sub>`type-aliases`</sub> | ✅ supported <br><sub>proven by `validators`, `validators_on_decode`, `bounds`</sub> |
 | constants <br><sub>`constants`</sub> | ✅ supported <br><sub>proven by `constant`, `shapes`, `validators` +1 more</sub> |

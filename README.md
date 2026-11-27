@@ -53,7 +53,7 @@ with the fixtures that prove each claim, is in [`FEATURES.md`](FEATURES.md)
 | optional fields <br><sub>`optional-fields`</sub> | ✅ supported |
 | arrays <br><sub>`arrays`</sub> | ✅ supported |
 | fixed-length arrays <br><sub>`fixed-arrays`</sub> | ✅ supported |
-| fixed arrays over 32 elements, nested <br><sub>`large-fixed-arrays-nested`</sub> | ❌ unsupported: a fixed array over 32 elements renders only as a struct or error field's own, non-optional type (serde's derive stops at 32) |
+| fixed arrays over 32 elements, nested <br><sub>`large-fixed-arrays-nested`</sub> | ❌ unsupported: a fixed array over 32 elements renders only as a struct or error field's own, non-optional type (serde's derive stops at 32) (comline-rust#146) |
 | unions <br><sub>`unions`</sub> | ❌ unsupported: Rust has no anonymous sum type to render one as |
 | type aliases <br><sub>`type-aliases`</sub> | ✅ supported |
 | constants <br><sub>`constants`</sub> | ✅ supported |
