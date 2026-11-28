@@ -25,6 +25,7 @@ const PATHS: &[(&str, &str)] = &[
     ("Vec", "::std::vec::Vec"),
     ("String", "::std::string::String"),
     ("Box", "::std::boxed::Box"),
+    ("Future", "::core::future::Future"),
     ("Serialize", "::serde::Serialize"),
     ("Deserialize", "::serde::Deserialize"),
     ("Client", "::comline_runtime::client::Client"),

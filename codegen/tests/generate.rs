@@ -1983,10 +1983,9 @@ fn async_makes_a_connection_protocol_async() {
         src.contains("pub trait Rpc: Send + Sync + 'static {"),
         "{src}"
     );
-    assert!(
-        src.contains("-> impl ::core::future::Future<Output = "),
-        "{src}"
-    );
+    assert!(src.contains("-> impl Future<Output = "), "{src}");
+    assert!(src.contains("use ::core::future::Future;\n"), "{src}");
+    assert!(!src.contains("::core::future::Future<"), "{src}");
     assert!(src.contains("peer: &impl AsyncPeer"), "{src}");
     assert!(
         src.contains("impl<S: Rpc> AsyncDispatch for RpcAsyncDispatcher<S> {"),
@@ -2029,6 +2028,54 @@ fn async_makes_a_connection_protocol_async() {
     let src = generate_rust(&lockstep).unwrap().remove(0).contents;
     assert!(src.contains("pub struct RpcClient<T, W>"));
     assert!(!src.contains("Async"), "{src}");
+}
+
+/// The async handlers' `impl Future` is written by its imported name, which
+/// is only imported where it is used; a schema that declares a `Future` of its
+/// own keeps the full path and imports nothing.
+#[test]
+fn the_future_import_is_only_where_it_is_used_and_free() {
+    let one = |async_api: bool, declare: bool| {
+        let mut units = one_plain_protocol("Rpc");
+        if declare {
+            units.push(FrozenUnit::Struct {
+                docstring: None,
+                parameters: vec![],
+                name: "Future".into(),
+                fields: vec![],
+                span: (0, 0),
+            });
+        }
+        let schemas = vec![("rpc".to_string(), units)];
+        let req = GenerateRequest {
+            async_api,
+            ..code_req(&schemas)
+        };
+        generate_rust(&req).unwrap().remove(0).contents
+    };
+
+    let blocking = one(false, false);
+    assert!(!blocking.contains("Future"), "{blocking}");
+
+    let asynchronous = one(true, false);
+    assert_eq!(
+        asynchronous.matches("use ::core::future::Future;").count(),
+        1
+    );
+    assert!(
+        asynchronous.contains("-> impl Future<Output = "),
+        "{asynchronous}"
+    );
+
+    let declared = one(true, true);
+    assert!(
+        !declared.contains("use ::core::future::Future;"),
+        "{declared}"
+    );
+    assert!(
+        declared.contains("-> impl ::core::future::Future<Output = "),
+        "{declared}"
+    );
 }
 
 #[test]
